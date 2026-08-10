@@ -1,47 +1,47 @@
 # English | [中文](README_cn.md)
 
-# tron2_rl_lab
+# TRON2_YG_LAB
 
-基于 [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) 的 LimX **TRON2A** 双足机器人强化学习训练栈，使用 PPO 训练 locomotion 策略。支持 SF / WF 两种基础形态（sole-foot / wheel-foot），以及带 6-DoF 机械臂 + 双指 gripper 的 SFYG / WFYG 形态（机械臂运行时锁死、不参与 RL）。
+Reinforcement learning training stack for the LimX **TRON2A** bipedal robot, built on [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) and using PPO to train locomotion policies. Supports two base morphologies: **SF** (sole-foot) and **WF** (wheel-foot), as well as the SFYG and WFYG variants with 6-DoF arms + two-finger grippers (arms are locked during runtime and do not participate in RL).
 
-## 仓库结构
+## Repository Structure
 
 ```
 .
-├── exts/bipedal_locomotion/   # Isaac Lab extension：env/asset/MDP/robot cfg
-├── rsl_rl/                    # 项目内 vendored 的 rsl_rl fork（PPO + on-policy runner）
-├── scripts/rsl_rl/            # 训练 / play 入口（train.py / play.py / cli_args.py）
-├── robot_description/         # git submodule — URDF/USD/STL 等机器人描述
-└── docs/superpowers/          # 设计文档 + 实施计划
+├── exts/bipedal_locomotion/   # Isaac Lab extension: env/asset/MDP/robot cfg
+├── rsl_rl/                    # Vendored rsl_rl fork (PPO + on-policy runner)
+├── scripts/rsl_rl/            # Training/play entry points (train.py / play.py / cli_args.py)
+├── robot_description/         # Git submodule — URDF/USD/STL robot description assets
+└── docs/superpowers/          # Design documents + implementation plans
 ```
 
-## 环境要求
+## Requirements
 
-- Isaac Sim **4.5.0** + Isaac Lab，且 `isaaclab` / `isaaclab_tasks` / `isaaclab_rl` 可被 import
+- Isaac Sim **4.5.0** + Isaac Lab, with `isaaclab` / `isaaclab_tasks` / `isaaclab_rl` importable
 - Python 3.10
-- GPU（推荐 ≥ 12 GB 显存，4096 envs 训练）
+- GPU (≥ 12 GB VRAM recommended for 4096-env training)
 
-## 安装
+## Installation
 
 ```bash
-# 1. clone 仓库连同子模块
-git clone --recurse-submodules <repo-url> tron2_rl_lab
-cd tron2_rl_lab
-# 如果已 clone 但未拉子模块：
+# 1. Clone the repository with submodules
+git clone --recurse-submodules https://github.com/limxdynamics/TRON2_YG_LAB.git
+cd TRON2_YG_LAB
+# If already cloned without submodules:
 git submodule update --init --recursive
 
-# 2. editable install extension 与 vendored rsl_rl
+# 2. Editable install of the extension and vendored rsl_rl
 pip install -e exts/bipedal_locomotion
 pip install -e rsl_rl
 ```
 
-`robot_description` 子模块下的 USD 在训练 / play 启动时被直接加载，必须存在；否则 spawn 失败。
+The USD assets under the `robot_description` submodule are loaded at training/play startup and must be present; otherwise spawn will fail.
 
-## 训练
+## Training
 
-任务 ID 均在 [exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/__init__.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/__init__.py) 中注册。
+Task IDs are registered in [exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/__init__.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/__init__.py).
 
-每种形态都有 **Flat**（纯平面）和 **Rough**（程序生成 rough 地形，含 flat / waves / boxes / random_rough 四类子地形，**不含楼梯**）两个变体。
+Each morphology has two terrain variants: **Flat** (pure flat plane) and **Rough** (procedurally generated rough terrain with four sub-terrain types: flat / waves / boxes / random_rough, **no stairs**).
 
 ```bash
 # === Flat ===
@@ -50,28 +50,28 @@ python scripts/rsl_rl/train.py --task Isaac-Limx-WF-TRON2A-Blind-Flat-v0   --num
 python scripts/rsl_rl/train.py --task Isaac-Limx-SFYG-TRON2A-Blind-Flat-v0 --num_envs 4096 --headless
 python scripts/rsl_rl/train.py --task Isaac-Limx-WFYG-TRON2A-Blind-Flat-v0 --num_envs 4096 --headless
 
-# === Rough（程序生成地形，无楼梯）===
+# === Rough (procedural terrain, no stairs) ===
 python scripts/rsl_rl/train.py --task Isaac-Limx-SF-TRON2A-Blind-Rough-v0   --num_envs 4096 --headless
 python scripts/rsl_rl/train.py --task Isaac-Limx-WF-TRON2A-Blind-Rough-v0   --num_envs 4096 --headless
 python scripts/rsl_rl/train.py --task Isaac-Limx-SFYG-TRON2A-Blind-Rough-v0 --num_envs 4096 --headless
 python scripts/rsl_rl/train.py --task Isaac-Limx-WFYG-TRON2A-Blind-Rough-v0 --num_envs 4096 --headless
 ```
 
-Rough 地形定义见 [cfg/SF_TRON2A/terrains_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/cfg/SF_TRON2A/terrains_cfg.py) / [cfg/WF_TRON2A/terrains_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/cfg/WF_TRON2A/terrains_cfg.py) 中的 `BLIND_ROUGH_TERRAINS_CFG`（10×16 网格、curriculum on、难度 0~1）。YG 变体复用 SF / WF 的 rough 地形，但仍按 [YG 变体设计](#yg-变体设计) 屏蔽 arm/gripper 的随机化与限位惩罚。
+Rough terrain configuration is defined in `BLIND_ROUGH_TERRAINS_CFG` in [cfg/SF_TRON2A/terrains_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/cfg/SF_TRON2A/terrains_cfg.py) and [cfg/WF_TRON2A/terrains_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/cfg/WF_TRON2A/terrains_cfg.py) (10×16 grid, curriculum on, difficulty 0~1). YG variants reuse the SF/WF rough terrain but exclude arm/gripper randomization and limit penalties as described in [YG Variant Design](#yg-variant-design).
 
-常用选项：
+Common options:
 
-- `--checkpoint_path <path>` 从某 .pt 恢复（或在 cfg 中开 `resume=True` + `load_run` / `load_checkpoint`）
-- `--video --video_interval 24000 --video_length 400` 录像（自动启用 `--enable_cameras`）
-- `--max_iterations N` 覆盖 PPO cfg 中的最大迭代数
+- `--checkpoint_path <path>` — resume from a specific `.pt` checkpoint (or set `resume=True` + `load_run`/`load_checkpoint` in cfg)
+- `--video --video_interval 24000 --video_length 400` — enable video recording (auto-enables `--enable_cameras`)
+- `--max_iterations N` — override the maximum iteration count in PPO cfg
 
-日志路径：`logs/rsl_rl/<experiment_name>/<timestamp>_<run_name>/`
+Log path: `logs/rsl_rl/<experiment_name>/<timestamp>_<run_name>/`
 
-## Resume 续训
+## Resume Training
 
-`agent_cfg.resume` 默认 `False`，**必须显式带 `--resume True`** 才会加载 checkpoint（[scripts/rsl_rl/train.py:130-139](scripts/rsl_rl/train.py#L130-L139)）。两种方式：
+`agent_cfg.resume` defaults to `False`. You **must explicitly pass `--resume True`** to load a checkpoint ([scripts/rsl_rl/train.py:130-139](scripts/rsl_rl/train.py#L130-L139)). Two methods:
 
-### 方式 A：直接给 .pt 路径（推荐）
+### Method A: Direct .pt path (recommended)
 
 ```bash
 python scripts/rsl_rl/train.py \
@@ -81,7 +81,7 @@ python scripts/rsl_rl/train.py \
     --checkpoint_path logs/rsl_rl/<experiment_name>/<timestamp>_<run_name>/model_<iter>.pt
 ```
 
-### 方式 B：按 run 名 + checkpoint 名查找
+### Method B: Look up by run name and checkpoint name
 
 ```bash
 python scripts/rsl_rl/train.py \
@@ -92,17 +92,17 @@ python scripts/rsl_rl/train.py \
     --checkpoint model_1500.pt
 ```
 
-`--load_run` / `--checkpoint` 支持正则（如 `--load_run ".*"`、`--checkpoint "model_.*\.pt"`），在 `logs/rsl_rl/<experiment_name>/` 下按字典序取最新匹配。
+`--load_run` / `--checkpoint` support regex (e.g., `--load_run ".*"`, `--checkpoint "model_.*\.pt"`), matching the latest entry under `logs/rsl_rl/<experiment_name>/` in lexicographic order.
 
-注意事项：
+Notes:
 
-1. **task ID 必须与原 run 一致**，否则 obs/action 维度对不上 load 会失败。只改奖励权重之类**不影响维度**的可以续跑。
-2. resume 会在 `logs/rsl_rl/<experiment_name>/` 下**新建一个 timestamp 子目录**写新 log，不覆盖原 run 文件。
-3. 想再训 N 个 iter：`--max_iterations` 是**上限不是增量**——原来训到 1500、想再训 1000，传 `--max_iterations 2500`。
+1. **The task ID must match the original run**, otherwise obs/action dimension mismatch will cause loading failure. Changing only reward weights (which do not affect dimensions) is safe for resuming.
+2. Resume creates a **new timestamped subdirectory** under `logs/rsl_rl/<experiment_name>/` for new logs, leaving the original run files untouched.
+3. To train for N additional iterations: `--max_iterations` is a **cap, not an increment** — if you trained to 1500 and want 1000 more, pass `--max_iterations 2500`.
 
-## Play / 部署预演
+## Play / Deployment Preview
 
-用 `-Play-v0` 后缀的任务 ID。Play cfg 使用更少 env、关闭域随机化、简化地形。
+Use task IDs with the `-Play-v0` suffix. Play cfg uses fewer envs, disables domain randomization, and simplifies terrain.
 
 ```bash
 # Flat
@@ -118,64 +118,64 @@ python scripts/rsl_rl/play.py \
     --checkpoint_path logs/rsl_rl/sf_tron_2a_flat/<run>/model_<iter>.pt
 ```
 
-每个训练 task 都有同名的 `-Play-v0` 变体，SF/WF/SFYG/WFYG × Flat/Rough 共 8 个。
+Every training task has a corresponding `-Play-v0` variant: SF/WF/SFYG/WFYG × Flat/Rough = 8 total.
 
-## 机器人形态
+## Robot Morphologies
 
-| 形态 | 末端 | 机械臂 | task id 前缀 |
+| Morphology | End-effector | Arms | Task ID Prefix |
 |---|---|---|---|
 | SF_TRON2A | sole foot (ankle pitch) | — | `Isaac-Limx-SF-TRON2A-...` |
 | WF_TRON2A | wheel | — | `Isaac-Limx-WF-TRON2A-...` |
-| SFYG_TRON2A | sole foot | 6-DoF arm + 2-finger prismatic gripper（锁死） | `Isaac-Limx-SFYG-TRON2A-...` |
-| WFYG_TRON2A | wheel | 同上 | `Isaac-Limx-WFYG-TRON2A-...` |
+| SFYG_TRON2A | sole foot | 6-DoF arm + 2-finger prismatic gripper (locked) | `Isaac-Limx-SFYG-TRON2A-...` |
+| WFYG_TRON2A | wheel | Same as above | `Isaac-Limx-WFYG-TRON2A-...` |
 
-### YG 变体设计
+### YG Variant Design
 
-机械臂全程锁死在固定姿态（arm1~6 = 0 rad，gripper1/2 = 0.05 m），由资产 cfg 中独立的 `arm_lock` `ImplicitActuator` 组（stiffness 800、damping 40）执行 PD 锁位。
+The arms remain locked in a fixed pose throughout (arm1~6 = 0 rad, gripper1/2 = 0.05 m), held by a dedicated `arm_lock` `ImplicitActuator` group (stiffness 800, damping 40) in the asset config performing PD lock.
 
-- 机械臂关节**不在** `joint_order_name` 中 → 不进入 RL action 空间，不进入 observation 维度
-- 域随机化 / reset / dof_limits reward 在 YG env cfg 中均显式排除机械臂，避免扰动锁位 PD 或注入伪 penalty
-- 训练 / 推理时机械臂作为「负载」存在，对策略不可见
+- Arm joints are **not** in `joint_order_name` → excluded from the RL action space and observation dimensions
+- Domain randomization / reset / dof_limits reward explicitly exclude arm joints in YG env cfg, preventing disturbance to the lock PD or spurious penalties
+- During training/inference, the arms serve as **payload only** and are invisible to the policy
 
-机械臂排除清单的具体覆盖见 [exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_solefoot_yg_tron2a_env_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_solefoot_yg_tron2a_env_cfg.py) 与 [limx_wheelfoot_yg_tron2a_env_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_wheelfoot_yg_tron2a_env_cfg.py)。
+For the full arm exclusion checklist, see [exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_solefoot_yg_tron2a_env_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_solefoot_yg_tron2a_env_cfg.py) and [limx_wheelfoot_yg_tron2a_env_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_wheelfoot_yg_tron2a_env_cfg.py).
 
-## 架构概览
+## Architecture Overview
 
-详见 [CLAUDE.md](CLAUDE.md)。三个顶层包：
+See [CLAUDE.md](CLAUDE.md) for details. Three top-level packages:
 
-1. **`exts/bipedal_locomotion/`** — Isaac Lab extension。env / asset / MDP / robot cfg 全部在这里
-2. **`rsl_rl/`** — vendored fork。`scripts/rsl_rl/train.py` 在 `sys.path` 最前面插入此路径，覆盖系统装的版本；import 是 `from rsl_rl.runner import OnPolicyRunner`（单数 `runner`，不是 upstream 的 `runners`）
-3. **`scripts/rsl_rl/`** — 入口脚本。**不是包**，靠 `sys.path` 操作工作，CLI 解析顺序固定：launcher args 必须在 `AppLauncher(args_cli)` 之前注册
+1. **`exts/bipedal_locomotion/`** — Isaac Lab extension. All env/asset/MDP/robot configs live here.
+2. **`rsl_rl/`** — Vendored fork. `scripts/rsl_rl/train.py` prepends this path to `sys.path`, overriding the system-installed version. Import uses `from rsl_rl.runner import OnPolicyRunner` (singular `runner`, not upstream's `runners`).
+3. **`scripts/rsl_rl/`** — Entry-point scripts. **Not a package**; operates via `sys.path` manipulation. CLI parsing order is fixed: launcher args must be registered before `AppLauncher(args_cli)`.
 
-### 任务 wiring
+### Task Wiring
 
-以 `Isaac-Limx-SF-TRON2A-Blind-Flat-v0` 为例：
+Using `Isaac-Limx-SF-TRON2A-Blind-Flat-v0` as an example:
 
-1. **`gym.register`**：`tasks/locomotion/robots/__init__.py` 把 (env_cfg, ppo_cfg) 注册到 task id
-2. **Env cfg**：`tasks/locomotion/robots/limx_solefoot_tron2a_env_cfg.py` 继承 `tasks/locomotion/cfg/SF_TRON2A/limx_base_env_cfg.py::SF_TRON2A_EnvCfg`，挂资产 + 改 MDP
-3. **MDP terms**：`tasks/locomotion/mdp/{rewards,events,observations,curriculums,commands}.py`
-4. **PPO cfg**：`tasks/locomotion/agents/limx_rsl_rl_ppo_cfg.py`，类型是项目封装的 `RslRlPpoAlgorithmMlpCfg`（不是 upstream 类）
-5. **资产 cfg**：`assets/config/<robot>_cfg.py`，spawn USD（来自 `robot_description/`）+ init joint pos + actuators
+1. **`gym.register`**: `tasks/locomotion/robots/__init__.py` binds (env_cfg, ppo_cfg) to the task ID
+2. **Env cfg**: `tasks/locomotion/robots/limx_solefoot_tron2a_env_cfg.py` inherits from `tasks/locomotion/cfg/SF_TRON2A/limx_base_env_cfg.py::SF_TRON2A_EnvCfg`, attaches assets + modifies MDP
+3. **MDP terms**: `tasks/locomotion/mdp/{rewards,events,observations,curriculums,commands}.py`
+4. **PPO cfg**: `tasks/locomotion/agents/limx_rsl_rl_ppo_cfg.py`, using the project's custom `RslRlPpoAlgorithmMlpCfg` type (not the upstream class)
+5. **Asset cfg**: `assets/config/<robot>_cfg.py`, spawns USD (from `robot_description/`) + init joint pos + actuators
 
-新增机器人变体：在以上 5 层各增量一份，不动现有 TRON2 训练栈。
+To add a new robot variant: increment one copy at each of the 5 layers above without modifying the existing TRON2 training stack.
 
-## 子模块：robot_description
+## Submodule: robot_description
 
-URL：[https://github.com/limx-tron2/robot-description](https://github.com/limx-tron2/robot-description)
+URL: [https://github.com/limx-tron2/robot-description](https://github.com/limx-tron2/robot-description)
 
-包含 6 种 TRON2 变体的 URDF / xacro / MuJoCo XML / mesh / USD：`SF_TRON2A` / `WF_TRON2A` / `SFYG_TRON2A` / `WFYG_TRON2A` / `DA_TRON2A` / `DACH_TRON2A`（后两种本仓库未使用）。
+Contains URDF / xacro / MuJoCo XML / mesh / USD assets for 6 TRON2 variants: `SF_TRON2A` / `WF_TRON2A` / `SFYG_TRON2A` / `WFYG_TRON2A` / `DA_TRON2A` / `DACH_TRON2A` (the last two are not used by this repository).
 
-更新到子模块最新 commit：
+Update to the latest submodule commit:
 
 ```bash
 cd robot_description && git pull origin main && cd ..
 git add robot_description && git commit -m "chore: bump robot_description submodule"
 ```
 
-## 测试 / Lint
+## Testing / Linting
 
-仓库未配置 test suite。`pyproject.toml` 含 `isort` + `pyright` 配置但没有 CI。
+No test suite is configured. `pyproject.toml` contains `isort` + `pyright` configuration but no CI.
 
 ## License
 
-[Apache 2.0](LICENCE)。
+[Apache 2.0](LICENCE).
