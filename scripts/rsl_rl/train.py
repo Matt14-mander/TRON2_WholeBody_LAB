@@ -3,10 +3,12 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
-import sys
 import os
+import sys
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../rsl_rl")))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+sys.path.insert(0, os.path.join(REPO_ROOT, "rsl_rl"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "exts", "bipedal_locomotion"))
 
 from isaaclab.app import AppLauncher
 

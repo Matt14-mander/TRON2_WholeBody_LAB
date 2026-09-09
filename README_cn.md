@@ -36,6 +36,7 @@ pip install -e rsl_rl
 ```
 
 `robot_description` 子模块下的 USD 在训练 / play 启动时被直接加载，必须存在；否则 spawn 失败。
+训练和 PLAY 入口也会把当前仓库的 extension 与 vendored `rsl_rl` 放到 `sys.path` 最前，避免旧的 site-packages 安装覆盖当前代码。
 
 ## WholeBody + OCS2 开发状态
 

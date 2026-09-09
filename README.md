@@ -36,6 +36,7 @@ pip install -e rsl_rl
 ```
 
 The USD assets under the `robot_description` submodule are loaded at training/play startup and must be present; otherwise spawn will fail.
+The entry scripts also prepend the repository's extension and vendored `rsl_rl` paths, preventing an older site-packages installation from shadowing the current checkout.
 
 ## WholeBody + OCS2 Development Status
 
