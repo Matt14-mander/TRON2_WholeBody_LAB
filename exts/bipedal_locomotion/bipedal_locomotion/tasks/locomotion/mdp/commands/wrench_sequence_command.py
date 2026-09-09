@@ -32,6 +32,7 @@ class WrenchSequenceCommand(CommandTerm):
                 f"Expected one body matching {cfg.body_name!r}, found {body_names}."
             )
         self._body_ids = body_ids
+        self._all_env_ids = torch.arange(self.num_envs, dtype=torch.long, device=self.device)
         self._prediction_times = torch.tensor(cfg.prediction_times, device=self.device)
         self._bounds = torch.tensor(
             [*cfg.force_ranges, *cfg.torque_ranges], device=self.device, dtype=torch.float
@@ -109,9 +110,9 @@ class WrenchSequenceCommand(CommandTerm):
             min=self._bounds[:, 0],
             max=self._bounds[:, 1],
         )
-        self._refresh_commands(slice(None))
+        self._refresh_commands(self._all_env_ids)
 
-    def _refresh_commands(self, env_ids: torch.Tensor | slice):
+    def _refresh_commands(self, env_ids: torch.Tensor):
         clean_sequence = self._evaluate_quadratic(self._points[env_ids], self._prediction_times)
         flattened = clean_sequence.flatten(start_dim=1)
         self._clean_command[env_ids] = flattened
