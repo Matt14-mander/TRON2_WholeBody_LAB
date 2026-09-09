@@ -56,12 +56,20 @@ class OnPolicyRunner:
         obs = obs_dict["policy"]
         self.num_obs = obs.shape[1]
         self.obs_history_len = self.alg_cfg.pop("obs_history_len")
+        assert "obsHistory" in obs_dict, "Observation history not found in observations"
+        obs_history = obs_dict["obsHistory"].flatten(start_dim=1)
+        self.num_obs_history = obs_history.shape[1]
         assert "commands" in obs_dict, f"Commands not found in observations"
         self.num_commands = obs_dict["commands"].shape[1]
         assert "critic" in obs_dict, f"Critic observations not found in observations"
         num_critic_obs = obs_dict["critic"].shape[1] + self.num_commands
         privileged_input_size = num_critic_obs
-        self.ecd_cfg["num_input_dim"] = self.obs_history_len * self.num_obs
+        # Observation groups need not have the same per-frame width. For
+        # example, WholeBody adds a future-wrench sequence to ``policy`` while
+        # deliberately keeping ``obsHistory`` proprioceptive-only. Derive the
+        # encoder input from the actual history tensor instead of assuming
+        # ``history_length * policy_width``.
+        self.ecd_cfg["num_input_dim"] = self.num_obs_history
 
         encoder = eval("MLP_Encoder")(
             **self.ecd_cfg,
@@ -95,7 +103,7 @@ class OnPolicyRunner:
             self.num_steps_per_env,
             [self.num_obs],
             [num_critic_obs],
-            [self.obs_history_len * self.num_obs],
+            [self.num_obs_history],
             [self.num_commands],
             [self.env.num_actions],
         )
