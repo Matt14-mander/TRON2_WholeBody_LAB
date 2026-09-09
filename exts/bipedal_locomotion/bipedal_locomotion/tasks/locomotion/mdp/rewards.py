@@ -64,7 +64,11 @@ def joint_powers_l1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEnt
 
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
-    return torch.sum(torch.abs(torch.mul(asset.data.applied_torque, asset.data.joint_vel)), dim=1)
+    joint_power = torch.mul(
+        asset.data.applied_torque[:, asset_cfg.joint_ids],
+        asset.data.joint_vel[:, asset_cfg.joint_ids],
+    )
+    return torch.sum(torch.abs(joint_power), dim=1)
 
 
 def joint_deviation_from_default_l2(

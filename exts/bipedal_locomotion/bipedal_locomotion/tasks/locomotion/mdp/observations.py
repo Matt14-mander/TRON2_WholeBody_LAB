@@ -166,6 +166,45 @@ def generated_commands(env: ManagerBasedRLEnv, command_name: str) -> torch.Tenso
     """The generated command from command term in the command manager with the given name."""
     return env.command_manager.get_command(command_name)
 
+
+def clean_wrench_prediction(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
+    """Return the uncorrupted predictable wrench sequence for the critic."""
+    return env.command_manager.get_term(command_name).clean_command
+
+
+def current_external_wrench(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
+    """Return the applied wrench, including acceleration-induced disturbance."""
+    return env.command_manager.get_term(command_name).applied_wrench
+
+
+def normalized_wrench_prediction(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    force_scale: float = 0.01,
+    torque_scale: float = 0.05,
+    clean: bool = False,
+) -> torch.Tensor:
+    """Return a force/torque-normalized wrench sequence."""
+    term = env.command_manager.get_term(command_name)
+    sequence = term.clean_command if clean else term.command
+    sequence = sequence.reshape(sequence.shape[0], -1, 6).clone()
+    sequence[..., :3] *= force_scale
+    sequence[..., 3:] *= torque_scale
+    return sequence.flatten(start_dim=1)
+
+
+def normalized_current_external_wrench(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    force_scale: float = 0.01,
+    torque_scale: float = 0.05,
+) -> torch.Tensor:
+    """Return the normalized current applied wrench."""
+    wrench = env.command_manager.get_term(command_name).applied_wrench.clone()
+    wrench[..., :3] *= force_scale
+    wrench[..., 3:] *= torque_scale
+    return wrench
+
 def joint_pos_rel_exclude_wheel(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
                                 wheel_joints_name: list[str] = ["wheel_[RL]_Joint"] 
                                 ) -> torch.Tensor:

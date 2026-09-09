@@ -2,7 +2,7 @@
 
 # TRON2_YG_LAB
 
-基于 [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) 的 LimX **TRON2A** 双足机器人强化学习训练栈，使用 PPO 训练 locomotion 策略。支持 SF / WF 两种基础形态（sole-foot / wheel-foot），以及带 6-DoF 机械臂 + 双指 gripper 的 SFYG / WFYG 形态（机械臂运行时锁死、不参与 RL）。
+基于 [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) 的 LimX **TRON2A** 双足机器人强化学习训练栈，使用 PPO 训练 locomotion 策略。支持 SF / WF 两种基础形态（sole-foot / wheel-foot）、锁臂 SFYG / WFYG 兼容任务，以及正在开发的 **WFYG WholeBody（OCS2 机械臂 MPC + 底盘 RL）**任务。
 
 ## 仓库结构
 
@@ -12,7 +12,7 @@
 ├── rsl_rl/                    # 项目内 vendored 的 rsl_rl fork（PPO + on-policy runner）
 ├── scripts/rsl_rl/            # 训练 / play 入口（train.py / play.py / cli_args.py）
 ├── robot_description/         # git submodule — URDF/USD/STL 等机器人描述
-└── docs/superpowers/          # 设计文档 + 实施计划
+└── docs/whole_body_ocs2.md    # WholeBody + OCS2 接口与开发阶段
 ```
 
 ## 环境要求
@@ -37,6 +37,18 @@ pip install -e rsl_rl
 
 `robot_description` 子模块下的 USD 在训练 / play 启动时被直接加载，必须存在；否则 spawn 失败。
 
+## WholeBody + OCS2 开发状态
+
+当前已完成阶段一的训练接口：
+
+- 新增独立 WFYG WholeBody 资产，机械臂和夹爪不再共用 `arm_lock`；
+- 底盘 PPO 动作保持 10 维，机械臂预留给 OCS2 独立控制；
+- actor 新增 `[w(0.0), w(0.2), ..., w(0.8)]` 共 30 维的基座 wrench 预测；
+- 训练时使用平滑二次曲线生成器和基座加速度相关的未观测扰动，不在 4096 个环境里运行 OCS2；
+- WholeBody PLAY 保持相同观测维度，但在 OCS2 bridge 接入前输出零 wrench。
+
+下一阶段是 OCS2 ROS 2 C++ 节点、Pinocchio RNEA wrench 推算和 Isaac Lab PLAY bridge。完整接口、阶段划分和安全约束见 [docs/whole_body_ocs2.md](docs/whole_body_ocs2.md)。
+
 ## 训练
 
 任务 ID 均在 [exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/__init__.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/__init__.py) 中注册。
@@ -55,6 +67,10 @@ python scripts/rsl_rl/train.py --task Isaac-Limx-SF-TRON2A-Blind-Rough-v0   --nu
 python scripts/rsl_rl/train.py --task Isaac-Limx-WF-TRON2A-Blind-Rough-v0   --num_envs 4096 --headless
 python scripts/rsl_rl/train.py --task Isaac-Limx-SFYG-TRON2A-Blind-Rough-v0 --num_envs 4096 --headless
 python scripts/rsl_rl/train.py --task Isaac-Limx-WFYG-TRON2A-Blind-Rough-v0 --num_envs 4096 --headless
+
+# === WholeBody：论文式 wrench prediction 训练 ===
+python scripts/rsl_rl/train.py --task Isaac-Limx-WFYG-TRON2A-WholeBody-Flat-v0  --num_envs 4096 --headless
+python scripts/rsl_rl/train.py --task Isaac-Limx-WFYG-TRON2A-WholeBody-Rough-v0 --num_envs 4096 --headless
 ```
 
 Rough 地形定义见 [cfg/SF_TRON2A/terrains_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/cfg/SF_TRON2A/terrains_cfg.py) / [cfg/WF_TRON2A/terrains_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/cfg/WF_TRON2A/terrains_cfg.py) 中的 `BLIND_ROUGH_TERRAINS_CFG`（10×16 网格、curriculum on、难度 0~1）。YG 变体复用 SF / WF 的 rough 地形，但仍按 [YG 变体设计](#yg-变体设计) 屏蔽 arm/gripper 的随机化与限位惩罚。
@@ -118,7 +134,7 @@ python scripts/rsl_rl/play.py \
     --checkpoint_path logs/rsl_rl/sf_tron_2a_flat/<run>/model_<iter>.pt
 ```
 
-每个训练 task 都有同名的 `-Play-v0` 变体，SF/WF/SFYG/WFYG × Flat/Rough 共 8 个。
+每个训练 task 都有同名的 `-Play-v0` 变体；此外新增 WFYG WholeBody Flat/Rough 共 4 个训练/PLAY task。
 
 ## 机器人形态
 
@@ -128,16 +144,19 @@ python scripts/rsl_rl/play.py \
 | WF_TRON2A | wheel | — | `Isaac-Limx-WF-TRON2A-...` |
 | SFYG_TRON2A | sole foot | 6-DoF arm + 2-finger prismatic gripper（锁死） | `Isaac-Limx-SFYG-TRON2A-...` |
 | WFYG_TRON2A | wheel | 同上 | `Isaac-Limx-WFYG-TRON2A-...` |
+| WFYG WholeBody | wheel | 6-DoF arm 预留给 OCS2，底盘策略观察未来 wrench | `Isaac-Limx-WFYG-TRON2A-WholeBody-...` |
 
 ### YG 变体设计
 
-机械臂全程锁死在固定姿态（arm1~6 = 0 rad，gripper1/2 = 0.05 m），由资产 cfg 中独立的 `arm_lock` `ImplicitActuator` 组（stiffness 800、damping 40）执行 PD 锁位。
+机械臂全程锁死在固定姿态（arm1~6 = 0 rad，gripper1/2 = 0.05/-0.05 m），由资产 cfg 中独立的 `arm_lock` `ImplicitActuator` 组（stiffness 800、damping 40）执行 PD 锁位。
 
 - 机械臂关节**不在** `joint_order_name` 中 → 不进入 RL action 空间，不进入 observation 维度
 - 域随机化 / reset / dof_limits reward 在 YG env cfg 中均显式排除机械臂，避免扰动锁位 PD 或注入伪 penalty
 - 训练 / 推理时机械臂作为「负载」存在，对策略不可见
 
 机械臂排除清单的具体覆盖见 [exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_solefoot_yg_tron2a_env_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_solefoot_yg_tron2a_env_cfg.py) 与 [limx_wheelfoot_yg_tron2a_env_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_wheelfoot_yg_tron2a_env_cfg.py)。
+
+WholeBody 是独立增量任务，不改变上述兼容行为。它使用 `arm_mpc` 和 `gripper` actuator 组，并由 wrench sequence generator 模拟部署阶段 OCS2/Pinocchio 给出的机械臂反作用预测。机械臂关节不加入 PPO action。
 
 ## 架构概览
 

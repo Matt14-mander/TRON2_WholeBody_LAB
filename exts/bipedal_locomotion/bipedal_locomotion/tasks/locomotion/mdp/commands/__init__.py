@@ -1,2 +1,3 @@
-from .commands_cfg import UniformGaitCommandCfg
+from .commands_cfg import UniformGaitCommandCfg, WrenchSequenceCommandCfg
 from .gait_command import GaitCommand
+from .wrench_sequence_command import WrenchSequenceCommand

@@ -2,7 +2,7 @@
 
 # TRON2_YG_LAB
 
-Reinforcement learning training stack for the LimX **TRON2A** bipedal robot, built on [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) and using PPO to train locomotion policies. Supports two base morphologies: **SF** (sole-foot) and **WF** (wheel-foot), as well as the SFYG and WFYG variants with 6-DoF arms + two-finger grippers (arms are locked during runtime and do not participate in RL).
+Reinforcement learning training stack for the LimX **TRON2A** bipedal robot, built on [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) and using PPO to train locomotion policies. It supports SF/WF bases, legacy locked-arm SFYG/WFYG tasks, and the in-development **WFYG WholeBody architecture (OCS2 arm MPC + base RL)**.
 
 ## Repository Structure
 
@@ -12,7 +12,7 @@ Reinforcement learning training stack for the LimX **TRON2A** bipedal robot, bui
 ├── rsl_rl/                    # Vendored rsl_rl fork (PPO + on-policy runner)
 ├── scripts/rsl_rl/            # Training/play entry points (train.py / play.py / cli_args.py)
 ├── robot_description/         # Git submodule — URDF/USD/STL robot description assets
-└── docs/superpowers/          # Design documents + implementation plans
+└── docs/whole_body_ocs2.md    # WholeBody + OCS2 interface and development stages
 ```
 
 ## Requirements
@@ -37,6 +37,12 @@ pip install -e rsl_rl
 
 The USD assets under the `robot_description` submodule are loaded at training/play startup and must be present; otherwise spawn will fail.
 
+## WholeBody + OCS2 Development Status
+
+Stage 1 is implemented: an independently actuated WFYG arm/gripper asset, a smooth 30-D future-wrench observation, acceleration-dependent unobserved disturbances, and dedicated WholeBody Flat/Rough tasks. The base policy retains its original ten leg/wheel actions; OCS2 owns the arm.
+
+Training uses the lightweight wrench generator instead of running OCS2 in every parallel environment. WholeBody PLAY preserves the observation layout but supplies zero wrench until the OCS2 bridge is connected. See [docs/whole_body_ocs2.md](docs/whole_body_ocs2.md) for the interface contract, safety invariants, and remaining stages.
+
 ## Training
 
 Task IDs are registered in [exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/__init__.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/__init__.py).
@@ -55,6 +61,10 @@ python scripts/rsl_rl/train.py --task Isaac-Limx-SF-TRON2A-Blind-Rough-v0   --nu
 python scripts/rsl_rl/train.py --task Isaac-Limx-WF-TRON2A-Blind-Rough-v0   --num_envs 4096 --headless
 python scripts/rsl_rl/train.py --task Isaac-Limx-SFYG-TRON2A-Blind-Rough-v0 --num_envs 4096 --headless
 python scripts/rsl_rl/train.py --task Isaac-Limx-WFYG-TRON2A-Blind-Rough-v0 --num_envs 4096 --headless
+
+# === WholeBody: paper-aligned wrench-prediction training ===
+python scripts/rsl_rl/train.py --task Isaac-Limx-WFYG-TRON2A-WholeBody-Flat-v0  --num_envs 4096 --headless
+python scripts/rsl_rl/train.py --task Isaac-Limx-WFYG-TRON2A-WholeBody-Rough-v0 --num_envs 4096 --headless
 ```
 
 Rough terrain configuration is defined in `BLIND_ROUGH_TERRAINS_CFG` in [cfg/SF_TRON2A/terrains_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/cfg/SF_TRON2A/terrains_cfg.py) and [cfg/WF_TRON2A/terrains_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/cfg/WF_TRON2A/terrains_cfg.py) (10×16 grid, curriculum on, difficulty 0~1). YG variants reuse the SF/WF rough terrain but exclude arm/gripper randomization and limit penalties as described in [YG Variant Design](#yg-variant-design).
@@ -118,7 +128,7 @@ python scripts/rsl_rl/play.py \
     --checkpoint_path logs/rsl_rl/sf_tron_2a_flat/<run>/model_<iter>.pt
 ```
 
-Every training task has a corresponding `-Play-v0` variant: SF/WF/SFYG/WFYG × Flat/Rough = 8 total.
+Every training task has a corresponding `-Play-v0` variant. Four additional WFYG WholeBody Flat/Rough training/PLAY tasks are registered.
 
 ## Robot Morphologies
 
@@ -128,16 +138,19 @@ Every training task has a corresponding `-Play-v0` variant: SF/WF/SFYG/WFYG × F
 | WF_TRON2A | wheel | — | `Isaac-Limx-WF-TRON2A-...` |
 | SFYG_TRON2A | sole foot | 6-DoF arm + 2-finger prismatic gripper (locked) | `Isaac-Limx-SFYG-TRON2A-...` |
 | WFYG_TRON2A | wheel | Same as above | `Isaac-Limx-WFYG-TRON2A-...` |
+| WFYG WholeBody | wheel | 6-DoF arm reserved for OCS2; base observes future wrench | `Isaac-Limx-WFYG-TRON2A-WholeBody-...` |
 
 ### YG Variant Design
 
-The arms remain locked in a fixed pose throughout (arm1~6 = 0 rad, gripper1/2 = 0.05 m), held by a dedicated `arm_lock` `ImplicitActuator` group (stiffness 800, damping 40) in the asset config performing PD lock.
+The arms remain locked in a fixed pose throughout (arm1~6 = 0 rad, gripper1/2 = 0.05/-0.05 m), held by a dedicated `arm_lock` `ImplicitActuator` group (stiffness 800, damping 40) in the asset config performing PD lock.
 
 - Arm joints are **not** in `joint_order_name` → excluded from the RL action space and observation dimensions
 - Domain randomization / reset / dof_limits reward explicitly exclude arm joints in YG env cfg, preventing disturbance to the lock PD or spurious penalties
 - During training/inference, the arms serve as **payload only** and are invisible to the policy
 
 For the full arm exclusion checklist, see [exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_solefoot_yg_tron2a_env_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_solefoot_yg_tron2a_env_cfg.py) and [limx_wheelfoot_yg_tron2a_env_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_wheelfoot_yg_tron2a_env_cfg.py).
+
+WholeBody is an additive task and does not alter this legacy behavior. It uses separate `arm_mpc` and `gripper` actuator groups and trains the base policy with the wrench sequence expected from OCS2/Pinocchio at deployment. Arm joints are not added to the PPO action.
 
 ## Architecture Overview
 
