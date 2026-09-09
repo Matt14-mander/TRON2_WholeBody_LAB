@@ -2,9 +2,9 @@
 
 ## Control boundary
 
-The base RL policy retains its 10 outputs (eight leg positions and two wheel
-velocities). OCS2 owns the six arm joints. The gripper remains an independent
-position-controlled subsystem.
+The sole-foot base RL policy retains its 10 leg-joint position outputs. OCS2
+owns the six arm joints. The gripper remains an independent position-controlled
+subsystem. Wheel-foot WholeBody control is outside the current development stage.
 
 At deployment, OCS2 receives base state, arm state, and the desired end-effector
 pose. It returns:
@@ -21,7 +21,7 @@ The numerical interface is defined in
 
 ### Stage 1 - training interface (implemented)
 
-- Separate whole-body WFYG asset with independently actuated arm and gripper.
+- Separate whole-body SFYG asset with independently actuated arm and gripper.
 - Smooth quadratic wrench-sequence generator at the existing 50 Hz policy rate.
 - Noisy 30-D actor observation and clean privileged critic observations.
 - Acceleration-dependent unobserved wrench disturbance.
@@ -59,7 +59,7 @@ The numerical interface is defined in
 ## Model validation record
 
 The `robot_description` submodule was initialized at commit
-`8a11c12c7851a104dc4cafff1780276f624d2bc6`. The supplied WFYG model confirms
+`8a11c12c7851a104dc4cafff1780276f624d2bc6`. The supplied SFYG model confirms
 the expected `base_Link`, six `arm*_Joint` names, and two `gripper*_Joint`
 names. Its URDF limits the arm joints to 100 Nm and 5 rad/s, and the gripper
 joints to 10 N and 3 m/s. The WholeBody asset uses these limits. Its initial

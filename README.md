@@ -2,7 +2,7 @@
 
 # TRON2_YG_LAB
 
-Reinforcement learning training stack for the LimX **TRON2A** bipedal robot, built on [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) and using PPO to train locomotion policies. It supports SF/WF bases, legacy locked-arm SFYG/WFYG tasks, and the in-development **WFYG WholeBody architecture (OCS2 arm MPC + base RL)**.
+Reinforcement learning training stack for the LimX **TRON2A** bipedal robot, built on [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) and using PPO to train locomotion policies. It supports SF/WF bases, legacy locked-arm SFYG/WFYG tasks, and the in-development **SFYG WholeBody architecture (OCS2 arm MPC + sole-foot base RL)**.
 
 ## Repository Structure
 
@@ -40,7 +40,7 @@ The entry scripts also prepend the repository's extension and vendored `rsl_rl` 
 
 ## WholeBody + OCS2 Development Status
 
-Stage 1 is implemented: an independently actuated WFYG arm/gripper asset, a smooth 30-D future-wrench observation, acceleration-dependent unobserved disturbances, and dedicated WholeBody Flat/Rough tasks. The base policy retains its original ten leg/wheel actions; OCS2 owns the arm.
+Stage 1 is implemented for the sole-foot SFYG morphology: an independently actuated arm/gripper asset, a smooth 30-D future-wrench observation, acceleration-dependent unobserved disturbances, and dedicated WholeBody Flat/Rough tasks. The base policy retains its original ten leg-joint position actions; OCS2 owns the arm. Wheel-foot WholeBody training is intentionally out of scope for this stage.
 
 Training uses the lightweight wrench generator instead of running OCS2 in every parallel environment. WholeBody PLAY preserves the observation layout but supplies zero wrench until the OCS2 bridge is connected. See [docs/whole_body_ocs2.md](docs/whole_body_ocs2.md) for the interface contract, safety invariants, and remaining stages.
 
@@ -64,8 +64,8 @@ python scripts/rsl_rl/train.py --task Isaac-Limx-SFYG-TRON2A-Blind-Rough-v0 --nu
 python scripts/rsl_rl/train.py --task Isaac-Limx-WFYG-TRON2A-Blind-Rough-v0 --num_envs 4096 --headless
 
 # === WholeBody: paper-aligned wrench-prediction training ===
-python scripts/rsl_rl/train.py --task Isaac-Limx-WFYG-TRON2A-WholeBody-Flat-v0  --num_envs 4096 --headless
-python scripts/rsl_rl/train.py --task Isaac-Limx-WFYG-TRON2A-WholeBody-Rough-v0 --num_envs 4096 --headless
+python scripts/rsl_rl/train.py --task Isaac-Limx-SFYG-TRON2A-WholeBody-Flat-v0  --num_envs 4096 --headless
+python scripts/rsl_rl/train.py --task Isaac-Limx-SFYG-TRON2A-WholeBody-Rough-v0 --num_envs 4096 --headless
 ```
 
 Rough terrain configuration is defined in `BLIND_ROUGH_TERRAINS_CFG` in [cfg/SF_TRON2A/terrains_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/cfg/SF_TRON2A/terrains_cfg.py) and [cfg/WF_TRON2A/terrains_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/cfg/WF_TRON2A/terrains_cfg.py) (10×16 grid, curriculum on, difficulty 0~1). YG variants reuse the SF/WF rough terrain but exclude arm/gripper randomization and limit penalties as described in [YG Variant Design](#yg-variant-design).
@@ -129,7 +129,7 @@ python scripts/rsl_rl/play.py \
     --checkpoint_path logs/rsl_rl/sf_tron_2a_flat/<run>/model_<iter>.pt
 ```
 
-Every training task has a corresponding `-Play-v0` variant. Four additional WFYG WholeBody Flat/Rough training/PLAY tasks are registered.
+Every training task has a corresponding `-Play-v0` variant. Four additional SFYG WholeBody Flat/Rough training/PLAY tasks are registered.
 
 ## Robot Morphologies
 
@@ -139,7 +139,7 @@ Every training task has a corresponding `-Play-v0` variant. Four additional WFYG
 | WF_TRON2A | wheel | — | `Isaac-Limx-WF-TRON2A-...` |
 | SFYG_TRON2A | sole foot | 6-DoF arm + 2-finger prismatic gripper (locked) | `Isaac-Limx-SFYG-TRON2A-...` |
 | WFYG_TRON2A | wheel | Same as above | `Isaac-Limx-WFYG-TRON2A-...` |
-| WFYG WholeBody | wheel | 6-DoF arm reserved for OCS2; base observes future wrench | `Isaac-Limx-WFYG-TRON2A-WholeBody-...` |
+| SFYG WholeBody | sole foot | 6-DoF arm reserved for OCS2; base observes future wrench | `Isaac-Limx-SFYG-TRON2A-WholeBody-...` |
 
 ### YG Variant Design
 

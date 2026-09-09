@@ -1,31 +1,30 @@
-"""Paper-aligned WFYG whole-body locomotion environments.
+"""Paper-aligned SFYG whole-body locomotion environments.
 
-The locomotion policy controls the original ten leg/wheel actions. The arm is
-an independently actuated subsystem reserved for OCS2, while training uses a
-smooth external-wrench sequence generator in place of running MPC per env.
+The locomotion policy controls the original ten leg position actions. The arm
+is an independently actuated subsystem reserved for OCS2, while training uses
+a smooth external-wrench sequence generator in place of running MPC per env.
 """
 
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
-from bipedal_locomotion.assets.config.wheelfoot_yg_tron2a_wholebody_cfg import (
-    WHEELFOOT_YG_TRON2A_WHOLEBODY_CFG,
+from bipedal_locomotion.assets.config.solefoot_yg_tron2a_wholebody_cfg import (
+    SOLEFOOT_YG_TRON2A_WHOLEBODY_CFG,
 )
 from bipedal_locomotion.tasks.locomotion import mdp
-from bipedal_locomotion.tasks.locomotion.cfg.WF_TRON2A.limx_base_env_cfg import (
+from bipedal_locomotion.tasks.locomotion.cfg.SF_TRON2A.limx_base_env_cfg import (
     CommandsCfg,
     ObservarionsCfg,
     RewardsCfg,
 )
-from bipedal_locomotion.tasks.locomotion.robots.limx_wheelfoot_yg_tron2a_env_cfg import (
-    WFYG_LEG_JOINTS,
-    WFYG_TRON2A_BlindFlatEnvCfg,
-    WFYG_TRON2A_BlindFlatEnvCfg_PLAY,
-    WFYG_TRON2A_BlindRoughEnvCfg,
-    WFYG_TRON2A_BlindRoughEnvCfg_PLAY,
+from bipedal_locomotion.tasks.locomotion.robots.limx_solefoot_yg_tron2a_env_cfg import (
+    SFYG_LEG_JOINTS,
+    SFYG_TRON2A_BlindFlatEnvCfg,
+    SFYG_TRON2A_BlindFlatEnvCfg_PLAY,
+    SFYG_TRON2A_BlindRoughEnvCfg,
+    SFYG_TRON2A_BlindRoughEnvCfg_PLAY,
 )
 
 
@@ -79,32 +78,49 @@ class WholeBodyObservationsCfg(ObservarionsCfg):
 
 @configclass
 class WholeBodyRewardsCfg(RewardsCfg):
-    # Separate base and arm regularization so unlocking the arm does not change
-    # the scale of legacy locomotion rewards implicitly.
-    joint_torque_l2 = RewTerm(
+    # Restrict inherited joint-wide penalties to the ten SFYG leg joints.
+    # Arm penalties are separate so unlocking the arm cannot silently rescale
+    # the legacy locomotion objective.
+    dof_torques_l2 = RewTerm(
         func=mdp.joint_torques_l2,
         weight=-4e-7,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=WFYG_LEG_JOINTS)},
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=SFYG_LEG_JOINTS)},
     )
-    joint_acc_l2 = RewTerm(
-        func=mdp.joint_acc_l2,
-        weight=-1.5e-7,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=WFYG_LEG_JOINTS)},
-    )
-    joint_power_l1 = RewTerm(
-        func=mdp.joint_powers_l1,
-        weight=-1e-5,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=WFYG_LEG_JOINTS)},
-    )
-    vel_non_wheel_l2 = RewTerm(
+    dof_vel_l2 = RewTerm(
         func=mdp.joint_vel_l2,
-        weight=-0.004,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=WFYG_LEG_JOINTS)},
+        weight=-5e-5,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=SFYG_LEG_JOINTS)},
+    )
+    dof_acc_l2 = RewTerm(
+        func=mdp.joint_acc_l2,
+        weight=-5e-7,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=SFYG_LEG_JOINTS)},
+    )
+    dof_pos_limits = RewTerm(
+        func=mdp.joint_pos_limits,
+        weight=-0.2,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=SFYG_LEG_JOINTS)},
+    )
+    dof_vel_limits = RewTerm(
+        func=mdp.joint_vel_limits,
+        weight=-0.025,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=SFYG_LEG_JOINTS),
+            "soft_ratio": 0.92,
+        },
     )
     arm_pos_limits = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-2.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINTS)},
+    )
+    arm_vel_limits = RewTerm(
+        func=mdp.joint_vel_limits,
+        weight=-0.025,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINTS),
+            "soft_ratio": 0.92,
+        },
     )
     arm_joint_vel_l2 = RewTerm(
         func=mdp.joint_vel_l2,
@@ -120,7 +136,7 @@ class WholeBodyRewardsCfg(RewardsCfg):
 
 class _WholeBodyMixin:
     def _configure_whole_body(self):
-        self.scene.robot = WHEELFOOT_YG_TRON2A_WHOLEBODY_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.scene.robot = SOLEFOOT_YG_TRON2A_WHOLEBODY_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
     def _disable_training_wrench_for_play(self):
         zero_ranges = ((0.0, 0.0), (0.0, 0.0), (0.0, 0.0))
@@ -135,7 +151,7 @@ class _WholeBodyMixin:
 
 
 @configclass
-class WFYG_TRON2A_WholeBodyFlatEnvCfg(_WholeBodyMixin, WFYG_TRON2A_BlindFlatEnvCfg):
+class SFYG_TRON2A_WholeBodyFlatEnvCfg(_WholeBodyMixin, SFYG_TRON2A_BlindFlatEnvCfg):
     commands: WholeBodyCommandsCfg = WholeBodyCommandsCfg()
     observations: WholeBodyObservationsCfg = WholeBodyObservationsCfg()
     rewards: WholeBodyRewardsCfg = WholeBodyRewardsCfg()
@@ -146,7 +162,7 @@ class WFYG_TRON2A_WholeBodyFlatEnvCfg(_WholeBodyMixin, WFYG_TRON2A_BlindFlatEnvC
 
 
 @configclass
-class WFYG_TRON2A_WholeBodyFlatEnvCfg_PLAY(_WholeBodyMixin, WFYG_TRON2A_BlindFlatEnvCfg_PLAY):
+class SFYG_TRON2A_WholeBodyFlatEnvCfg_PLAY(_WholeBodyMixin, SFYG_TRON2A_BlindFlatEnvCfg_PLAY):
     commands: WholeBodyCommandsCfg = WholeBodyCommandsCfg()
     observations: WholeBodyObservationsCfg = WholeBodyObservationsCfg()
     rewards: WholeBodyRewardsCfg = WholeBodyRewardsCfg()
@@ -158,7 +174,7 @@ class WFYG_TRON2A_WholeBodyFlatEnvCfg_PLAY(_WholeBodyMixin, WFYG_TRON2A_BlindFla
 
 
 @configclass
-class WFYG_TRON2A_WholeBodyRoughEnvCfg(_WholeBodyMixin, WFYG_TRON2A_BlindRoughEnvCfg):
+class SFYG_TRON2A_WholeBodyRoughEnvCfg(_WholeBodyMixin, SFYG_TRON2A_BlindRoughEnvCfg):
     commands: WholeBodyCommandsCfg = WholeBodyCommandsCfg()
     observations: WholeBodyObservationsCfg = WholeBodyObservationsCfg()
     rewards: WholeBodyRewardsCfg = WholeBodyRewardsCfg()
@@ -169,7 +185,7 @@ class WFYG_TRON2A_WholeBodyRoughEnvCfg(_WholeBodyMixin, WFYG_TRON2A_BlindRoughEn
 
 
 @configclass
-class WFYG_TRON2A_WholeBodyRoughEnvCfg_PLAY(_WholeBodyMixin, WFYG_TRON2A_BlindRoughEnvCfg_PLAY):
+class SFYG_TRON2A_WholeBodyRoughEnvCfg_PLAY(_WholeBodyMixin, SFYG_TRON2A_BlindRoughEnvCfg_PLAY):
     commands: WholeBodyCommandsCfg = WholeBodyCommandsCfg()
     observations: WholeBodyObservationsCfg = WholeBodyObservationsCfg()
     rewards: WholeBodyRewardsCfg = WholeBodyRewardsCfg()

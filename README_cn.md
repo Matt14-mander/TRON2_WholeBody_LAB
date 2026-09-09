@@ -2,7 +2,7 @@
 
 # TRON2_YG_LAB
 
-基于 [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) 的 LimX **TRON2A** 双足机器人强化学习训练栈，使用 PPO 训练 locomotion 策略。支持 SF / WF 两种基础形态（sole-foot / wheel-foot）、锁臂 SFYG / WFYG 兼容任务，以及正在开发的 **WFYG WholeBody（OCS2 机械臂 MPC + 底盘 RL）**任务。
+基于 [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) 的 LimX **TRON2A** 双足机器人强化学习训练栈，使用 PPO 训练 locomotion 策略。支持 SF / WF 两种基础形态（sole-foot / wheel-foot）、锁臂 SFYG / WFYG 兼容任务，以及正在开发的 **SFYG WholeBody（OCS2 机械臂 MPC + 纯足式底盘 RL）**任务。
 
 ## 仓库结构
 
@@ -42,11 +42,11 @@ pip install -e rsl_rl
 
 当前已完成阶段一的训练接口：
 
-- 新增独立 WFYG WholeBody 资产，机械臂和夹爪不再共用 `arm_lock`；
-- 底盘 PPO 动作保持 10 维，机械臂预留给 OCS2 独立控制；
+- 新增独立 SFYG WholeBody 资产，机械臂和夹爪不再共用 `arm_lock`；
+- 底盘 PPO 动作保持 10 维足式关节位置控制，机械臂预留给 OCS2 独立控制；
 - actor 新增 `[w(0.0), w(0.2), ..., w(0.8)]` 共 30 维的基座 wrench 预测；
 - 训练时使用平滑二次曲线生成器和基座加速度相关的未观测扰动，不在 4096 个环境里运行 OCS2；
-- WholeBody PLAY 保持相同观测维度，但在 OCS2 bridge 接入前输出零 wrench。
+- WholeBody PLAY 保持相同观测维度，但在 OCS2 bridge 接入前输出零 wrench；当前阶段明确不开发轮足 WholeBody。
 
 下一阶段是 OCS2 ROS 2 C++ 节点、Pinocchio RNEA wrench 推算和 Isaac Lab PLAY bridge。完整接口、阶段划分和安全约束见 [docs/whole_body_ocs2.md](docs/whole_body_ocs2.md)。
 
@@ -70,8 +70,8 @@ python scripts/rsl_rl/train.py --task Isaac-Limx-SFYG-TRON2A-Blind-Rough-v0 --nu
 python scripts/rsl_rl/train.py --task Isaac-Limx-WFYG-TRON2A-Blind-Rough-v0 --num_envs 4096 --headless
 
 # === WholeBody：论文式 wrench prediction 训练 ===
-python scripts/rsl_rl/train.py --task Isaac-Limx-WFYG-TRON2A-WholeBody-Flat-v0  --num_envs 4096 --headless
-python scripts/rsl_rl/train.py --task Isaac-Limx-WFYG-TRON2A-WholeBody-Rough-v0 --num_envs 4096 --headless
+python scripts/rsl_rl/train.py --task Isaac-Limx-SFYG-TRON2A-WholeBody-Flat-v0  --num_envs 4096 --headless
+python scripts/rsl_rl/train.py --task Isaac-Limx-SFYG-TRON2A-WholeBody-Rough-v0 --num_envs 4096 --headless
 ```
 
 Rough 地形定义见 [cfg/SF_TRON2A/terrains_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/cfg/SF_TRON2A/terrains_cfg.py) / [cfg/WF_TRON2A/terrains_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/cfg/WF_TRON2A/terrains_cfg.py) 中的 `BLIND_ROUGH_TERRAINS_CFG`（10×16 网格、curriculum on、难度 0~1）。YG 变体复用 SF / WF 的 rough 地形，但仍按 [YG 变体设计](#yg-变体设计) 屏蔽 arm/gripper 的随机化与限位惩罚。
@@ -135,7 +135,7 @@ python scripts/rsl_rl/play.py \
     --checkpoint_path logs/rsl_rl/sf_tron_2a_flat/<run>/model_<iter>.pt
 ```
 
-每个训练 task 都有同名的 `-Play-v0` 变体；此外新增 WFYG WholeBody Flat/Rough 共 4 个训练/PLAY task。
+每个训练 task 都有同名的 `-Play-v0` 变体；此外新增 SFYG WholeBody Flat/Rough 共 4 个训练/PLAY task。
 
 ## 机器人形态
 
@@ -145,7 +145,7 @@ python scripts/rsl_rl/play.py \
 | WF_TRON2A | wheel | — | `Isaac-Limx-WF-TRON2A-...` |
 | SFYG_TRON2A | sole foot | 6-DoF arm + 2-finger prismatic gripper（锁死） | `Isaac-Limx-SFYG-TRON2A-...` |
 | WFYG_TRON2A | wheel | 同上 | `Isaac-Limx-WFYG-TRON2A-...` |
-| WFYG WholeBody | wheel | 6-DoF arm 预留给 OCS2，底盘策略观察未来 wrench | `Isaac-Limx-WFYG-TRON2A-WholeBody-...` |
+| SFYG WholeBody | sole foot | 6-DoF arm 预留给 OCS2，底盘策略观察未来 wrench | `Isaac-Limx-SFYG-TRON2A-WholeBody-...` |
 
 ### YG 变体设计
 

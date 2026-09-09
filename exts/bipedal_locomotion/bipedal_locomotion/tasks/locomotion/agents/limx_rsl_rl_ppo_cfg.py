@@ -119,13 +119,13 @@ class WFYG_TRON2ARoughPPORunnerCfg(WF_TRON2AFlatPPORunnerCfg):
 
 
 #-----------------------------------------------------------------
-# Paper-aligned whole-body tasks. The policy still controls only the ten
-# leg/wheel actions, but receives a 30-D predicted base-wrench sequence.
+# Paper-aligned sole-foot whole-body tasks. The policy still controls only the
+# ten leg position actions, but receives a 30-D predicted base-wrench sequence.
 #-----------------------------------------------------------------
 @configclass
-class WFYG_TRON2AWholeBodyFlatPPORunnerCfg(WF_TRON2AFlatPPORunnerCfg):
+class SFYG_TRON2AWholeBodyFlatPPORunnerCfg(SF_TRON2AFlatPPORunnerCfg):
     max_iterations = 15000
-    experiment_name = "wfyg_tron_2a_wholebody_flat"
+    experiment_name = "sfyg_tron_2a_wholebody_flat"
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_hidden_dims=[512, 512, 256, 128],
@@ -135,5 +135,5 @@ class WFYG_TRON2AWholeBodyFlatPPORunnerCfg(WF_TRON2AFlatPPORunnerCfg):
 
 
 @configclass
-class WFYG_TRON2AWholeBodyRoughPPORunnerCfg(WFYG_TRON2AWholeBodyFlatPPORunnerCfg):
-    experiment_name = "wfyg_tron_2a_wholebody_rough"
+class SFYG_TRON2AWholeBodyRoughPPORunnerCfg(SFYG_TRON2AWholeBodyFlatPPORunnerCfg):
+    experiment_name = "sfyg_tron_2a_wholebody_rough"
