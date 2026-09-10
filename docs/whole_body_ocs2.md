@@ -29,17 +29,27 @@ The numerical interface is defined in
 - PLAY tasks preserve observation dimensions but disable synthetic wrench; they
   produce zero wrench until the OCS2 bridge is connected.
 
-### Stage 2 - OCS2 runtime (next)
+### Stage 2A - OCS2 solver core (implemented)
 
 - Populate and validate the `robot_description` submodule.
-- Create a ROS 2 OCS2 package using the `ros2` branch of OCS2.
-- Implement the simplified floating-base arm model from the paper.
+- Create the ROS 2 `tron2_ocs2` package against the `ros2` branch of OCS2.
+- Implement the paper-style 18-state/9-input floating-base arm model.
 - Add end-effector tracking, nominal-arm, joint-limit, input, and self-collision
   costs/constraints.
-- Use Pinocchio RNEA over the optimized trajectory to produce the base-wrench
-  sequence.
+- Use Pinocchio RNEA arm-subtree forces to produce the base-frame wrench
+  sequence without including the legs or trunk wrench.
+- Add a full solver/RNEA smoke executable and dynamics unit test.
+
+The implementation and build instructions are under `ocs2_ws/src/tron2_ocs2`.
+The internal planar command is body-frame `[vx, vy, yaw_rate]`, matching the
+locomotion policy command convention. The optimizer uses a 1.0 s horizon so all
+five prediction offsets are always available.
+
+### Stage 2B - runtime bridges (next)
+
 - Connect the C++ solver output to Isaac Lab PLAY and add stale-solution and
   solver-failure fallbacks.
+- Reuse the same transport-neutral contract for the MuJoCo deployment bridge.
 
 ### Stage 3 - policy fidelity and hardware
 

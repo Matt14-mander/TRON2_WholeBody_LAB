@@ -153,13 +153,22 @@ For the full arm exclusion checklist, see [exts/bipedal_locomotion/bipedal_locom
 
 WholeBody is an additive task and does not alter this legacy behavior. It uses separate `arm_mpc` and `gripper` actuator groups and trains the base policy with the wrench sequence expected from OCS2/Pinocchio at deployment. Arm joints are not added to the PPO action.
 
+### OCS2 solver core
+
+The ROS 2 package lives in [`ocs2_ws/src/tron2_ocs2`](ocs2_ws/src/tron2_ocs2). It now
+contains the paper-style 18-state/9-input model, SLQ-MPC, end-effector tracking,
+nominal-arm cost, joint/input limits, self-collision, and five-sample base-wrench
+prediction from Pinocchio RNEA arm-subtree forces. See its README for build and
+smoke-test commands. Isaac Lab PLAY and MuJoCo bridges are the next stage.
+
 ## Architecture Overview
 
-See [CLAUDE.md](CLAUDE.md) for details. Three top-level packages:
+The main code is now split into four top-level areas:
 
 1. **`exts/bipedal_locomotion/`** — Isaac Lab extension. All env/asset/MDP/robot configs live here.
 2. **`rsl_rl/`** — Vendored fork. `scripts/rsl_rl/train.py` prepends this path to `sys.path`, overriding the system-installed version. Import uses `from rsl_rl.runner import OnPolicyRunner` (singular `runner`, not upstream's `runners`).
 3. **`scripts/rsl_rl/`** — Entry-point scripts. **Not a package**; operates via `sys.path` manipulation. CLI parsing order is fixed: launcher args must be registered before `AppLauncher(args_cli)`.
+4. **`ocs2_ws/src/tron2_ocs2/`** — ROS 2 OCS2/Pinocchio arm-MPC core, without simulator-specific bridge logic.
 
 ### Task Wiring
 

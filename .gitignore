@@ -28,6 +28,9 @@
 **/.neptune/*
 docker/artifacts/
 *.tmp
+/ocs2_ws/build/
+/ocs2_ws/install/
+/ocs2_ws/log/
 
 # Isaac-Sim packman
 _isaac_sim*

@@ -159,13 +159,21 @@ python scripts/rsl_rl/play.py \
 
 WholeBody 是独立增量任务，不改变上述兼容行为。它使用 `arm_mpc` 和 `gripper` actuator 组，并由 wrench sequence generator 模拟部署阶段 OCS2/Pinocchio 给出的机械臂反作用预测。机械臂关节不加入 PPO action。
 
+### OCS2 求解器核心
+
+ROS 2 包位于 [`ocs2_ws/src/tron2_ocs2`](ocs2_ws/src/tron2_ocs2)。当前已实现论文式
+18 维状态/9 维输入模型、SLQ-MPC、末端位姿跟踪、名义机械臂代价、关节/输入限位、
+自碰撞，以及基于 Pinocchio RNEA 机械臂子树内力的 5 点基座 wrench 预测。构建与
+smoke test 命令见该目录的 README；Isaac Lab PLAY 与 MuJoCo 桥接属于下一步。
+
 ## 架构概览
 
-详见 [CLAUDE.md](CLAUDE.md)。三个顶层包：
+主要代码现在分为四个顶层部分：
 
 1. **`exts/bipedal_locomotion/`** — Isaac Lab extension。env / asset / MDP / robot cfg 全部在这里
 2. **`rsl_rl/`** — vendored fork。`scripts/rsl_rl/train.py` 在 `sys.path` 最前面插入此路径，覆盖系统装的版本；import 是 `from rsl_rl.runner import OnPolicyRunner`（单数 `runner`，不是 upstream 的 `runners`）
 3. **`scripts/rsl_rl/`** — 入口脚本。**不是包**，靠 `sys.path` 操作工作，CLI 解析顺序固定：launcher args 必须在 `AppLauncher(args_cli)` 之前注册
+4. **`ocs2_ws/src/tron2_ocs2/`** — ROS 2 OCS2/Pinocchio 机械臂 MPC 核心；不包含仿真器专用桥接逻辑
 
 ### 任务 wiring
 

@@ -1,0 +1,130 @@
+model
+{
+  desiredBaseHeight  0.74
+  heightResponseGain 5.0
+  pitchResponseGain  5.0
+  rollResponseGain   5.0
+  commandLeadTime    0.02
+  recompileLibraries true
+  verbose            false
+}
+
+ddp
+{
+  algorithm                     SLQ
+  nThreads                      3
+  threadPriority                50
+  maxNumIterations              2
+  minRelCost                    1e-3
+  constraintTolerance           1e-3
+  displayInfo                   false
+  displayShortSummary           false
+  checkNumericalStability       true
+  debugPrintRollout             false
+  AbsTolODE                     1e-5
+  RelTolODE                     1e-3
+  maxNumStepsPerSecond          100000
+  timeStep                      1e-3
+  backwardPassIntegratorType    ODE45
+  constraintPenaltyInitialValue 20.0
+  constraintPenaltyIncreaseRate 2.0
+  preComputeRiccatiTerms        true
+  useFeedbackPolicy             false
+  riskSensitiveCoeff            0.0
+  strategy                      LINE_SEARCH
+  lineSearch
+  {
+    minStepLength             1e-2
+    maxStepLength             1.0
+    hessianCorrectionStrategy DIAGONAL_SHIFT
+    hessianCorrectionMultiple 1e-3
+  }
+}
+
+rollout
+{
+  AbsTolODE                1e-5
+  RelTolODE                1e-3
+  timeStep                 1e-2
+  integratorType           ODE45
+  maxNumStepsPerSecond     100000
+  checkNumericalStability  true
+}
+
+mpc
+{
+  timeHorizon          1.0
+  solutionTimeWindow   0.2
+  coldStart            false
+  debugPrint           false
+  mpcDesiredFrequency  50
+  mrtDesiredFrequency  200
+}
+
+limits
+{
+  forwardVelocity  1.5
+  lateralVelocity  1.0
+  yawRate          2.0
+  armVelocity      5.0
+  armAcceleration 20.0
+}
+
+nominalArmPosition
+{
+  (0,0)  0.0
+  (1,0)  1.57079632679
+  (2,0) -1.48352986420
+  (3,0)  0.0
+  (4,0)  0.0
+  (5,0)  0.0
+}
+
+cost
+{
+  ; No x/y/yaw state cost: the optimizer may move the walking base to reach.
+  stateWeights
+  {
+    (0,0)  0.0
+    (1,0)  0.0
+    (2,0) 20.0
+    (3,0)  0.0
+    (4,0) 20.0
+    (5,0) 20.0
+    (6,0)  0.5
+    (7,0)  0.5
+    (8,0)  0.5
+    (9,0)  0.2
+    (10,0) 0.2
+    (11,0) 0.2
+    (12,0) 0.05
+    (13,0) 0.05
+    (14,0) 0.05
+    (15,0) 0.02
+    (16,0) 0.02
+    (17,0) 0.02
+  }
+  inputWeights
+  {
+    (0,0) 0.5
+    (1,0) 0.5
+    (2,0) 0.2
+    (3,0) 0.01
+    (4,0) 0.01
+    (5,0) 0.01
+    (6,0) 0.005
+    (7,0) 0.005
+    (8,0) 0.005
+  }
+  eePositionWeight    100.0
+  eeOrientationWeight 20.0
+  terminalScale       5.0
+}
+
+selfCollision
+{
+  activate        true
+  minimumDistance 0.04
+  mu              1e-2
+  delta           1e-3
+}
