@@ -38,7 +38,8 @@ ament_target_dependencies(${PROJECT_NAME} PUBLIC
 target_compile_options(${PROJECT_NAME} PUBLIC ${OCS2_PINOCCHIO_FLAGS})
 
 add_executable(tron2_ocs2_smoke src/smoke_main.cpp)
-target_link_libraries(tron2_ocs2_smoke PRIVATE ${PROJECT_NAME})
+target_link_libraries(tron2_ocs2_smoke ${PROJECT_NAME})
+ament_target_dependencies(tron2_ocs2_smoke ocs2_oc ocs2_core)
 
 install(TARGETS ${PROJECT_NAME} tron2_ocs2_smoke
   EXPORT export_${PROJECT_NAME}
