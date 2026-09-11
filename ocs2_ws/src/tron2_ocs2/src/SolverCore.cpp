@@ -113,8 +113,9 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
 
   nominalState_ = ocs2::vector_t::Zero(kStateDim);
   nominalState_(2) = settings_.desiredBaseHeight;
-  ocs2::loadData::loadEigenMatrix(taskFile, "nominalArmPosition",
-                                  nominalState_.segment(kArmPositionIndex, kArmDof));
+  ocs2::vector_t nominalArmPosition = ocs2::vector_t::Zero(kArmDof);
+  ocs2::loadData::loadEigenMatrix(taskFile, "nominalArmPosition", nominalArmPosition);
+  nominalState_.segment(kArmPositionIndex, kArmDof) = nominalArmPosition;
   ocs2::vector_t stateWeights = ocs2::vector_t::Zero(kStateDim);
   ocs2::vector_t inputWeights = ocs2::vector_t::Zero(kInputDim);
   ocs2::loadData::loadEigenMatrix(taskFile, "cost.stateWeights", stateWeights);

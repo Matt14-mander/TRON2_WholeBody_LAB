@@ -44,3 +44,10 @@ _build
 CLAUDE.md
 .claude/
 docs/superpowers/
+
+# Local OCS2 workspace dependencies and build outputs
+/ocs2_ws/build*/
+/ocs2_ws/install*/
+/ocs2_ws/log*/
+/ocs2_ws/src/ocs2/
+/ocs2_ws/src/ocs2_robotic_assets/

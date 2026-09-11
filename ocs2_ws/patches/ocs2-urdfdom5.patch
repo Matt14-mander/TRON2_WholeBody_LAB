@@ -1,0 +1,202 @@
+diff --git a/ocs2_pinocchio/ocs2_pinocchio_interface/include/ocs2_pinocchio_interface/PinocchioInterface.h b/ocs2_pinocchio/ocs2_pinocchio_interface/include/ocs2_pinocchio_interface/PinocchioInterface.h
+index 80c6da5d5..7e8e2a084 100644
+--- a/ocs2_pinocchio/ocs2_pinocchio_interface/include/ocs2_pinocchio_interface/PinocchioInterface.h
++++ b/ocs2_pinocchio/ocs2_pinocchio_interface/include/ocs2_pinocchio_interface/PinocchioInterface.h
+@@ -71,8 +71,11 @@ class PinocchioInterfaceTpl final {
+    * Construct from given pinocchio model
+    * @param[in] model pinocchio model
+    */
+-  explicit PinocchioInterfaceTpl(const Model& model, const std::shared_ptr<const ::urdf::ModelInterface> urdfModelPtr =
+-                                                         std::shared_ptr<const ::urdf::ModelInterface>());
++  explicit PinocchioInterfaceTpl(
++      const Model& model,
++      const std::shared_ptr<const ::urdf::ModelInterface> urdfModelPtr =
++          std::shared_ptr<const ::urdf::ModelInterface>(),
++      std::string urdfXmlString = {});
+ 
+   /** Destructor */
+   ~PinocchioInterfaceTpl();
+@@ -99,6 +102,9 @@ class PinocchioInterfaceTpl final {
+   /** Get the urdf model */
+   const std::shared_ptr<const ::urdf::ModelInterface>& getUrdfModelPtr() const { return urdfModelPtr_; }
+ 
++  /** Get the original URDF XML used to construct this interface. */
++  const std::string& getUrdfXmlString() const { return urdfXmlString_; }
++
+   /** Cast pinocchio interface to CppAD scalar type. */
+   template <typename T = SCALAR, EnableIfScalar_t<T> = true>
+   PinocchioInterfaceCppAd toCppAd() const;
+@@ -109,6 +115,7 @@ class PinocchioInterfaceTpl final {
+   std::shared_ptr<const Model> robotModelPtr_;
+   std::unique_ptr<Data> robotDataPtr_;
+   std::shared_ptr<const ::urdf::ModelInterface> urdfModelPtr_;
++  std::string urdfXmlString_;
+ };
+ 
+ /** Print PinocchioInterfaceTpl info to stream */
+diff --git a/ocs2_pinocchio/ocs2_pinocchio_interface/include/ocs2_pinocchio_interface/implementation/PinocchioInterface.h b/ocs2_pinocchio/ocs2_pinocchio_interface/include/ocs2_pinocchio_interface/implementation/PinocchioInterface.h
+index 3553b51f8..f5e50a508 100644
+--- a/ocs2_pinocchio/ocs2_pinocchio_interface/include/ocs2_pinocchio_interface/implementation/PinocchioInterface.h
++++ b/ocs2_pinocchio/ocs2_pinocchio_interface/include/ocs2_pinocchio_interface/implementation/PinocchioInterface.h
+@@ -39,7 +39,11 @@ namespace ocs2 {
+ /******************************************************************************************************/
+ /******************************************************************************************************/
+ template <typename SCALAR>
+-PinocchioInterfaceTpl<SCALAR>::PinocchioInterfaceTpl(const Model& model, const std::shared_ptr<const ::urdf::ModelInterface> urdfModelPtr) {
++PinocchioInterfaceTpl<SCALAR>::PinocchioInterfaceTpl(
++    const Model& model,
++    const std::shared_ptr<const ::urdf::ModelInterface> urdfModelPtr,
++    std::string urdfXmlString)
++    : urdfXmlString_(std::move(urdfXmlString)) {
+   robotModelPtr_ = std::make_shared<const Model>(model);
+   robotDataPtr_ = std::make_unique<Data>(*robotModelPtr_);
+   if (urdfModelPtr) {
+@@ -59,7 +63,10 @@ PinocchioInterfaceTpl<SCALAR>::~PinocchioInterfaceTpl() = default;
+ /******************************************************************************************************/
+ template <typename SCALAR>
+ PinocchioInterfaceTpl<SCALAR>::PinocchioInterfaceTpl(const PinocchioInterfaceTpl<SCALAR>& rhs)
+-    : robotModelPtr_(rhs.robotModelPtr_), robotDataPtr_(new Data(*rhs.robotDataPtr_)), urdfModelPtr_(rhs.urdfModelPtr_) {}
++    : robotModelPtr_(rhs.robotModelPtr_),
++      robotDataPtr_(new Data(*rhs.robotDataPtr_)),
++      urdfModelPtr_(rhs.urdfModelPtr_),
++      urdfXmlString_(rhs.urdfXmlString_) {}
+ 
+ /******************************************************************************************************/
+ /******************************************************************************************************/
+@@ -68,7 +75,8 @@ template <typename SCALAR>
+ PinocchioInterfaceTpl<SCALAR>::PinocchioInterfaceTpl(PinocchioInterfaceTpl<SCALAR>&& rhs)
+     : robotModelPtr_(std::move(rhs.robotModelPtr_)),
+       robotDataPtr_(std::move(rhs.robotDataPtr_)),
+-      urdfModelPtr_(std::move(rhs.urdfModelPtr_)) {}
++      urdfModelPtr_(std::move(rhs.urdfModelPtr_)),
++      urdfXmlString_(std::move(rhs.urdfXmlString_)) {}
+ 
+ /******************************************************************************************************/
+ /******************************************************************************************************/
+@@ -78,6 +86,7 @@ PinocchioInterfaceTpl<SCALAR>& PinocchioInterfaceTpl<SCALAR>::operator=(const Pi
+   robotModelPtr_ = rhs.robotModelPtr_;
+   robotDataPtr_.reset(new Data(*rhs.robotDataPtr_));
+   urdfModelPtr_ = rhs.urdfModelPtr_;
++  urdfXmlString_ = rhs.urdfXmlString_;
+   return *this;
+ }
+ 
+@@ -89,6 +98,7 @@ PinocchioInterfaceTpl<SCALAR>& PinocchioInterfaceTpl<SCALAR>::operator=(Pinocchi
+   std::swap(robotModelPtr_, rhs.robotModelPtr_);
+   std::swap(robotDataPtr_, rhs.robotDataPtr_);
+   std::swap(urdfModelPtr_, rhs.urdfModelPtr_);
++  std::swap(urdfXmlString_, rhs.urdfXmlString_);
+   return *this;
+ }
+ 
+diff --git a/ocs2_pinocchio/ocs2_pinocchio_interface/src/urdf.cpp b/ocs2_pinocchio/ocs2_pinocchio_interface/src/urdf.cpp
+index da311e647..8fae72500 100644
+--- a/ocs2_pinocchio/ocs2_pinocchio_interface/src/urdf.cpp
++++ b/ocs2_pinocchio/ocs2_pinocchio_interface/src/urdf.cpp
+@@ -27,11 +27,14 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ ******************************************************************************/
+ 
++#include <fstream>
++#include <iterator>
++
+ #include <pinocchio/fwd.hpp>
+ #include <pinocchio/multibody/model.hpp>
+ #include <pinocchio/parsers/urdf.hpp>
+ 
+-#include <urdfdom/urdf_parser/urdf_parser.h>
++#include <urdf_parser/urdf_parser.h>
+ 
+ #include "ocs2_pinocchio_interface/urdf.h"
+ 
+@@ -41,24 +44,26 @@ namespace ocs2 {
+ /******************************************************************************************************/
+ /******************************************************************************************************/
+ PinocchioInterface getPinocchioInterfaceFromUrdfFile(const std::string& urdfFile) {
+-  ::urdf::ModelInterfaceSharedPtr urdfTree = ::urdf::parseURDFFile(urdfFile);
+-  if (urdfTree != nullptr) {
+-    return getPinocchioInterfaceFromUrdfModel(urdfTree);
+-  } else {
+-    throw std::invalid_argument("The file " + urdfFile + " does not contain a valid URDF model.");
++  std::ifstream stream(urdfFile);
++  if (!stream) {
++    throw std::invalid_argument("Unable to open URDF file: " + urdfFile);
+   }
++  const std::string xmlString((std::istreambuf_iterator<char>(stream)),
++                              std::istreambuf_iterator<char>());
++  return getPinocchioInterfaceFromUrdfString(xmlString);
+ }
+ 
+ /******************************************************************************************************/
+ /******************************************************************************************************/
+ /******************************************************************************************************/
+ PinocchioInterface getPinocchioInterfaceFromUrdfFile(const std::string& urdfFile, const PinocchioInterface::JointModel& rootJoint) {
+-  ::urdf::ModelInterfaceSharedPtr urdfTree = ::urdf::parseURDFFile(urdfFile);
+-  if (urdfTree != nullptr) {
+-    return getPinocchioInterfaceFromUrdfModel(urdfTree, rootJoint);
+-  } else {
+-    throw std::invalid_argument("The file " + urdfFile + " does not contain a valid URDF model.");
++  std::ifstream stream(urdfFile);
++  if (!stream) {
++    throw std::invalid_argument("Unable to open URDF file: " + urdfFile);
+   }
++  const std::string xmlString((std::istreambuf_iterator<char>(stream)),
++                              std::istreambuf_iterator<char>());
++  return getPinocchioInterfaceFromUrdfString(xmlString, rootJoint);
+ }
+ 
+ /******************************************************************************************************/
+@@ -67,7 +72,9 @@ PinocchioInterface getPinocchioInterfaceFromUrdfFile(const std::string& urdfFile
+ PinocchioInterface getPinocchioInterfaceFromUrdfString(const std::string& xmlString) {
+   ::urdf::ModelInterfaceSharedPtr urdfTree = ::urdf::parseURDF(xmlString);
+   if (urdfTree != nullptr) {
+-    return getPinocchioInterfaceFromUrdfModel(urdfTree);
++    pinocchio::ModelTpl<scalar_t> model;
++    pinocchio::urdf::buildModel(urdfTree, model);
++    return PinocchioInterface(model, urdfTree, xmlString);
+   } else {
+     throw std::invalid_argument("The XML stream does not contain a valid URDF model.");
+   }
+@@ -79,7 +86,9 @@ PinocchioInterface getPinocchioInterfaceFromUrdfString(const std::string& xmlStr
+ PinocchioInterface getPinocchioInterfaceFromUrdfString(const std::string& xmlString, const PinocchioInterface::JointModel& rootJoint) {
+   ::urdf::ModelInterfaceSharedPtr urdfTree = ::urdf::parseURDF(xmlString);
+   if (urdfTree != nullptr) {
+-    return getPinocchioInterfaceFromUrdfModel(urdfTree, rootJoint);
++    pinocchio::ModelTpl<scalar_t> model;
++    pinocchio::urdf::buildModel(urdfTree, rootJoint, model);
++    return PinocchioInterface(model, urdfTree, xmlString);
+   } else {
+     throw std::invalid_argument("The XML stream does not contain a valid URDF model.");
+   }
+diff --git a/ocs2_pinocchio/ocs2_self_collision/src/PinocchioGeometryInterface.cpp b/ocs2_pinocchio/ocs2_self_collision/src/PinocchioGeometryInterface.cpp
+index 35099a119..812fe4079 100644
+--- a/ocs2_pinocchio/ocs2_self_collision/src/PinocchioGeometryInterface.cpp
++++ b/ocs2_pinocchio/ocs2_self_collision/src/PinocchioGeometryInterface.cpp
+@@ -90,19 +90,16 @@ size_t PinocchioGeometryInterface::getNumCollisionPairs() const {
+ 
+ void PinocchioGeometryInterface::buildGeomFromPinocchioInterface(const PinocchioInterface& pinocchioInterface,
+                                                                  pinocchio::GeometryModel& geomModel) {
+-  if (!pinocchioInterface.getUrdfModelPtr()) {
+-    throw std::runtime_error("The PinocchioInterface passed to PinocchioGeometryInterface(...) does not contain a urdf model!");
++  const std::string& urdfXml = pinocchioInterface.getUrdfXmlString();
++  if (urdfXml.empty()) {
++    throw std::runtime_error(
++        "PinocchioGeometryInterface requires the original URDF XML.");
+   }
+ 
+-  // TODO: Replace with pinocchio function that uses the ModelInterface directly.
+-  // Pinocchio still expects a URDF stream here, so export the URDFDOM model to a tinyxml2 document first.
+-  const std::unique_ptr<tinyxml2::XMLDocument> urdfAsXml(urdf::exportURDF(*pinocchioInterface.getUrdfModelPtr()));
+-  tinyxml2::XMLPrinter printer;
+-  urdfAsXml->Print(&printer);
+-  std::stringstream urdfAsStringStream;
+-  urdfAsStringStream << printer.CStr();
+-
+-  pinocchio::urdf::buildGeom(pinocchioInterface.getModel(), urdfAsStringStream, pinocchio::COLLISION, geomModel);
++  std::istringstream urdfAsStringStream(urdfXml);
++  pinocchio::urdf::buildGeom(
++      pinocchioInterface.getModel(), urdfAsStringStream,
++      pinocchio::COLLISION, geomModel);
+ }
+ /******************************************************************************************************/
+ /******************************************************************************************************/
