@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <cmath>
 #include <utility>
 
@@ -39,11 +40,15 @@ const std::vector<std::string> kFixedJoints{
     "proximal_roll_R_Joint", "proximal_yaw_R_Joint", "knee_R_Joint",
     "ankle_pitch_R_Joint", "gripper1_Joint", "gripper2_Joint"};
 
+std::string readTextFile(const std::string& path) {
+  std::ifstream stream(path);
+  if (!stream) throw std::runtime_error("Cannot read file: " + path);
+  return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+}
+
 std::string makeMeshUrisPortable(const std::string& urdfFile,
                                  const std::string& libraryFolder) {
-  std::ifstream stream(urdfFile);
-  if (!stream) throw std::runtime_error("Cannot read URDF: " + urdfFile);
-  std::string xml((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+  std::string xml = readTextFile(urdfFile);
   const std::string oldPrefix = "package://bipedal_robot/meshes/";
   const auto meshDirectory =
       std::filesystem::absolute(std::filesystem::path(urdfFile).parent_path() / ".." / "meshes")
@@ -101,10 +106,12 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
     throw std::invalid_argument("Model height/gains must be positive and commandLeadTime non-negative.");
   }
 
+  auto reducedPinocchioInterface = ocs2::mobile_manipulator::createPinocchioInterface(
+      resolvedUrdf, ocs2::mobile_manipulator::ManipulatorModelType::FloatingArmManipulator,
+      kFixedJoints);
   pinocchioInterface_ = std::make_unique<ocs2::PinocchioInterface>(
-      ocs2::mobile_manipulator::createPinocchioInterface(
-          resolvedUrdf, ocs2::mobile_manipulator::ManipulatorModelType::FloatingArmManipulator,
-          kFixedJoints));
+      reducedPinocchioInterface.getModel(), reducedPinocchioInterface.getUrdfModelPtr(),
+      readTextFile(resolvedUrdf));
   const auto& pinModel = pinocchioInterface_->getModel();
   if (pinModel.nq != kBasePoseDim + kArmDof || pinModel.nv != kBasePoseDim + kArmDof) {
     throw std::runtime_error("Reduced Pinocchio model must have nq=nv=12; got nq=" +
