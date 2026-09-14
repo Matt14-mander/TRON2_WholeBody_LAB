@@ -22,6 +22,7 @@ add_library(${PROJECT_NAME}
   src/Tron2Dynamics.cpp
   src/Tron2PinocchioMapping.cpp
   src/NominalCost.cpp
+  src/TerminalStateRegularizationCost.cpp
   src/WrenchEstimator.cpp
   src/SolverCore.cpp
 )

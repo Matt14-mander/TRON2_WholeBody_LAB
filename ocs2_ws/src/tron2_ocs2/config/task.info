@@ -119,6 +119,7 @@ cost
   eePositionWeight    100.0
   eeOrientationWeight 20.0
   terminalScale       5.0
+  terminalStateRegularization 1e-5
 }
 
 selfCollision

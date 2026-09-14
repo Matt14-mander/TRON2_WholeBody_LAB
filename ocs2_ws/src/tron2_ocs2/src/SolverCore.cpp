@@ -24,6 +24,7 @@
 #include <ocs2_self_collision/SelfCollisionConstraintCppAd.h>
 
 #include "tron2_ocs2/NominalCost.h"
+#include "tron2_ocs2/TerminalStateRegularizationCost.h"
 #include "tron2_ocs2/Tron2Dynamics.h"
 #include "tron2_ocs2/Tron2PinocchioMapping.h"
 
@@ -135,6 +136,15 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
   const double eePositionWeight = pt.get<double>("cost.eePositionWeight", 100.0);
   const double eeOrientationWeight = pt.get<double>("cost.eeOrientationWeight", 20.0);
   const double terminalScale = pt.get<double>("cost.terminalScale", 5.0);
+  const double terminalStateRegularization =
+      pt.get<double>("cost.terminalStateRegularization", 1e-5);
+  if (!std::isfinite(terminalStateRegularization) || terminalStateRegularization <= 0.0) {
+    throw std::invalid_argument(
+        "cost.terminalStateRegularization must be positive and finite.");
+  }
+  problem_.finalCostPtr->add(
+      "state_regularization", std::make_unique<TerminalStateRegularizationCost>(
+                                  nominalState_, terminalStateRegularization));
   problem_.stateSoftConstraintPtr->add(
       "end_effector", makeEndEffectorCost(*pinocchioInterface_, referenceManager_, settings_,
                                            libraryFolder, "tron2_ee_running",

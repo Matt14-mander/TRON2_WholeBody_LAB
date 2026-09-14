@@ -36,6 +36,9 @@ The numerical interface is defined in
 - Implement the paper-style 18-state/9-input floating-base arm model.
 - Add end-effector tracking, nominal-arm, joint-limit, input, and self-collision
   costs/constraints.
+- Add a configurable positive terminal-state regularizer so strict DDP
+  numerical-stability checks remain enabled despite round-off in the terminal
+  end-effector Hessian.
 - Use Pinocchio RNEA arm-subtree forces to produce the base-frame wrench
   sequence without including the legs or trunk wrench.
 - Add a full solver/RNEA smoke executable and dynamics unit test.
