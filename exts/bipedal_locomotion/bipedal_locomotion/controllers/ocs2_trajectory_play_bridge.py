@@ -20,11 +20,26 @@ class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
         trajectory_path: str,
         zero_base_command: bool = False,
         zero_wrench: bool = False,
+        terminal_base_command: tuple[float, float, float] | None = None,
+        terminal_transition_duration_s: float = 0.5,
     ):
         super().__init__(env)
         self._trajectory = Ocs2Trajectory.from_csv(trajectory_path)
         self._zero_base_command = zero_base_command
         self._zero_wrench = zero_wrench
+        self._terminal_base_command = (
+            None
+            if terminal_base_command is None
+            else np.asarray(terminal_base_command, dtype=np.float64)
+        )
+        if self._terminal_base_command is not None:
+            if self._terminal_base_command.shape != (3,) or not np.all(
+                np.isfinite(self._terminal_base_command)
+            ):
+                raise ValueError("Terminal base command must contain three finite values.")
+            if terminal_transition_duration_s <= 0.0:
+                raise ValueError("Terminal base-command transition duration must be positive.")
+        self._terminal_transition_duration_s = terminal_transition_duration_s
         self._start_time: float | None = None
         self._terminal_reported = False
         print(
@@ -46,6 +61,23 @@ class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
             self._start_time = simulation_time
         playback_time = max(0.0, simulation_time - self._start_time)
         solution = self._trajectory.sample(playback_time)
+        if self._terminal_base_command is not None:
+            transition_start = max(
+                0.0, self._trajectory.duration - self._terminal_transition_duration_s
+            )
+            alpha = np.clip(
+                (playback_time - transition_start) / self._terminal_transition_duration_s,
+                0.0,
+                1.0,
+            )
+            # Cubic smoothstep avoids a velocity-command discontinuity at
+            # either end of the transition.
+            alpha = alpha * alpha * (3.0 - 2.0 * alpha)
+            base_command = (
+                (1.0 - alpha) * solution.base_velocity_command
+                + alpha * self._terminal_base_command
+            )
+            solution = replace(solution, base_velocity_command=base_command)
         if self._zero_base_command:
             solution = replace(solution, base_velocity_command=np.zeros(3, dtype=np.float64))
         if self._zero_wrench:
@@ -54,7 +86,7 @@ class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
         if playback_time >= self._trajectory.duration and not self._terminal_reported:
             print(
                 f"[INFO] Offline OCS2 trajectory completed at {self._trajectory.duration:.3f}s; "
-                "holding terminal arm position with zero base command."
+                "holding terminal arm position."
             )
             self._terminal_reported = True
         return True

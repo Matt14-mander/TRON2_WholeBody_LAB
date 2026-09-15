@@ -41,6 +41,14 @@ parser.add_argument(
     action="store_true",
     help="Offline replay ablation: hide predicted wrench from the locomotion policy.",
 )
+parser.add_argument(
+    "--ocs2_trajectory_terminal_base_command",
+    type=float,
+    nargs=3,
+    default=None,
+    metavar=("VX", "VY", "WZ"),
+    help="Smoothly continue with this body-frame base command after offline replay.",
+)
 parser.add_argument("--ocs2_host", type=str, default="127.0.0.1", help="OCS2 bridge IPv4 host.")
 parser.add_argument("--ocs2_port", type=int, default=5555, help="OCS2 bridge TCP port.")
 parser.add_argument("--ocs2_timeout", type=float, default=120.0, help="Background OCS2 socket timeout in seconds.")
@@ -95,10 +103,20 @@ from bipedal_locomotion.utils.wrappers.rsl_rl import RslRlPpoAlgorithmMlpCfg, ex
 def main():
     """Play with RSL-RL agent."""
     ocs2_control_enabled = args_cli.ocs2 or args_cli.ocs2_trajectory is not None
-    if (args_cli.ocs2_trajectory_zero_base_command or args_cli.ocs2_trajectory_zero_wrench) and (
-        args_cli.ocs2_trajectory is None
-    ):
+    trajectory_only_option_used = (
+        args_cli.ocs2_trajectory_zero_base_command
+        or args_cli.ocs2_trajectory_zero_wrench
+        or args_cli.ocs2_trajectory_terminal_base_command is not None
+    )
+    if trajectory_only_option_used and args_cli.ocs2_trajectory is None:
         raise ValueError("Offline trajectory ablation flags require --ocs2_trajectory.")
+    if args_cli.ocs2_trajectory_zero_base_command and (
+        args_cli.ocs2_trajectory_terminal_base_command is not None
+    ):
+        raise ValueError(
+            "--ocs2_trajectory_zero_base_command conflicts with "
+            "--ocs2_trajectory_terminal_base_command."
+        )
     if ocs2_control_enabled:
         args_cli.num_envs = 1
         print("[INFO] OCS2 control enabled; forcing num_envs=1.")
@@ -177,6 +195,7 @@ def main():
             args_cli.ocs2_trajectory,
             zero_base_command=args_cli.ocs2_trajectory_zero_base_command,
             zero_wrench=args_cli.ocs2_trajectory_zero_wrench,
+            terminal_base_command=args_cli.ocs2_trajectory_terminal_base_command,
         )
     # load previously trained model
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")

@@ -128,3 +128,6 @@ appends a 0.5 s transition to a static terminal sample whose feed-forward
 effort and wrench are recomputed by RNEA with zero velocity and acceleration.
 For diagnosis, `--ocs2_trajectory_zero_base_command` and
 `--ocs2_trajectory_zero_wrench` independently disable those two policy inputs.
+For a locomotion-focused test, append
+`--ocs2_trajectory_terminal_base_command VX VY WZ`; PLAY smoothly blends to
+that body-frame cruise command over the final 0.5 s instead of stopping.

@@ -77,6 +77,8 @@ five prediction offsets are always available.
 - Isaac Lab accepts `--ocs2_trajectory PATH` as a mutually exclusive
   alternative to the live TCP bridge and interpolates the CSV against
   simulation time without any OCS2 process at PLAY time.
+- A configurable terminal planar command supports continued walking after the
+  one-shot arm motion; its final 0.5 s transition uses cubic smoothstep.
 
 ### Stage 3 - policy fidelity and hardware
 
