@@ -33,6 +33,9 @@ struct Observation {
 struct EndEffectorTarget {
   Eigen::Vector3d positionWorld = Eigen::Vector3d::Zero();
   Eigen::Quaterniond orientationWorld = Eigen::Quaterniond::Identity();
+  // Seconds from the observation time at which the target should be reached.
+  // Zero preserves the legacy step-reference behavior used by the live bridge.
+  double arrivalTime = 0.0;
 };
 
 struct Solution {

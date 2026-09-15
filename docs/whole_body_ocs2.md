@@ -83,6 +83,11 @@ five prediction offsets are always available.
   contacts, actuator targets, and policy observations settle.
 - An optional deterministic-reset validation mode removes base and joint reset
   offsets so repeated falls can be separated from randomized startup states.
+- The single-trajectory exporter accepts an arrival time and constructs a
+  smooth end-effector reference from the initial pose to the target.
+- `scripts/ocs2/generate_trajectory_dataset.py` reproducibly samples the
+  compact workspace and multiple arrival times, records successful expert
+  trajectories in a manifest, and preserves solver failures separately.
 
 ### Stage 3 - policy fidelity and hardware
 

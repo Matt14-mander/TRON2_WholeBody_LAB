@@ -44,12 +44,12 @@ void writeEigen(std::ostream& stream, const Eigen::MatrixBase<Derived>& value) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 5 && argc != 12 && argc != 13) {
+  if (argc != 5 && argc != 12 && argc != 13 && argc != 14) {
     std::cerr
         << "usage: tron2_ocs2_trajectory_export TASK_INFO ROBOT_URDF "
            "GENERATED_LIBRARY_DIR OUTPUT_CSV "
            "[TARGET_X TARGET_Y TARGET_Z TARGET_QW TARGET_QX TARGET_QY TARGET_QZ "
-           "[SAMPLE_PERIOD]]\n";
+           "[SAMPLE_PERIOD [ARRIVAL_TIME]]]\n";
     return 2;
   }
   try {
@@ -65,7 +65,10 @@ int main(int argc, char** argv) {
           parseDouble(argv[8], "TARGET_QW"), parseDouble(argv[9], "TARGET_QX"),
           parseDouble(argv[10], "TARGET_QY"), parseDouble(argv[11], "TARGET_QZ"));
     }
-    const double samplePeriod = argc == 13 ? parseDouble(argv[12], "SAMPLE_PERIOD") : 0.02;
+    const double samplePeriod = argc >= 13 ? parseDouble(argv[12], "SAMPLE_PERIOD") : 0.02;
+    if (argc == 14) {
+      target.arrivalTime = parseDouble(argv[13], "ARRIVAL_TIME");
+    }
 
     tron2_ocs2::SolverCore solver(argv[1], argv[2], argv[3]);
     const auto samples = solver.solveTrajectory(observation, target, samplePeriod);

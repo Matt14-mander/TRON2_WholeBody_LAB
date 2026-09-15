@@ -34,7 +34,8 @@ class SolverCore {
 
  private:
   ocs2::vector_t observationToState(const Observation& observation) const;
-  ocs2::TargetTrajectories makeTarget(double time, const EndEffectorTarget& target) const;
+  ocs2::TargetTrajectories makeTarget(double time, const ocs2::vector_t& initialState,
+                                      const EndEffectorTarget& target) const;
   ocs2::PrimalSolution runMpc(const Observation& observation,
                               const EndEffectorTarget& target);
   void validateTrajectory(double initialTime, const ocs2::PrimalSolution& trajectory) const;

@@ -22,6 +22,8 @@
 #include <ocs2_pinocchio_interface/PinocchioEndEffectorKinematicsCppAd.h>
 #include <ocs2_self_collision/PinocchioGeometryInterface.h>
 #include <ocs2_self_collision/SelfCollisionConstraintCppAd.h>
+#include <pinocchio/algorithm/frames.hpp>
+#include <pinocchio/algorithm/kinematics.hpp>
 
 #include "tron2_ocs2/NominalCost.h"
 #include "tron2_ocs2/TerminalStateRegularizationCost.h"
@@ -259,24 +261,76 @@ ocs2::vector_t SolverCore::observationToState(const Observation& observation) co
   return x;
 }
 
-ocs2::TargetTrajectories SolverCore::makeTarget(double time,
-                                                 const EndEffectorTarget& target) const {
+ocs2::TargetTrajectories SolverCore::makeTarget(
+    double time, const ocs2::vector_t& initialState,
+    const EndEffectorTarget& target) const {
   if (!target.positionWorld.allFinite() || !target.orientationWorld.coeffs().allFinite() ||
       target.orientationWorld.norm() < 1e-9) {
     throw std::invalid_argument("End-effector target contains non-finite values.");
+  }
+  if (!std::isfinite(target.arrivalTime) || target.arrivalTime < 0.0 ||
+      target.arrivalTime > horizon_ + 1e-9) {
+    throw std::invalid_argument(
+        "End-effector arrival time must be finite and within the MPC horizon.");
   }
   Eigen::Quaterniond q = target.orientationWorld.normalized();
   ocs2::vector_t pose(7);
   pose.head<3>() = target.positionWorld;
   pose.tail<4>() = q.coeffs();  // Eigen/OCS2 convention: [qx, qy, qz, qw].
-  return ocs2::TargetTrajectories({time, time + horizon_}, {pose, pose},
-                                  {ocs2::vector_t(), ocs2::vector_t()});
+  if (target.arrivalTime <= 1e-9) {
+    return ocs2::TargetTrajectories({time, time + horizon_}, {pose, pose},
+                                    {ocs2::vector_t(), ocs2::vector_t()});
+  }
+
+  requireSize(initialState, kStateDim, "initial state");
+  const auto& model = pinocchioInterface_->getModel();
+  pinocchio::Data data(model);
+  Tron2PinocchioMappingD mapping(settings_);
+  const auto pinocchioQ = mapping.getPinocchioJointPosition(initialState);
+  pinocchio::forwardKinematics(model, data, pinocchioQ);
+  pinocchio::updateFramePlacements(model, data);
+  const auto frameId = model.getFrameId(kEndEffectorFrame);
+  if (frameId >= model.frames.size()) {
+    throw std::runtime_error("End-effector frame not found in reduced model.");
+  }
+  ocs2::vector_t initialPose(7);
+  initialPose.head<3>() = data.oMf[frameId].translation();
+  const Eigen::Quaterniond initialOrientation(data.oMf[frameId].rotation());
+  initialPose.tail<4>() = initialOrientation.coeffs();
+
+  const double arrival = std::min(target.arrivalTime, horizon_);
+  constexpr int kReferenceIntervals = 10;
+  std::vector<double> times;
+  std::vector<ocs2::vector_t> poses;
+  std::vector<ocs2::vector_t> inputs;
+  times.reserve(kReferenceIntervals + 2);
+  poses.reserve(kReferenceIntervals + 2);
+  inputs.reserve(kReferenceIntervals + 2);
+  for (int index = 0; index <= kReferenceIntervals; ++index) {
+    const double phase = static_cast<double>(index) / kReferenceIntervals;
+    const double alpha = phase * phase * (3.0 - 2.0 * phase);
+    ocs2::vector_t referencePose(7);
+    referencePose.head<3>() =
+        (1.0 - alpha) * initialPose.head<3>() + alpha * pose.head<3>();
+    referencePose.tail<4>() = initialOrientation.slerp(alpha, q).coeffs();
+    times.emplace_back(time + phase * arrival);
+    poses.emplace_back(std::move(referencePose));
+    inputs.emplace_back();
+  }
+  if (arrival < horizon_ - 1e-9) {
+    times.emplace_back(time + horizon_);
+    poses.emplace_back(pose);
+    inputs.emplace_back();
+  }
+  return ocs2::TargetTrajectories(std::move(times), std::move(poses),
+                                  std::move(inputs));
 }
 
 ocs2::PrimalSolution SolverCore::runMpc(const Observation& observation,
                                         const EndEffectorTarget& target) {
   const ocs2::vector_t initialState = observationToState(observation);
-  referenceManager_->setTargetTrajectories(makeTarget(observation.time, target));
+  referenceManager_->setTargetTrajectories(
+      makeTarget(observation.time, initialState, target));
   if (!mpc_->run(observation.time, initialState)) {
     throw std::runtime_error("OCS2 MPC did not produce a new policy.");
   }

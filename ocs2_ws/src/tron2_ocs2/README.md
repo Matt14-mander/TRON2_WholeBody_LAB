@@ -106,8 +106,31 @@ ros2 run tron2_ocs2 tron2_ocs2_trajectory_export \
 An explicit target and sample period may be appended as:
 
 ```text
-TARGET_X TARGET_Y TARGET_Z TARGET_QW TARGET_QX TARGET_QY TARGET_QZ SAMPLE_PERIOD
+TARGET_X TARGET_Y TARGET_Z TARGET_QW TARGET_QX TARGET_QY TARGET_QZ SAMPLE_PERIOD ARRIVAL_TIME
 ```
+
+`ARRIVAL_TIME` is measured from the initial observation and must lie within
+the MPC horizon. A positive value creates a smooth position/quaternion
+reference from the initial end-effector pose to the target. Omitting it keeps
+the legacy immediate step reference used by earlier commands.
+
+For reproducible batch generation over the initially validated compact
+workspace, run:
+
+```bash
+python scripts/ocs2/generate_trajectory_dataset.py \
+  --task-info /tmp/tron2_ocs2_runtime.info \
+  --robot-urdf "$PWD/robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf" \
+  --library-dir /tmp/tron2_ocs2_codegen \
+  --output-dir "$HOME/datasets/tron2_ocs2_compact_v1" \
+  --count 200 \
+  --seed 42 \
+  --arrival-times 0.5 0.75 1.0
+```
+
+The batch tool writes one 52-column CSV per successful solve, a `manifest.csv`
+with targets/timing/numerical bounds, and `failures.csv` for rejected solves.
+Use `--resume` to continue an interrupted output directory.
 
 Replay requires only the Isaac Lab environment; do not start the TCP service:
 
