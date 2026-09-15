@@ -72,8 +72,8 @@ five prediction offsets are always available.
 - Each row contains arm position, velocity, feed-forward effort, planar base
   command, and the 5x6 predicted base wrench used by the WholeBody actor.
 - The last optimized state is extended as a constant for wrench preview near
-  the horizon boundary. Playback holds terminal arm position and effort while
-  forcing arm velocity and planar base command to zero.
+  the horizon boundary. A 0.5 s transition blends into an RNEA-recomputed
+  static hold with zero arm velocity, acceleration, and planar base command.
 - Isaac Lab accepts `--ocs2_trajectory PATH` as a mutually exclusive
   alternative to the live TCP bridge and interpolates the CSV against
   simulation time without any OCS2 process at PLAY time.

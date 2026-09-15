@@ -24,7 +24,8 @@ class SolverCore {
   Solution solve(const Observation& observation, const EndEffectorTarget& target);
   std::vector<Solution> solveTrajectory(const Observation& observation,
                                         const EndEffectorTarget& target,
-                                        double samplePeriod = 0.02);
+                                        double samplePeriod = 0.02,
+                                        double terminalTransitionDuration = 0.5);
   bool trySolve(const Observation& observation, const EndEffectorTarget& target,
                 Solution& solution, std::string* errorMessage = nullptr) noexcept;
   void reset();
@@ -39,6 +40,8 @@ class SolverCore {
   void validateTrajectory(double initialTime, const ocs2::PrimalSolution& trajectory) const;
   Solution sampleSolution(double sampleTime, double outputTime,
                           const ocs2::PrimalSolution& trajectory);
+  Solution terminalHoldSolution(double outputTime,
+                                const ocs2::PrimalSolution& trajectory);
   std::unique_ptr<ocs2::StateInputCost> makeBoxConstraints(
       const ocs2::vector_t& nominalState, const std::string& taskFile) const;
 

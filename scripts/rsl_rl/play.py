@@ -31,6 +31,16 @@ ocs2_mode.add_argument("--ocs2", action="store_true", help="Enable the live exte
 ocs2_mode.add_argument(
     "--ocs2_trajectory", type=str, default=None, help="Replay an offline OCS2 trajectory CSV."
 )
+parser.add_argument(
+    "--ocs2_trajectory_zero_base_command",
+    action="store_true",
+    help="Offline replay ablation: force the planned base command to zero.",
+)
+parser.add_argument(
+    "--ocs2_trajectory_zero_wrench",
+    action="store_true",
+    help="Offline replay ablation: hide predicted wrench from the locomotion policy.",
+)
 parser.add_argument("--ocs2_host", type=str, default="127.0.0.1", help="OCS2 bridge IPv4 host.")
 parser.add_argument("--ocs2_port", type=int, default=5555, help="OCS2 bridge TCP port.")
 parser.add_argument("--ocs2_timeout", type=float, default=120.0, help="Background OCS2 socket timeout in seconds.")
@@ -85,6 +95,10 @@ from bipedal_locomotion.utils.wrappers.rsl_rl import RslRlPpoAlgorithmMlpCfg, ex
 def main():
     """Play with RSL-RL agent."""
     ocs2_control_enabled = args_cli.ocs2 or args_cli.ocs2_trajectory is not None
+    if (args_cli.ocs2_trajectory_zero_base_command or args_cli.ocs2_trajectory_zero_wrench) and (
+        args_cli.ocs2_trajectory is None
+    ):
+        raise ValueError("Offline trajectory ablation flags require --ocs2_trajectory.")
     if ocs2_control_enabled:
         args_cli.num_envs = 1
         print("[INFO] OCS2 control enabled; forcing num_envs=1.")
@@ -158,7 +172,12 @@ def main():
     elif args_cli.ocs2_trajectory is not None:
         from bipedal_locomotion.controllers.ocs2_trajectory_play_bridge import Ocs2TrajectoryPlayBridge
 
-        ocs2_bridge = Ocs2TrajectoryPlayBridge(env.unwrapped, args_cli.ocs2_trajectory)
+        ocs2_bridge = Ocs2TrajectoryPlayBridge(
+            env.unwrapped,
+            args_cli.ocs2_trajectory,
+            zero_base_command=args_cli.ocs2_trajectory_zero_base_command,
+            zero_wrench=args_cli.ocs2_trajectory_zero_wrench,
+        )
     # load previously trained model
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)

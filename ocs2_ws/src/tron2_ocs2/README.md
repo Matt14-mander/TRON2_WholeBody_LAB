@@ -123,4 +123,8 @@ The CSV contains 52 columns: relative time, six arm positions, six arm
 velocities, six feed-forward efforts, three body-frame planar commands, and
 five row-major `[Fx,Fy,Fz,Tx,Ty,Tz]` base-frame wrench samples. Playback is
 one-shot; after the final sample it holds terminal arm position/effort and
-zeros arm velocity and base motion rather than looping the reach.
+zeros arm velocity and base motion rather than looping the reach. The exporter
+appends a 0.5 s transition to a static terminal sample whose feed-forward
+effort and wrench are recomputed by RNEA with zero velocity and acceleration.
+For diagnosis, `--ocs2_trajectory_zero_base_command` and
+`--ocs2_trajectory_zero_wrench` independently disable those two policy inputs.

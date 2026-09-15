@@ -348,9 +348,14 @@ Solution SolverCore::solve(const Observation& observation, const EndEffectorTarg
 
 std::vector<Solution> SolverCore::solveTrajectory(const Observation& observation,
                                                   const EndEffectorTarget& target,
-                                                  double samplePeriod) {
+                                                  double samplePeriod,
+                                                  double terminalTransitionDuration) {
   if (!std::isfinite(samplePeriod) || samplePeriod <= 0.0) {
     throw std::invalid_argument("Trajectory sample period must be positive and finite.");
+  }
+  if (!std::isfinite(terminalTransitionDuration) || terminalTransitionDuration <= 0.0) {
+    throw std::invalid_argument(
+        "Terminal transition duration must be positive and finite.");
   }
   const auto trajectory = runMpc(observation, target);
   validateTrajectory(observation.time, trajectory);
@@ -362,7 +367,34 @@ std::vector<Solution> SolverCore::solveTrajectory(const Observation& observation
   if (samples.empty() || samples.back().time < finalTime - observation.time - 1e-9) {
     samples.emplace_back(sampleSolution(finalTime, finalTime - observation.time, trajectory));
   }
+  samples.emplace_back(terminalHoldSolution(
+      finalTime - observation.time + terminalTransitionDuration, trajectory));
   return samples;
+}
+
+Solution SolverCore::terminalHoldSolution(double outputTime,
+                                          const ocs2::PrimalSolution& trajectory) {
+  ocs2::vector_t state = trajectory.stateTrajectory_.back();
+  requireSize(state, kStateDim, "terminal state");
+  state.segment<6>(kArmVelocityIndex).setZero();
+  const ocs2::vector_t input = ocs2::vector_t::Zero(kInputDim);
+
+  Solution out;
+  out.time = outputTime;
+  out.armPosition = state.segment<6>(kArmPositionIndex);
+  out.armVelocity.setZero();
+  out.baseVelocityCommand.setZero();
+  out.armEffort = wrenchEstimator_->armEffort(state, input);
+  const auto effortLimits = pinocchioInterface_->getModel().effortLimit.tail(kArmDof);
+  out.armEffort = out.armEffort.cwiseMax(-effortLimits).cwiseMin(effortLimits);
+  const auto holdWrench = wrenchEstimator_->armOnBaseWrench(state, input);
+  for (Eigen::Index row = 0; row < out.baseWrenchPrediction.rows(); ++row) {
+    out.baseWrenchPrediction.row(row) = holdWrench.transpose();
+  }
+  out.valid = out.armPosition.allFinite() && out.armEffort.allFinite() &&
+              out.baseWrenchPrediction.allFinite();
+  if (!out.valid) throw std::runtime_error("OCS2 terminal hold contains non-finite values.");
+  return out;
 }
 
 bool SolverCore::trySolve(const Observation& observation, const EndEffectorTarget& target,
