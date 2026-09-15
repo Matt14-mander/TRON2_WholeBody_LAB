@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import socket
+import threading
+import time
 from typing import Iterable
 
 import numpy as np
@@ -51,6 +53,17 @@ class Ocs2MpcSolution:
 
 class Ocs2BridgeError(RuntimeError):
     """Communication, protocol, or solver failure reported by the OCS2 bridge."""
+
+
+@dataclass(frozen=True)
+class Ocs2AsyncStatus:
+    """Latest result produced by the non-blocking OCS2 worker."""
+
+    solution: Ocs2MpcSolution | None
+    solve_duration_s: float | None
+    error: str | None
+    error_serial: int
+    busy: bool
 
 
 def _finite_vector(name: str, value: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
@@ -205,3 +218,123 @@ class Ocs2TcpClient:
             raise Ocs2BridgeError(f"OCS2 bridge reset failed: {error}") from error
         if response != ["OK_RESET", str(request_id)]:
             raise Ocs2BridgeError(f"Malformed OCS2 reset response: {' '.join(response)}")
+
+
+class Ocs2AsyncClient:
+    """Run the blocking TCP client on one daemon thread.
+
+    At most one solve is in flight. While it runs, repeated :meth:`submit`
+    calls coalesce into the newest observation, preventing an unbounded queue
+    when OCS2 is slower than the Isaac Lab policy loop.
+    """
+
+    def __init__(self, client: Ocs2TcpClient):
+        self._client = client
+        self._condition = threading.Condition()
+        self._pending: tuple[int, Ocs2MpcObservation] | None = None
+        self._latest_solution: Ocs2MpcSolution | None = None
+        self._latest_duration_s: float | None = None
+        self._latest_error: str | None = None
+        self._error_serial = 0
+        self._generation = 0
+        self._reset_pending = False
+        self._busy = False
+        self._closed = False
+        self._thread = threading.Thread(target=self._run, name="tron2-ocs2-client", daemon=True)
+        self._thread.start()
+
+    def submit(self, observation: Ocs2MpcObservation) -> None:
+        validate_mpc_observation(observation)
+        with self._condition:
+            if self._closed:
+                raise RuntimeError("OCS2 asynchronous client is closed.")
+            self._pending = (self._generation, observation)
+            self._condition.notify()
+
+    def status(self) -> Ocs2AsyncStatus:
+        with self._condition:
+            return Ocs2AsyncStatus(
+                solution=self._latest_solution,
+                solve_duration_s=self._latest_duration_s,
+                error=self._latest_error,
+                error_serial=self._error_serial,
+                busy=self._busy or self._pending is not None,
+            )
+
+    def reset(self) -> None:
+        """Invalidate old results and enqueue a reset without blocking Isaac Lab."""
+        with self._condition:
+            if self._closed:
+                return
+            self._generation += 1
+            self._pending = None
+            self._latest_solution = None
+            self._latest_duration_s = None
+            self._latest_error = None
+            self._reset_pending = True
+            self._condition.notify()
+
+    def close(self) -> None:
+        with self._condition:
+            if self._closed:
+                return
+            self._closed = True
+            self._condition.notify_all()
+        # Interrupt a worker blocked in recv(). The worker owns all other
+        # transport operations, so this is the only cross-thread socket call.
+        self._client.close()
+        self._thread.join(timeout=1.0)
+
+    def _record_error(self, error: Exception) -> None:
+        with self._condition:
+            self._latest_error = str(error)
+            self._error_serial += 1
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                self._condition.wait_for(
+                    lambda: self._closed or self._reset_pending or self._pending is not None
+                )
+                if self._closed:
+                    return
+                if self._reset_pending:
+                    self._reset_pending = False
+                    operation = "reset"
+                    generation = self._generation
+                    observation = None
+                else:
+                    operation = "solve"
+                    generation, observation = self._pending  # type: ignore[misc]
+                    self._pending = None
+                self._busy = True
+
+            if operation == "reset":
+                try:
+                    self._client.reset()
+                except (Ocs2BridgeError, OSError, ValueError, RuntimeError) as error:
+                    self._record_error(error)
+                finally:
+                    with self._condition:
+                        self._busy = False
+                continue
+
+            started = time.monotonic()
+            try:
+                solution = self._client.solve(observation)  # type: ignore[arg-type]
+                duration = time.monotonic() - started
+                with self._condition:
+                    # A reset may have been requested while solve() was
+                    # blocking. Never publish a result from the old episode.
+                    if generation == self._generation:
+                        self._latest_solution = solution
+                        self._latest_duration_s = duration
+                        self._latest_error = None
+            except (Ocs2BridgeError, OSError, ValueError, RuntimeError) as error:
+                with self._condition:
+                    current_generation = self._generation
+                if generation == current_generation:
+                    self._record_error(error)
+            finally:
+                with self._condition:
+                    self._busy = False

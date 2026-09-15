@@ -50,12 +50,14 @@ five prediction offsets are always available.
 
 ### Stage 2B - runtime bridges (in progress)
 
-- A localhost TCP service and Isaac Lab PLAY client now connect the native C++
-  solver without mixing the OCS2 and Isaac Sim Conda environments.
+- A localhost TCP service and non-blocking Isaac Lab PLAY client now connect
+  the native C++ solver without mixing the OCS2 and Isaac Sim Conda environments.
 - The PLAY adapter writes arm position/velocity/feed-forward effort targets,
   the planar base command, and the normalized 5x6 predicted-wrench observation.
-- Stale solutions, transport errors, and solver failures hold the arm and zero
-  both the locomotion command and predicted wrench.
+- OCS2 runs on one background worker; requests are coalesced to the newest
+  observation so a slow solver cannot block rendering or build an unbounded
+  queue. Stale solutions, transport errors, and solver failures hold the arm
+  and zero both the locomotion command and predicted wrench.
 - Build and closed-loop simulation validation on the Linux Isaac Lab host is
   still required before this stage is marked implemented.
 - Reuse the same transport-neutral contract for the MuJoCo deployment bridge.

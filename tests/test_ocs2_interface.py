@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 import sys
+import threading
+import time
 import unittest
 
 import numpy as np
@@ -20,6 +22,8 @@ _MODULE = importlib.util.module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = _MODULE
 _SPEC.loader.exec_module(_MODULE)
 Ocs2MpcObservation = _MODULE.Ocs2MpcObservation
+Ocs2MpcSolution = _MODULE.Ocs2MpcSolution
+Ocs2AsyncClient = _MODULE.Ocs2AsyncClient
 Ocs2TcpClient = _MODULE.Ocs2TcpClient
 
 
@@ -63,6 +67,64 @@ class Ocs2TcpClientTest(unittest.TestCase):
         np.testing.assert_array_equal(solution.arm_position, np.arange(1, 7))
         np.testing.assert_array_equal(solution.base_velocity_command, np.arange(19, 22))
         np.testing.assert_array_equal(solution.base_wrench_prediction, np.arange(22, 52).reshape(5, 6))
+
+
+class _ControlledClient:
+    def __init__(self):
+        self.release = threading.Event()
+        self.started = threading.Event()
+        self.closed = False
+
+    def solve(self, observation):
+        self.started.set()
+        self.release.wait(timeout=1.0)
+        return Ocs2MpcSolution(
+            time=observation.time,
+            arm_position=np.zeros(6),
+            arm_velocity=np.zeros(6),
+            arm_feedforward_effort=np.zeros(6),
+            base_velocity_command=np.zeros(3),
+            base_wrench_prediction=np.zeros((5, 6)),
+        )
+
+    def reset(self):
+        pass
+
+    def close(self):
+        self.closed = True
+        self.release.set()
+
+
+class Ocs2AsyncClientTest(unittest.TestCase):
+    @staticmethod
+    def _observation(simulation_time):
+        return Ocs2MpcObservation(
+            time=simulation_time,
+            base_position_world=np.zeros(3),
+            base_quaternion_world=np.array([1.0, 0.0, 0.0, 0.0]),
+            base_twist_body=np.zeros(6),
+            arm_position=np.zeros(6),
+            arm_velocity=np.zeros(6),
+            end_effector_target_position_world=np.array([0.35, 0.0, 0.85]),
+            end_effector_target_quaternion_world=np.array([1.0, 0.0, 0.0, 0.0]),
+        )
+
+    def test_submit_does_not_block_and_publishes_result(self):
+        transport = _ControlledClient()
+        client = Ocs2AsyncClient(transport)
+        started = time.monotonic()
+        client.submit(self._observation(0.25))
+        self.assertLess(time.monotonic() - started, 0.1)
+        self.assertTrue(transport.started.wait(timeout=1.0))
+        self.assertIsNone(client.status().solution)
+
+        transport.release.set()
+        deadline = time.monotonic() + 1.0
+        while client.status().solution is None and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(client.status().solution.time, 0.25)
+        client.close()
+        self.assertTrue(transport.closed)
 
 
 if __name__ == "__main__":

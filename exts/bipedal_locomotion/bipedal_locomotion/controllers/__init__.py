@@ -1,6 +1,8 @@
 """Controllers and deployment interfaces for TRON2."""
 
 from .ocs2_interface import (
+    Ocs2AsyncClient,
+    Ocs2AsyncStatus,
     Ocs2BridgeError,
     Ocs2MpcObservation,
     Ocs2MpcSolution,

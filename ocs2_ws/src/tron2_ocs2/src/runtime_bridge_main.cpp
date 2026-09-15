@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -113,7 +114,16 @@ std::string handleRequest(const std::string& line, tron2_ocs2::SolverCore& solve
 
   tron2_ocs2::Solution solution;
   std::string error;
-  if (!solver.trySolve(observation, target, solution, &error)) {
+  std::clog << "[OCS2] request=" << requestId << " sim_time=" << observation.time
+            << " status=started" << std::endl;
+  const auto started = std::chrono::steady_clock::now();
+  const bool success = solver.trySolve(observation, target, solution, &error);
+  const double elapsedMilliseconds =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+  std::clog << "[OCS2] request=" << requestId << " sim_time=" << observation.time
+            << " elapsed_ms=" << elapsedMilliseconds
+            << " status=" << (success ? "ok" : "error") << std::endl;
+  if (!success) {
     return "ERR " + std::to_string(requestId) + " " + sanitizeError(error) + "\n";
   }
   return solutionResponse(requestId, solution);

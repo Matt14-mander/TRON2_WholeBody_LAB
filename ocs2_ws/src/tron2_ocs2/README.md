@@ -61,7 +61,8 @@ ros2 run tron2_ocs2 tron2_ocs2_bridge \
 The server binds to `127.0.0.1` by default, accepts one persistent client, and
 preserves the warm-started MPC instance between requests. Its line protocol
 supports `SOLVE` and `RESET`; responses carry request identifiers so stale or
-misordered solutions are rejected.
+misordered solutions are rejected. Each request prints `elapsed_ms` on the
+server so the achievable MPC rate can be measured on the deployment host.
 
 In a second terminal, activate the Isaac Lab environment and run the WholeBody
 PLAY task with `--ocs2`. The bridge currently supports one environment:
@@ -70,6 +71,8 @@ PLAY task with `--ocs2`. The bridge currently supports one environment:
 LIVESTREAM=2 python scripts/rsl_rl/play.py \
   --task Isaac-Limx-SFYG-TRON2A-WholeBody-Flat-Play-v0 \
   --num_envs 1 --headless --ocs2 \
+  --ocs2_update_period 0.1 \
+  --ocs2_max_solution_age 0.5 \
   --ocs2_target_position 0.35 0.0 0.85 \
   --ocs2_target_quaternion 1.0 0.0 0.0 0.0 \
   --checkpoint_path /absolute/path/to/model.pt
@@ -78,6 +81,9 @@ LIVESTREAM=2 python scripts/rsl_rl/play.py \
 OCS2 owns the six arm position/velocity/feed-forward-effort targets and the
 planar locomotion command. Its 5x6 base-wrench prediction replaces the zero
 PLAY command observed by the policy. It is not applied as an external force:
-the articulated arm already produces that reaction in simulation. A timeout,
-invalid response, stale timestamp, or solver failure holds the arm at its
-current position and zeros both the planar command and predicted wrench.
+the articulated arm already produces that reaction in simulation. Blocking
+TCP and DDP work runs on a background thread; the renderer and 50 Hz policy
+loop never wait for it, and observations submitted while a solve is in flight
+are coalesced to the newest state. A timeout, invalid response, stale
+timestamp, or solver failure holds the arm at its current position and zeros
+both the planar command and predicted wrench.

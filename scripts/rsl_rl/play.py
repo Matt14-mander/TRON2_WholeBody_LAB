@@ -29,9 +29,12 @@ parser.add_argument("--checkpoint_path", type=str, default=None, help="Relative 
 parser.add_argument("--ocs2", action="store_true", help="Enable the external OCS2 arm MPC runtime bridge.")
 parser.add_argument("--ocs2_host", type=str, default="127.0.0.1", help="OCS2 bridge IPv4 host.")
 parser.add_argument("--ocs2_port", type=int, default=5555, help="OCS2 bridge TCP port.")
-parser.add_argument("--ocs2_timeout", type=float, default=0.5, help="OCS2 bridge socket timeout in seconds.")
+parser.add_argument("--ocs2_timeout", type=float, default=120.0, help="Background OCS2 socket timeout in seconds.")
 parser.add_argument(
-    "--ocs2_max_solution_age", type=float, default=0.05, help="Maximum accepted OCS2 solution age in simulation seconds."
+    "--ocs2_max_solution_age", type=float, default=0.5, help="Maximum accepted OCS2 solution age in simulation seconds."
+)
+parser.add_argument(
+    "--ocs2_update_period", type=float, default=0.1, help="Simulation-time period between OCS2 submissions."
 )
 parser.add_argument(
     "--ocs2_target_position", type=float, nargs=3, default=(0.35, 0.0, 0.85), metavar=("X", "Y", "Z")
@@ -140,8 +143,13 @@ def main():
             args_cli.ocs2_target_position,
             args_cli.ocs2_target_quaternion,
             args_cli.ocs2_max_solution_age,
+            args_cli.ocs2_update_period,
         )
-        print(f"[INFO] OCS2 client configured for {args_cli.ocs2_host}:{args_cli.ocs2_port}.")
+        print(
+            f"[INFO] OCS2 asynchronous client configured for {args_cli.ocs2_host}:{args_cli.ocs2_port}; "
+            f"timeout={args_cli.ocs2_timeout:.3f}s, update_period={args_cli.ocs2_update_period:.3f}s, "
+            f"max_solution_age={args_cli.ocs2_max_solution_age:.3f}s."
+        )
     # load previously trained model
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
@@ -210,7 +218,9 @@ def main():
 
 
 if __name__ == "__main__":
-    EXPORT_POLICY = True
+    # Runtime bridge validation should reach the render/control loop quickly;
+    # exporting unchanged artifacts on every OCS2 launch is unnecessary.
+    EXPORT_POLICY = not args_cli.ocs2
     # run the main execution
     main()
     # close sim app
