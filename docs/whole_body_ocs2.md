@@ -56,8 +56,11 @@ five prediction offsets are always available.
   the planar base command, and the normalized 5x6 predicted-wrench observation.
 - OCS2 runs on one background worker; requests are coalesced to the newest
   observation so a slow solver cannot block rendering or build an unbounded
-  queue. Stale solutions, transport errors, and solver failures hold the arm
-  and zero both the locomotion command and predicted wrench.
+  queue. Until a fresh solution is available, PLAY pumps the render/WebRTC
+  event loop but pauses physics, preventing fallback falls and episode resets
+  from invalidating a slow solve. Stale solutions, transport errors, and solver
+  failures hold the arm and zero both the locomotion command and predicted
+  wrench.
 - Build and closed-loop simulation validation on the Linux Isaac Lab host is
   still required before this stage is marked implemented.
 - Reuse the same transport-neutral contract for the MuJoCo deployment bridge.

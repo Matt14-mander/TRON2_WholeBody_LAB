@@ -58,6 +58,7 @@ class Ocs2PlayBridge:
         self._update_period_s = update_period_s
         self._async_client = Ocs2AsyncClient(client)
         self._last_submission_time = -math.inf
+        self._next_retry_wall_time = -math.inf
 
         self._robot: Articulation = env.scene["robot"]
         self._arm_joint_ids, arm_joint_names = self._robot.find_joints(
@@ -161,9 +162,13 @@ class Ocs2PlayBridge:
     def update(self, policy_observation: torch.Tensor, command_observation: torch.Tensor) -> bool:
         """Submit work and apply the newest safe result without blocking simulation."""
         observation = self._observation()
+        now = time.monotonic()
         if observation.time + 1e-9 < self._last_submission_time:
             self._last_submission_time = -math.inf
-        if observation.time - self._last_submission_time + 1e-9 >= self._update_period_s:
+        if (
+            observation.time - self._last_submission_time + 1e-9 >= self._update_period_s
+            and now >= self._next_retry_wall_time
+        ):
             self._async_client.submit(observation)
             self._last_submission_time = observation.time
 
@@ -171,13 +176,20 @@ class Ocs2PlayBridge:
         if status.error_serial > self._reported_error_serial:
             self._reported_error_serial = status.error_serial
             self._failure_count += 1
+            # Physics may be paused at a fixed simulation timestamp. Permit a
+            # wall-clock-limited retry even though simulation time did not
+            # advance since the failed request.
+            self._last_submission_time = -math.inf
+            self._next_retry_wall_time = now + 1.0
             self._warn(f"OCS2 background solve failed (failure {self._failure_count}): {status.error}")
 
         solution = status.solution
         if solution is None:
             self._fallback(policy_observation, command_observation)
             if not self._pending_message_printed:
-                print("[INFO] OCS2 solve is pending; Isaac Lab remains non-blocking in safe fallback.")
+                print(
+                    "[INFO] OCS2 solve is pending; physics is paused while WebRTC remains responsive."
+                )
                 self._pending_message_printed = True
             return False
 
@@ -219,6 +231,7 @@ class Ocs2PlayBridge:
 
     def reset(self) -> None:
         self._last_submission_time = -math.inf
+        self._next_retry_wall_time = -math.inf
         self._reported_solution_time = None
         self._pending_message_printed = False
         self._async_client.reset()

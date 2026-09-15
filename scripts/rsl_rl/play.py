@@ -197,8 +197,16 @@ def main():
             keyboard.look_at()
         # run everything in inference mode
         with torch.inference_mode():
+            ocs2_solution_ready = True
             if ocs2_bridge is not None:
-                ocs2_bridge.update(obs, commands)
+                ocs2_solution_ready = ocs2_bridge.update(obs, commands)
+            if not ocs2_solution_ready:
+                # Pump the Omniverse event/render loop so WebRTC stays alive,
+                # but do not advance physics with a missing or stale MPC
+                # result. This also prevents episode resets from continually
+                # invalidating a slow first OCS2 solve.
+                simulation_app.update()
+                continue
             # agent stepping
             est = encoder(obs_history)
             actions = policy(torch.cat((est, obs, commands), dim=-1).detach())

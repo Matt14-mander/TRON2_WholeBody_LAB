@@ -82,8 +82,9 @@ OCS2 owns the six arm position/velocity/feed-forward-effort targets and the
 planar locomotion command. Its 5x6 base-wrench prediction replaces the zero
 PLAY command observed by the policy. It is not applied as an external force:
 the articulated arm already produces that reaction in simulation. Blocking
-TCP and DDP work runs on a background thread; the renderer and 50 Hz policy
-loop never wait for it, and observations submitted while a solve is in flight
-are coalesced to the newest state. A timeout, invalid response, stale
-timestamp, or solver failure holds the arm at its current position and zeros
-both the planar command and predicted wrench.
+TCP and DDP work runs on a background thread, and observations submitted while
+a solve is in flight are coalesced to the newest state. While no fresh result
+is available, PLAY pauses physics but continues pumping the render/WebRTC event
+loop. A timeout, invalid response, stale timestamp, or solver failure therefore
+cannot advance the robot with mismatched inputs; the arm is held and both the
+planar command and predicted wrench are zeroed.
