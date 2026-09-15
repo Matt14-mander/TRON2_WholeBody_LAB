@@ -49,6 +49,12 @@ parser.add_argument(
     metavar=("VX", "VY", "WZ"),
     help="Smoothly continue with this body-frame base command after offline replay.",
 )
+parser.add_argument(
+    "--ocs2_trajectory_start_delay",
+    type=float,
+    default=0.0,
+    help="Warm-up seconds before starting offline arm motion.",
+)
 parser.add_argument("--ocs2_host", type=str, default="127.0.0.1", help="OCS2 bridge IPv4 host.")
 parser.add_argument("--ocs2_port", type=int, default=5555, help="OCS2 bridge TCP port.")
 parser.add_argument("--ocs2_timeout", type=float, default=120.0, help="Background OCS2 socket timeout in seconds.")
@@ -107,6 +113,7 @@ def main():
         args_cli.ocs2_trajectory_zero_base_command
         or args_cli.ocs2_trajectory_zero_wrench
         or args_cli.ocs2_trajectory_terminal_base_command is not None
+        or args_cli.ocs2_trajectory_start_delay != 0.0
     )
     if trajectory_only_option_used and args_cli.ocs2_trajectory is None:
         raise ValueError("Offline trajectory ablation flags require --ocs2_trajectory.")
@@ -196,6 +203,7 @@ def main():
             zero_base_command=args_cli.ocs2_trajectory_zero_base_command,
             zero_wrench=args_cli.ocs2_trajectory_zero_wrench,
             terminal_base_command=args_cli.ocs2_trajectory_terminal_base_command,
+            start_delay_s=args_cli.ocs2_trajectory_start_delay,
         )
     # load previously trained model
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")

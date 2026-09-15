@@ -22,6 +22,7 @@ class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
         zero_wrench: bool = False,
         terminal_base_command: tuple[float, float, float] | None = None,
         terminal_transition_duration_s: float = 0.5,
+        start_delay_s: float = 0.0,
     ):
         super().__init__(env)
         self._trajectory = Ocs2Trajectory.from_csv(trajectory_path)
@@ -40,11 +41,15 @@ class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
             if terminal_transition_duration_s <= 0.0:
                 raise ValueError("Terminal base-command transition duration must be positive.")
         self._terminal_transition_duration_s = terminal_transition_duration_s
+        if not np.isfinite(start_delay_s) or start_delay_s < 0.0:
+            raise ValueError("Trajectory start delay must be finite and non-negative.")
+        self._start_delay_s = start_delay_s
         self._start_time: float | None = None
         self._terminal_reported = False
         print(
             f"[INFO] Loaded offline OCS2 trajectory: {trajectory_path}; "
-            f"samples={self._trajectory.data.shape[0]}, duration={self._trajectory.duration:.3f}s."
+            f"samples={self._trajectory.data.shape[0]}, duration={self._trajectory.duration:.3f}s, "
+            f"start_delay={self._start_delay_s:.3f}s."
         )
         data = self._trajectory.data
         print(
@@ -59,8 +64,23 @@ class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
         simulation_time = float(self._env.common_step_counter) * float(self._env.step_dt)
         if self._start_time is None:
             self._start_time = simulation_time
-        playback_time = max(0.0, simulation_time - self._start_time)
+        elapsed_time = max(0.0, simulation_time - self._start_time)
+        playback_time = max(0.0, elapsed_time - self._start_delay_s)
         solution = self._trajectory.sample(playback_time)
+        if elapsed_time < self._start_delay_s:
+            # Let contacts, policy history, and actuator targets settle before
+            # the arm motion begins. Keep the arm at the first trajectory pose
+            # and walk with the requested terminal cruise command when given.
+            warmup_base_command = (
+                solution.base_velocity_command
+                if self._terminal_base_command is None
+                else self._terminal_base_command
+            )
+            solution = replace(
+                solution,
+                arm_velocity=np.zeros(6, dtype=np.float64),
+                base_velocity_command=warmup_base_command.copy(),
+            )
         if self._terminal_base_command is not None:
             transition_start = max(
                 0.0, self._trajectory.duration - self._terminal_transition_duration_s

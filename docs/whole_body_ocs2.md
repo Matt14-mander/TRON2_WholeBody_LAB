@@ -79,6 +79,8 @@ five prediction offsets are always available.
   simulation time without any OCS2 process at PLAY time.
 - A configurable terminal planar command supports continued walking after the
   one-shot arm motion; its final 0.5 s transition uses cubic smoothstep.
+- An optional startup delay holds the first arm sample while locomotion,
+  contacts, actuator targets, and policy observations settle.
 
 ### Stage 3 - policy fidelity and hardware
 

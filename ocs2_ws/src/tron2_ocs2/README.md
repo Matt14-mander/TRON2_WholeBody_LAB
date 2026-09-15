@@ -131,3 +131,5 @@ For diagnosis, `--ocs2_trajectory_zero_base_command` and
 For a locomotion-focused test, append
 `--ocs2_trajectory_terminal_base_command VX VY WZ`; PLAY smoothly blends to
 that body-frame cruise command over the final 0.5 s instead of stopping.
+`--ocs2_trajectory_start_delay SECONDS` holds the initial arm sample while the
+locomotion/contact state settles before playback begins.
