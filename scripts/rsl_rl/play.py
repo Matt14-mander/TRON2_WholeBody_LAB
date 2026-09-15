@@ -26,7 +26,11 @@ parser.add_argument("--num_envs", type=int, default=None, help="Number of enviro
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--checkpoint_path", type=str, default=None, help="Relative path to checkpoint file.")
-parser.add_argument("--ocs2", action="store_true", help="Enable the external OCS2 arm MPC runtime bridge.")
+ocs2_mode = parser.add_mutually_exclusive_group()
+ocs2_mode.add_argument("--ocs2", action="store_true", help="Enable the live external OCS2 runtime bridge.")
+ocs2_mode.add_argument(
+    "--ocs2_trajectory", type=str, default=None, help="Replay an offline OCS2 trajectory CSV."
+)
 parser.add_argument("--ocs2_host", type=str, default="127.0.0.1", help="OCS2 bridge IPv4 host.")
 parser.add_argument("--ocs2_port", type=int, default=5555, help="OCS2 bridge TCP port.")
 parser.add_argument("--ocs2_timeout", type=float, default=120.0, help="Background OCS2 socket timeout in seconds.")
@@ -80,9 +84,10 @@ from bipedal_locomotion.utils.wrappers.rsl_rl import RslRlPpoAlgorithmMlpCfg, ex
 
 def main():
     """Play with RSL-RL agent."""
-    if args_cli.ocs2:
+    ocs2_control_enabled = args_cli.ocs2 or args_cli.ocs2_trajectory is not None
+    if ocs2_control_enabled:
         args_cli.num_envs = 1
-        print("[INFO] OCS2 bridge enabled; forcing num_envs=1.")
+        print("[INFO] OCS2 control enabled; forcing num_envs=1.")
     # parse configuration
     env_cfg: ManagerBasedRLEnvCfg = parse_env_cfg(
         task_name=args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs
@@ -91,9 +96,9 @@ def main():
 
     env_cfg.seed = agent_cfg.seed
 
-    if args_cli.ocs2:
+    if ocs2_control_enabled:
         if not args_cli.task or "WholeBody" not in args_cli.task:
-            raise ValueError("--ocs2 requires a WholeBody PLAY task.")
+            raise ValueError("OCS2 control requires a WholeBody PLAY task.")
         # OCS2 owns the planar command. Prevent the random command generator
         # from resampling or applying heading control over the bridge output.
         env_cfg.commands.base_velocity.resampling_time_range = (1e9, 1e9)
@@ -150,6 +155,10 @@ def main():
             f"timeout={args_cli.ocs2_timeout:.3f}s, update_period={args_cli.ocs2_update_period:.3f}s, "
             f"max_solution_age={args_cli.ocs2_max_solution_age:.3f}s."
         )
+    elif args_cli.ocs2_trajectory is not None:
+        from bipedal_locomotion.controllers.ocs2_trajectory_play_bridge import Ocs2TrajectoryPlayBridge
+
+        ocs2_bridge = Ocs2TrajectoryPlayBridge(env.unwrapped, args_cli.ocs2_trajectory)
     # load previously trained model
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
@@ -228,7 +237,7 @@ def main():
 if __name__ == "__main__":
     # Runtime bridge validation should reach the render/control loop quickly;
     # exporting unchanged artifacts on every OCS2 launch is unnecessary.
-    EXPORT_POLICY = not args_cli.ocs2
+    EXPORT_POLICY = not (args_cli.ocs2 or args_cli.ocs2_trajectory is not None)
     # run the main execution
     main()
     # close sim app

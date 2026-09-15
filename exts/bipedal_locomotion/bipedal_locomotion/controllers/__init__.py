@@ -10,3 +10,4 @@ from .ocs2_interface import (
     validate_mpc_observation,
     validate_mpc_solution,
 )
+from .ocs2_trajectory import Ocs2Trajectory, TRAJECTORY_COLUMNS

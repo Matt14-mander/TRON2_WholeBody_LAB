@@ -65,6 +65,19 @@ five prediction offsets are always available.
   still required before this stage is marked implemented.
 - Reuse the same transport-neutral contract for the MuJoCo deployment bridge.
 
+### Stage 2C - offline trajectory replay (implemented, awaiting host validation)
+
+- `tron2_ocs2_trajectory_export` performs one OCS2 solve and samples the full
+  primal trajectory at 50 Hz into a fixed 52-column CSV contract.
+- Each row contains arm position, velocity, feed-forward effort, planar base
+  command, and the 5x6 predicted base wrench used by the WholeBody actor.
+- The last optimized state is extended as a constant for wrench preview near
+  the horizon boundary. Playback holds terminal arm position and effort while
+  forcing arm velocity and planar base command to zero.
+- Isaac Lab accepts `--ocs2_trajectory PATH` as a mutually exclusive
+  alternative to the live TCP bridge and interpolates the CSV against
+  simulation time without any OCS2 process at PLAY time.
+
 ### Stage 3 - policy fidelity and hardware
 
 - Add teacher/student distillation and a dedicated wrench RNN.

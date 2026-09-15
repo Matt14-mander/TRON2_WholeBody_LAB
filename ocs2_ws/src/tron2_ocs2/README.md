@@ -88,3 +88,39 @@ is available, PLAY pauses physics but continues pumping the render/WebRTC event
 loop. A timeout, invalid response, stale timestamp, or solver failure therefore
 cannot advance the robot with mismatched inputs; the arm is held and both the
 planar command and predicted wrench are zeroed.
+
+## Offline trajectory export and replay
+
+When the host cannot solve OCS2 in real time, export the complete primal
+solution once. The default target is position `[0.35, 0.0, 0.85]`, identity
+WXYZ orientation, and the default sample period is 0.02 s:
+
+```bash
+ros2 run tron2_ocs2 tron2_ocs2_trajectory_export \
+  /tmp/tron2_ocs2_runtime.info \
+  "$PWD/../robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf" \
+  /tmp/tron2_ocs2_codegen \
+  /tmp/tron2_reach.csv
+```
+
+An explicit target and sample period may be appended as:
+
+```text
+TARGET_X TARGET_Y TARGET_Z TARGET_QW TARGET_QX TARGET_QY TARGET_QZ SAMPLE_PERIOD
+```
+
+Replay requires only the Isaac Lab environment; do not start the TCP service:
+
+```bash
+LIVESTREAM=2 python scripts/rsl_rl/play.py \
+  --task Isaac-Limx-SFYG-TRON2A-WholeBody-Flat-Play-v0 \
+  --num_envs 1 --headless \
+  --ocs2_trajectory /tmp/tron2_reach.csv \
+  --checkpoint_path /absolute/path/to/model.pt
+```
+
+The CSV contains 52 columns: relative time, six arm positions, six arm
+velocities, six feed-forward efforts, three body-frame planar commands, and
+five row-major `[Fx,Fy,Fz,Tx,Ty,Tz]` base-frame wrench samples. Playback is
+one-shot; after the final sample it holds terminal arm position/effort and
+zeros arm velocity and base motion rather than looping the reach.

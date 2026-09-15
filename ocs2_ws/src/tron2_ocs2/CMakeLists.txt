@@ -46,7 +46,11 @@ add_executable(tron2_ocs2_bridge src/runtime_bridge_main.cpp)
 target_link_libraries(tron2_ocs2_bridge ${PROJECT_NAME})
 ament_target_dependencies(tron2_ocs2_bridge ocs2_oc ocs2_core)
 
-install(TARGETS ${PROJECT_NAME} tron2_ocs2_smoke tron2_ocs2_bridge
+add_executable(tron2_ocs2_trajectory_export src/trajectory_export_main.cpp)
+target_link_libraries(tron2_ocs2_trajectory_export ${PROJECT_NAME})
+ament_target_dependencies(tron2_ocs2_trajectory_export ocs2_oc ocs2_core)
+
+install(TARGETS ${PROJECT_NAME} tron2_ocs2_smoke tron2_ocs2_bridge tron2_ocs2_trajectory_export
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

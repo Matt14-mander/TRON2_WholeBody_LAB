@@ -2,10 +2,12 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <ocs2_core/initialization/DefaultInitializer.h>
 #include <ocs2_ddp/GaussNewtonDDP_MPC.h>
 #include <ocs2_oc/oc_problem/OptimalControlProblem.h>
+#include <ocs2_oc/oc_data/PrimalSolution.h>
 #include <ocs2_oc/rollout/TimeTriggeredRollout.h>
 #include <ocs2_oc/synchronized_module/ReferenceManager.h>
 #include <ocs2_pinocchio_interface/PinocchioInterface.h>
@@ -20,6 +22,9 @@ class SolverCore {
   SolverCore(const std::string& taskFile, const std::string& urdfFile,
              const std::string& libraryFolder);
   Solution solve(const Observation& observation, const EndEffectorTarget& target);
+  std::vector<Solution> solveTrajectory(const Observation& observation,
+                                        const EndEffectorTarget& target,
+                                        double samplePeriod = 0.02);
   bool trySolve(const Observation& observation, const EndEffectorTarget& target,
                 Solution& solution, std::string* errorMessage = nullptr) noexcept;
   void reset();
@@ -29,6 +34,11 @@ class SolverCore {
  private:
   ocs2::vector_t observationToState(const Observation& observation) const;
   ocs2::TargetTrajectories makeTarget(double time, const EndEffectorTarget& target) const;
+  ocs2::PrimalSolution runMpc(const Observation& observation,
+                              const EndEffectorTarget& target);
+  void validateTrajectory(double initialTime, const ocs2::PrimalSolution& trajectory) const;
+  Solution sampleSolution(double sampleTime, double outputTime,
+                          const ocs2::PrimalSolution& trajectory);
   std::unique_ptr<ocs2::StateInputCost> makeBoxConstraints(
       const ocs2::vector_t& nominalState, const std::string& taskFile) const;
 

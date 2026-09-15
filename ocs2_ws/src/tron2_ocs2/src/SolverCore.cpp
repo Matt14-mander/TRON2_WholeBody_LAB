@@ -273,21 +273,26 @@ ocs2::TargetTrajectories SolverCore::makeTarget(double time,
                                   {ocs2::vector_t(), ocs2::vector_t()});
 }
 
-Solution SolverCore::solve(const Observation& observation, const EndEffectorTarget& target) {
+ocs2::PrimalSolution SolverCore::runMpc(const Observation& observation,
+                                        const EndEffectorTarget& target) {
   const ocs2::vector_t initialState = observationToState(observation);
   referenceManager_->setTargetTrajectories(makeTarget(observation.time, target));
   if (!mpc_->run(observation.time, initialState)) {
     throw std::runtime_error("OCS2 MPC did not produce a new policy.");
   }
-  ocs2::PrimalSolution trajectory =
-      mpc_->getSolverPtr()->primalSolution(observation.time + horizon_);
+  return mpc_->getSolverPtr()->primalSolution(observation.time + horizon_);
+}
+
+void SolverCore::validateTrajectory(double initialTime,
+                                    const ocs2::PrimalSolution& trajectory) const {
   if (trajectory.timeTrajectory_.empty() || trajectory.stateTrajectory_.empty() ||
       trajectory.inputTrajectory_.empty()) {
     throw std::runtime_error("OCS2 returned an empty primal solution.");
   }
   if (trajectory.stateTrajectory_.size() != trajectory.timeTrajectory_.size() ||
-      trajectory.timeTrajectory_.front() > observation.time + 1e-6 ||
-      trajectory.timeTrajectory_.back() < observation.time + kWrenchPredictionTimes.back() - 1e-6 ||
+      trajectory.inputTrajectory_.size() != trajectory.timeTrajectory_.size() ||
+      trajectory.timeTrajectory_.front() > initialTime + 1e-6 ||
+      trajectory.timeTrajectory_.back() < initialTime + kWrenchPredictionTimes.back() - 1e-6 ||
       !std::is_sorted(trajectory.timeTrajectory_.begin(), trajectory.timeTrajectory_.end())) {
     throw std::runtime_error("OCS2 returned a malformed or too-short trajectory.");
   }
@@ -299,32 +304,65 @@ Solution SolverCore::solve(const Observation& observation, const EndEffectorTarg
     requireSize(input, kInputDim, "trajectory input");
     if (!input.allFinite()) throw std::runtime_error("OCS2 trajectory input is non-finite.");
   }
+}
+
+Solution SolverCore::sampleSolution(double sampleTime, double outputTime,
+                                    const ocs2::PrimalSolution& trajectory) {
+  const double boundedTime = std::clamp(
+      sampleTime, trajectory.timeTrajectory_.front(), trajectory.timeTrajectory_.back());
   const auto commandState = ocs2::LinearInterpolation::interpolate(
-      observation.time + settings_.commandLeadTime, trajectory.timeTrajectory_,
+      std::min(boundedTime + settings_.commandLeadTime, trajectory.timeTrajectory_.back()),
+      trajectory.timeTrajectory_,
       trajectory.stateTrajectory_);
   const auto commandInput = ocs2::LinearInterpolation::interpolate(
-      observation.time, trajectory.timeTrajectory_, trajectory.inputTrajectory_);
+      boundedTime, trajectory.timeTrajectory_, trajectory.inputTrajectory_);
   const auto commandInputLead = ocs2::LinearInterpolation::interpolate(
-      observation.time + settings_.commandLeadTime, trajectory.timeTrajectory_,
+      std::min(boundedTime + settings_.commandLeadTime, trajectory.timeTrajectory_.back()),
+      trajectory.timeTrajectory_,
       trajectory.inputTrajectory_);
   requireSize(commandState, kStateDim, "command state");
   requireSize(commandInput, kInputDim, "command input");
   requireSize(commandInputLead, kInputDim, "lead command input");
 
   Solution out;
-  out.time = observation.time;
+  out.time = outputTime;
   out.armPosition = commandState.segment<6>(kArmPositionIndex);
   out.armVelocity = commandState.segment<6>(kArmVelocityIndex);
   out.baseVelocityCommand = commandInput.head<3>();
   out.armEffort = wrenchEstimator_->armEffort(commandState, commandInputLead);
   const auto effortLimits = pinocchioInterface_->getModel().effortLimit.tail(kArmDof);
   out.armEffort = out.armEffort.cwiseMax(-effortLimits).cwiseMin(effortLimits);
-  out.baseWrenchPrediction = wrenchEstimator_->predict(observation.time, trajectory);
+  out.baseWrenchPrediction = wrenchEstimator_->predict(boundedTime, trajectory);
   out.valid = out.armPosition.allFinite() && out.armVelocity.allFinite() &&
               out.armEffort.allFinite() && out.baseVelocityCommand.allFinite() &&
               out.baseWrenchPrediction.allFinite();
   if (!out.valid) throw std::runtime_error("OCS2 solution contains non-finite values.");
   return out;
+}
+
+Solution SolverCore::solve(const Observation& observation, const EndEffectorTarget& target) {
+  const auto trajectory = runMpc(observation, target);
+  validateTrajectory(observation.time, trajectory);
+  return sampleSolution(observation.time, observation.time, trajectory);
+}
+
+std::vector<Solution> SolverCore::solveTrajectory(const Observation& observation,
+                                                  const EndEffectorTarget& target,
+                                                  double samplePeriod) {
+  if (!std::isfinite(samplePeriod) || samplePeriod <= 0.0) {
+    throw std::invalid_argument("Trajectory sample period must be positive and finite.");
+  }
+  const auto trajectory = runMpc(observation, target);
+  validateTrajectory(observation.time, trajectory);
+  const double finalTime = trajectory.timeTrajectory_.back();
+  std::vector<Solution> samples;
+  for (double time = observation.time; time <= finalTime + 1e-9; time += samplePeriod) {
+    samples.emplace_back(sampleSolution(time, time - observation.time, trajectory));
+  }
+  if (samples.empty() || samples.back().time < finalTime - observation.time - 1e-9) {
+    samples.emplace_back(sampleSolution(finalTime, finalTime - observation.time, trajectory));
+  }
+  return samples;
 }
 
 bool SolverCore::trySolve(const Observation& observation, const EndEffectorTarget& target,

@@ -21,45 +21,13 @@ from .ocs2_interface import (
 ARM_JOINT_NAMES = tuple(f"arm{index}_Joint" for index in range(1, 7))
 
 
-class Ocs2PlayBridge:
-    """Submit low-rate OCS2 work without blocking Isaac Lab's policy/render loop."""
+class Ocs2OutputApplicator:
+    """Shared Isaac Lab output path for live and offline OCS2 controllers."""
 
-    def __init__(
-        self,
-        env,
-        client: Ocs2TcpClient,
-        target_position_world: np.ndarray,
-        target_quaternion_world: np.ndarray,
-        max_solution_age_s: float = 0.5,
-        update_period_s: float = 0.1,
-    ):
+    def __init__(self, env):
         if env.num_envs != 1:
-            raise ValueError("OCS2 PLAY bridge currently supports exactly one Isaac Lab environment.")
-        if max_solution_age_s < 0.0:
-            raise ValueError("max_solution_age_s must be non-negative.")
-        if update_period_s <= 0.0:
-            raise ValueError("update_period_s must be positive.")
+            raise ValueError("OCS2 PLAY control currently supports exactly one Isaac Lab environment.")
         self._env = env
-        self._target_position_world = np.asarray(target_position_world, dtype=np.float64).copy()
-        self._target_quaternion_world = np.asarray(target_quaternion_world, dtype=np.float64).copy()
-        if self._target_position_world.shape != (3,):
-            raise ValueError("OCS2 target position must contain three values.")
-        if self._target_quaternion_world.shape != (4,):
-            raise ValueError("OCS2 target quaternion must contain four values in [w, x, y, z] order.")
-        if not np.all(np.isfinite(self._target_position_world)) or not np.all(
-            np.isfinite(self._target_quaternion_world)
-        ):
-            raise ValueError("OCS2 target contains NaN or Inf.")
-        quaternion_norm = np.linalg.norm(self._target_quaternion_world)
-        if quaternion_norm < 1e-9:
-            raise ValueError("OCS2 target quaternion has zero norm.")
-        self._target_quaternion_world /= quaternion_norm
-        self._max_solution_age_s = max_solution_age_s
-        self._update_period_s = update_period_s
-        self._async_client = Ocs2AsyncClient(client)
-        self._last_submission_time = -math.inf
-        self._next_retry_wall_time = -math.inf
-
         self._robot: Articulation = env.scene["robot"]
         self._arm_joint_ids, arm_joint_names = self._robot.find_joints(
             list(ARM_JOINT_NAMES), preserve_order=True
@@ -70,11 +38,10 @@ class Ocs2PlayBridge:
         if not hasattr(self._wrench_term, "set_external_prediction"):
             raise RuntimeError("arm_wrench command term does not support external OCS2 predictions.")
         self._policy_wrench_slice = self._find_policy_wrench_slice()
-        self._last_warning_wall_time = -math.inf
-        self._failure_count = 0
-        self._reported_error_serial = 0
-        self._reported_solution_time: float | None = None
-        self._pending_message_printed = False
+
+    @staticmethod
+    def _numpy(tensor: torch.Tensor) -> np.ndarray:
+        return tensor[0].detach().cpu().numpy().astype(np.float64, copy=True)
 
     def _find_policy_wrench_slice(self) -> slice:
         manager = self._env.observation_manager
@@ -91,25 +58,6 @@ class Ocs2PlayBridge:
             )
         start = sum(widths[:term_index])
         return slice(start, start + widths[term_index])
-
-    @staticmethod
-    def _numpy(tensor: torch.Tensor) -> np.ndarray:
-        return tensor[0].detach().cpu().numpy().astype(np.float64, copy=True)
-
-    def _observation(self) -> Ocs2MpcObservation:
-        data = self._robot.data
-        simulation_time = float(self._env.common_step_counter) * float(self._env.step_dt)
-        base_twist_body = np.concatenate((self._numpy(data.root_lin_vel_b), self._numpy(data.root_ang_vel_b)))
-        return Ocs2MpcObservation(
-            time=simulation_time,
-            base_position_world=self._numpy(data.root_pos_w),
-            base_quaternion_world=self._numpy(data.root_quat_w),
-            base_twist_body=base_twist_body,
-            arm_position=self._numpy(data.joint_pos[:, self._arm_joint_ids]),
-            arm_velocity=self._numpy(data.joint_vel[:, self._arm_joint_ids]),
-            end_effector_target_position_world=self._target_position_world,
-            end_effector_target_quaternion_world=self._target_quaternion_world,
-        )
 
     def _set_arm_targets(self, position: np.ndarray, velocity: np.ndarray, effort: np.ndarray) -> None:
         device = self._env.device
@@ -159,6 +107,72 @@ class Ocs2PlayBridge:
         self._env.command_manager.get_command("base_velocity").zero_()
         command_observation.zero_()
 
+    def _apply_solution(
+        self, solution: Ocs2MpcSolution, policy_observation: torch.Tensor, command_observation: torch.Tensor
+    ) -> None:
+        self._set_arm_targets(
+            solution.arm_position, solution.arm_velocity, solution.arm_feedforward_effort
+        )
+        self._write_policy_inputs(solution, policy_observation, command_observation)
+
+
+class Ocs2PlayBridge(Ocs2OutputApplicator):
+    """Submit low-rate OCS2 work without blocking Isaac Lab's policy/render loop."""
+
+    def __init__(
+        self,
+        env,
+        client: Ocs2TcpClient,
+        target_position_world: np.ndarray,
+        target_quaternion_world: np.ndarray,
+        max_solution_age_s: float = 0.5,
+        update_period_s: float = 0.1,
+    ):
+        super().__init__(env)
+        if max_solution_age_s < 0.0:
+            raise ValueError("max_solution_age_s must be non-negative.")
+        if update_period_s <= 0.0:
+            raise ValueError("update_period_s must be positive.")
+        self._target_position_world = np.asarray(target_position_world, dtype=np.float64).copy()
+        self._target_quaternion_world = np.asarray(target_quaternion_world, dtype=np.float64).copy()
+        if self._target_position_world.shape != (3,):
+            raise ValueError("OCS2 target position must contain three values.")
+        if self._target_quaternion_world.shape != (4,):
+            raise ValueError("OCS2 target quaternion must contain four values in [w, x, y, z] order.")
+        if not np.all(np.isfinite(self._target_position_world)) or not np.all(
+            np.isfinite(self._target_quaternion_world)
+        ):
+            raise ValueError("OCS2 target contains NaN or Inf.")
+        quaternion_norm = np.linalg.norm(self._target_quaternion_world)
+        if quaternion_norm < 1e-9:
+            raise ValueError("OCS2 target quaternion has zero norm.")
+        self._target_quaternion_world /= quaternion_norm
+        self._max_solution_age_s = max_solution_age_s
+        self._update_period_s = update_period_s
+        self._async_client = Ocs2AsyncClient(client)
+        self._last_submission_time = -math.inf
+        self._next_retry_wall_time = -math.inf
+        self._last_warning_wall_time = -math.inf
+        self._failure_count = 0
+        self._reported_error_serial = 0
+        self._reported_solution_time: float | None = None
+        self._pending_message_printed = False
+
+    def _observation(self) -> Ocs2MpcObservation:
+        data = self._robot.data
+        simulation_time = float(self._env.common_step_counter) * float(self._env.step_dt)
+        base_twist_body = np.concatenate((self._numpy(data.root_lin_vel_b), self._numpy(data.root_ang_vel_b)))
+        return Ocs2MpcObservation(
+            time=simulation_time,
+            base_position_world=self._numpy(data.root_pos_w),
+            base_quaternion_world=self._numpy(data.root_quat_w),
+            base_twist_body=base_twist_body,
+            arm_position=self._numpy(data.joint_pos[:, self._arm_joint_ids]),
+            arm_velocity=self._numpy(data.joint_vel[:, self._arm_joint_ids]),
+            end_effector_target_position_world=self._target_position_world,
+            end_effector_target_quaternion_world=self._target_quaternion_world,
+        )
+
     def update(self, policy_observation: torch.Tensor, command_observation: torch.Tensor) -> bool:
         """Submit work and apply the newest safe result without blocking simulation."""
         observation = self._observation()
@@ -203,10 +217,7 @@ class Ocs2PlayBridge:
             return False
 
         try:
-            self._set_arm_targets(
-                solution.arm_position, solution.arm_velocity, solution.arm_feedforward_effort
-            )
-            self._write_policy_inputs(solution, policy_observation, command_observation)
+            self._apply_solution(solution, policy_observation, command_observation)
             self._failure_count = 0
             self._pending_message_printed = False
             if solution.time != self._reported_solution_time:
