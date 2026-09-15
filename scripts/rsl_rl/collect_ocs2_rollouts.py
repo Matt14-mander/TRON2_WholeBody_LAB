@@ -144,6 +144,27 @@ def extract_observations(env) -> tuple[dict, torch.Tensor, torch.Tensor, torch.T
     return obs_dict, obs, obs_history.flatten(start_dim=1), commands, obs_history
 
 
+def force_timeout_reset(env, action_template: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Reset through the normal ManagerBasedRLEnv step/reset path.
+
+    Repeated direct global ``env.reset()`` calls can tear down native PhysX
+    state on some Isaac Lab/Isaac Sim builds. Triggering the configured episode
+    timeout exercises the same per-environment automatic reset path used by
+    training and ordinary PLAY.
+    """
+    env.unwrapped.episode_length_buf[:] = env.unwrapped.max_episode_length
+    with torch.inference_mode():
+        obs_dict, _, dones, _ = env.step(torch.zeros_like(action_template))
+    if not bool(torch.all(dones).item()):
+        raise RuntimeError("Forced episode timeout did not reset every rollout environment.")
+    obs = obs_dict["policy"]
+    obs_history = obs_dict.get("obsHistory")
+    commands = obs_dict.get("commands")
+    if obs_history is None or commands is None:
+        raise RuntimeError("Forced reset returned incomplete observation groups.")
+    return obs, obs_history.flatten(start_dim=1), commands
+
+
 def main() -> None:
     if not args_cli.task or "WholeBody" not in args_cli.task or "Play" not in args_cli.task:
         raise ValueError("OCS2 rollout collection requires a WholeBody PLAY task.")
@@ -205,6 +226,8 @@ def main() -> None:
     ee_body_id = ee_body_ids[0]
     gait_phase_slice = observation_term_slice(env.unwrapped, "policy", "gait_phase")
     last_action_slice = observation_term_slice(env.unwrapped, "policy", "last_action")
+    _, obs, obs_history, commands, _ = extract_observations(env)
+    previous_actions = None
 
     success_count = 0
     rejected_count = 0
@@ -215,8 +238,8 @@ def main() -> None:
             if not simulation_app.is_running():
                 break
             print(f"[INFO] [{ordinal}/{len(selected)}] collecting {spec.trajectory_id}: {spec.path}")
-            env.unwrapped.reset()
-            _, obs, obs_history, commands, _ = extract_observations(env)
+            if previous_actions is not None:
+                obs, obs_history, commands = force_timeout_reset(env, previous_actions)
             bridge = Ocs2TrajectoryPlayBridge(
                 env.unwrapped,
                 str(spec.path),
@@ -304,6 +327,7 @@ def main() -> None:
                     break
 
             bridge.close()
+            previous_actions = actions.detach().clone()
             max_tilt = max(tilt_values) if tilt_values else math.inf
             accepted = not fall and max_tilt <= args_cli.max_tilt_deg
             if not accepted and termination_reason == "completed":
