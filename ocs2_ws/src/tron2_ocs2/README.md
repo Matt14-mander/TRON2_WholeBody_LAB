@@ -133,3 +133,7 @@ For a locomotion-focused test, append
 that body-frame cruise command over the final 0.5 s instead of stopping.
 `--ocs2_trajectory_start_delay SECONDS` holds the initial arm sample while the
 locomotion/contact state settles before playback begins.
+For repeatable controller validation, `--ocs2_deterministic_reset` zeros the
+base pose/velocity and joint position/velocity reset offsets. This isolates
+trajectory and policy stability from the randomized training reset state and
+prevents a randomly reset arm from being pulled abruptly to the first sample.

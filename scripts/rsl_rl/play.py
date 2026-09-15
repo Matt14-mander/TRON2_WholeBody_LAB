@@ -55,6 +55,14 @@ parser.add_argument(
     default=0.0,
     help="Warm-up seconds before starting offline arm motion.",
 )
+parser.add_argument(
+    "--ocs2_deterministic_reset",
+    action="store_true",
+    help=(
+        "OCS2 validation mode: reset the base pose/velocity and all joint "
+        "position/velocity offsets deterministically."
+    ),
+)
 parser.add_argument("--ocs2_host", type=str, default="127.0.0.1", help="OCS2 bridge IPv4 host.")
 parser.add_argument("--ocs2_port", type=int, default=5555, help="OCS2 bridge TCP port.")
 parser.add_argument("--ocs2_timeout", type=float, default=120.0, help="Background OCS2 socket timeout in seconds.")
@@ -117,6 +125,8 @@ def main():
     )
     if trajectory_only_option_used and args_cli.ocs2_trajectory is None:
         raise ValueError("Offline trajectory ablation flags require --ocs2_trajectory.")
+    if args_cli.ocs2_deterministic_reset and not ocs2_control_enabled:
+        raise ValueError("--ocs2_deterministic_reset requires --ocs2 or --ocs2_trajectory.")
     if args_cli.ocs2_trajectory_zero_base_command and (
         args_cli.ocs2_trajectory_terminal_base_command is not None
     ):
@@ -144,6 +154,23 @@ def main():
         env_cfg.commands.base_velocity.heading_command = False
         env_cfg.commands.base_velocity.rel_standing_envs = 0.0
         env_cfg.commands.base_velocity.rel_heading_envs = 0.0
+        if args_cli.ocs2_deterministic_reset:
+            # Isolate controller/trajectory stability from the broad training
+            # reset distribution. In particular, prevent a random arm pose
+            # from being pulled abruptly to the first OCS2 trajectory sample.
+            reset_base = env_cfg.events.reset_robot_base
+            reset_joints = env_cfg.events.reset_robot_joints
+            if reset_base is None or reset_joints is None:
+                raise RuntimeError("The selected OCS2 PLAY task has no robot reset events.")
+            for reset_range in (
+                reset_base.params["pose_range"],
+                reset_base.params["velocity_range"],
+            ):
+                for axis in reset_range:
+                    reset_range[axis] = (0.0, 0.0)
+            reset_joints.params["position_range"] = (0.0, 0.0)
+            reset_joints.params["velocity_range"] = (0.0, 0.0)
+            print("[INFO] OCS2 deterministic reset enabled: base and joint reset offsets are zero.")
 
     # specify directory for logging experiments
     if args_cli.checkpoint_path is None:

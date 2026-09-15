@@ -81,6 +81,8 @@ five prediction offsets are always available.
   one-shot arm motion; its final 0.5 s transition uses cubic smoothstep.
 - An optional startup delay holds the first arm sample while locomotion,
   contacts, actuator targets, and policy observations settle.
+- An optional deterministic-reset validation mode removes base and joint reset
+  offsets so repeated falls can be separated from randomized startup states.
 
 ### Stage 3 - policy fidelity and hardware
 
