@@ -46,6 +46,9 @@ class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
         self._start_delay_s = start_delay_s
         self._start_time: float | None = None
         self._terminal_reported = False
+        self._current_solution = None
+        self._playback_time = 0.0
+        self._phase = "warmup" if self._start_delay_s > 0.0 else "motion"
         print(
             f"[INFO] Loaded offline OCS2 trajectory: {trajectory_path}; "
             f"samples={self._trajectory.data.shape[0]}, duration={self._trajectory.duration:.3f}s, "
@@ -66,6 +69,7 @@ class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
             self._start_time = simulation_time
         elapsed_time = max(0.0, simulation_time - self._start_time)
         playback_time = max(0.0, elapsed_time - self._start_delay_s)
+        self._playback_time = playback_time
         solution = self._trajectory.sample(playback_time)
         if elapsed_time < self._start_delay_s:
             # Let contacts, policy history, and actuator targets settle before
@@ -102,6 +106,13 @@ class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
             solution = replace(solution, base_velocity_command=np.zeros(3, dtype=np.float64))
         if self._zero_wrench:
             solution = replace(solution, base_wrench_prediction=np.zeros((5, 6), dtype=np.float64))
+        if elapsed_time < self._start_delay_s:
+            self._phase = "warmup"
+        elif playback_time < self._trajectory.duration:
+            self._phase = "motion"
+        else:
+            self._phase = "terminal"
+        self._current_solution = solution
         self._apply_solution(solution, policy_observation, command_observation)
         if playback_time >= self._trajectory.duration and not self._terminal_reported:
             print(
@@ -114,6 +125,26 @@ class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
     def reset(self) -> None:
         self._start_time = None
         self._terminal_reported = False
+        self._current_solution = None
+        self._playback_time = 0.0
+        self._phase = "warmup" if self._start_delay_s > 0.0 else "motion"
+
+    @property
+    def current_solution(self):
+        """Most recently applied, post-ablation OCS2 sample."""
+        return self._current_solution
+
+    @property
+    def playback_time(self) -> float:
+        return self._playback_time
+
+    @property
+    def phase(self) -> str:
+        return self._phase
+
+    @property
+    def trajectory_duration(self) -> float:
+        return self._trajectory.duration
 
     def close(self) -> None:
         pass

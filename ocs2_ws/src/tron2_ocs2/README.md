@@ -132,6 +132,32 @@ The batch tool writes one 52-column CSV per successful solve, a `manifest.csv`
 with targets/timing/numerical bounds, and `failures.csv` for rejected solves.
 Use `--resume` to continue an interrupted output directory.
 
+## Isaac Lab rollout collection
+
+The OCS2 CSV files are expert plans, not measured executions. Collect aligned
+policy inputs, simulated robot states, intent metadata, OCS2 labels, next
+states, and success metrics in one Isaac Lab process with:
+
+```bash
+python scripts/rsl_rl/collect_ocs2_rollouts.py \
+  --task Isaac-Limx-SFYG-TRON2A-WholeBody-Flat-Play-v0 \
+  --trajectory_manifest "$HOME/datasets/tron2_ocs2_compact_v1/manifest.csv" \
+  --output_dir "$HOME/datasets/tron2_ocs2_compact_v1_rollout" \
+  --max_trajectories 10 \
+  --start_delay 1.0 \
+  --post_motion_duration 2.0 \
+  --terminal_base_command -0.25 0.0 0.0 \
+  --headless \
+  --checkpoint_path /absolute/path/to/model.pt
+```
+
+Collection always uses deterministic base and joint reset offsets. Accepted
+episodes are stored as compressed NPZ files under their train, validation, or
+test split. Falls and excessive-tilt episodes are retained under `rejected/`
+and recorded in `replay_failures.csv`. `rollout_manifest.csv` stores per-run
+tracking metrics. Use `--resume_collection` to skip all trajectory ids already
+present in either metadata file.
+
 Replay requires only the Isaac Lab environment; do not start the TCP service:
 
 ```bash

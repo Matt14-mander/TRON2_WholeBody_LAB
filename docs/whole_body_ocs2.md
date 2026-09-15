@@ -88,6 +88,11 @@ five prediction offsets are always available.
 - `scripts/ocs2/generate_trajectory_dataset.py` reproducibly samples the
   compact workspace and multiple arrival times, records successful expert
   trajectories in a manifest, and preserves solver failures separately.
+- `scripts/rsl_rl/collect_ocs2_rollouts.py` replays a manifest in one Isaac Lab
+  process with deterministic resets. It stores timestamp-aligned policy
+  observations, actual robot states, intent, expert arm/base/wrench labels,
+  next states, tracking metrics, rejection reasons, and trajectory-level
+  train/validation/test splits.
 
 ### Stage 3 - policy fidelity and hardware
 
