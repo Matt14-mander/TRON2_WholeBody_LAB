@@ -26,6 +26,23 @@ parser.add_argument("--num_envs", type=int, default=None, help="Number of enviro
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--checkpoint_path", type=str, default=None, help="Relative path to checkpoint file.")
+parser.add_argument("--ocs2", action="store_true", help="Enable the external OCS2 arm MPC runtime bridge.")
+parser.add_argument("--ocs2_host", type=str, default="127.0.0.1", help="OCS2 bridge IPv4 host.")
+parser.add_argument("--ocs2_port", type=int, default=5555, help="OCS2 bridge TCP port.")
+parser.add_argument("--ocs2_timeout", type=float, default=0.5, help="OCS2 bridge socket timeout in seconds.")
+parser.add_argument(
+    "--ocs2_max_solution_age", type=float, default=0.05, help="Maximum accepted OCS2 solution age in simulation seconds."
+)
+parser.add_argument(
+    "--ocs2_target_position", type=float, nargs=3, default=(0.35, 0.0, 0.85), metavar=("X", "Y", "Z")
+)
+parser.add_argument(
+    "--ocs2_target_quaternion",
+    type=float,
+    nargs=4,
+    default=(1.0, 0.0, 0.0, 0.0),
+    metavar=("W", "X", "Y", "Z"),
+)
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -60,6 +77,9 @@ from bipedal_locomotion.utils.wrappers.rsl_rl import RslRlPpoAlgorithmMlpCfg, ex
 
 def main():
     """Play with RSL-RL agent."""
+    if args_cli.ocs2:
+        args_cli.num_envs = 1
+        print("[INFO] OCS2 bridge enabled; forcing num_envs=1.")
     # parse configuration
     env_cfg: ManagerBasedRLEnvCfg = parse_env_cfg(
         task_name=args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs
@@ -67,6 +87,16 @@ def main():
     agent_cfg: RslRlPpoAlgorithmMlpCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
 
     env_cfg.seed = agent_cfg.seed
+
+    if args_cli.ocs2:
+        if not args_cli.task or "WholeBody" not in args_cli.task:
+            raise ValueError("--ocs2 requires a WholeBody PLAY task.")
+        # OCS2 owns the planar command. Prevent the random command generator
+        # from resampling or applying heading control over the bridge output.
+        env_cfg.commands.base_velocity.resampling_time_range = (1e9, 1e9)
+        env_cfg.commands.base_velocity.heading_command = False
+        env_cfg.commands.base_velocity.rel_standing_envs = 0.0
+        env_cfg.commands.base_velocity.rel_heading_envs = 0.0
 
     # specify directory for logging experiments
     if args_cli.checkpoint_path is None:
@@ -98,6 +128,20 @@ def main():
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env)
+
+    ocs2_bridge = None
+    if args_cli.ocs2:
+        from bipedal_locomotion.controllers import Ocs2TcpClient
+        from bipedal_locomotion.controllers.ocs2_play_bridge import Ocs2PlayBridge
+
+        ocs2_bridge = Ocs2PlayBridge(
+            env.unwrapped,
+            Ocs2TcpClient(args_cli.ocs2_host, args_cli.ocs2_port, args_cli.ocs2_timeout),
+            args_cli.ocs2_target_position,
+            args_cli.ocs2_target_quaternion,
+            args_cli.ocs2_max_solution_age,
+        )
+        print(f"[INFO] OCS2 client configured for {args_cli.ocs2_host}:{args_cli.ocs2_port}.")
     # load previously trained model
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
@@ -145,17 +189,23 @@ def main():
             keyboard.look_at()
         # run everything in inference mode
         with torch.inference_mode():
+            if ocs2_bridge is not None:
+                ocs2_bridge.update(obs, commands)
             # agent stepping
             est = encoder(obs_history)
             actions = policy(torch.cat((est, obs, commands), dim=-1).detach())
             # env stepping
-            obs_dict, _, _, infos = env.step(actions)
+            obs_dict, _, dones, infos = env.step(actions)
             obs = obs_dict["policy"]
             obs_history = obs_dict.get("obsHistory")
             obs_history = obs_history.flatten(start_dim=1)
             commands = obs_dict.get("commands") 
+            if ocs2_bridge is not None and torch.any(dones):
+                ocs2_bridge.reset()
 
     # close the simulator
+    if ocs2_bridge is not None:
+        ocs2_bridge.close()
     env.close()
 
 

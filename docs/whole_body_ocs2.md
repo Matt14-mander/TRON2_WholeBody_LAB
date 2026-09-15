@@ -48,10 +48,16 @@ The internal planar command is body-frame `[vx, vy, yaw_rate]`, matching the
 locomotion policy command convention. The optimizer uses a 1.0 s horizon so all
 five prediction offsets are always available.
 
-### Stage 2B - runtime bridges (next)
+### Stage 2B - runtime bridges (in progress)
 
-- Connect the C++ solver output to Isaac Lab PLAY and add stale-solution and
-  solver-failure fallbacks.
+- A localhost TCP service and Isaac Lab PLAY client now connect the native C++
+  solver without mixing the OCS2 and Isaac Sim Conda environments.
+- The PLAY adapter writes arm position/velocity/feed-forward effort targets,
+  the planar base command, and the normalized 5x6 predicted-wrench observation.
+- Stale solutions, transport errors, and solver failures hold the arm and zero
+  both the locomotion command and predicted wrench.
+- Build and closed-loop simulation validation on the Linux Isaac Lab host is
+  still required before this stage is marked implemented.
 - Reuse the same transport-neutral contract for the MuJoCo deployment bridge.
 
 ### Stage 3 - policy fidelity and hardware

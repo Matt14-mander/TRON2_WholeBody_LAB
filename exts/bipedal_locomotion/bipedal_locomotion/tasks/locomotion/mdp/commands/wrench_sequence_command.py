@@ -48,6 +48,7 @@ class WrenchSequenceCommand(CommandTerm):
         self._beta = torch.ones(self.num_envs, 1, device=self.device)
         self._acceleration_gain = torch.zeros(self.num_envs, 6, device=self.device)
         self._previous_twist = torch.zeros(self.num_envs, 6, device=self.device)
+        self._external_prediction_enabled = False
         self.metrics = {}
 
     @property
@@ -61,6 +62,50 @@ class WrenchSequenceCommand(CommandTerm):
     @property
     def applied_wrench(self) -> torch.Tensor:
         return self._applied_wrench
+
+    @property
+    def external_prediction_enabled(self) -> bool:
+        return self._external_prediction_enabled
+
+    def set_external_prediction(self, prediction: torch.Tensor) -> None:
+        """Use an externally computed wrench sequence without applying a synthetic wrench.
+
+        This is the deployment path: the simulated arm produces the real reaction
+        wrench, while the OCS2 prediction is exposed only to the locomotion policy.
+        """
+        prediction = torch.as_tensor(prediction, dtype=self._clean_command.dtype, device=self.device)
+        if prediction.ndim == 3:
+            expected = (self.num_envs, len(self.cfg.prediction_times), 6)
+            if tuple(prediction.shape) != expected:
+                raise ValueError(f"External wrench prediction must have shape {expected}, got {tuple(prediction.shape)}.")
+            prediction = prediction.flatten(start_dim=1)
+        if tuple(prediction.shape) != tuple(self._clean_command.shape):
+            raise ValueError(
+                "External wrench prediction must have shape "
+                f"{tuple(self._clean_command.shape)}, got {tuple(prediction.shape)}."
+            )
+        if not torch.isfinite(prediction).all():
+            raise ValueError("External wrench prediction contains NaN or Inf.")
+
+        self._external_prediction_enabled = True
+        self._clean_command.copy_(prediction)
+        self._noisy_command.copy_(prediction)
+        self._applied_wrench.copy_(prediction.reshape(self.num_envs, -1, 6)[:, 0])
+        zero = torch.zeros(self.num_envs, 1, 3, dtype=prediction.dtype, device=self.device)
+        self._asset.set_external_force_and_torque(
+            zero,
+            zero,
+            body_ids=self._body_ids,
+            env_ids=self._all_env_ids,
+            is_global=False,
+        )
+
+    def clear_external_prediction(self) -> None:
+        """Return to the configured generator and clear all externally supplied data."""
+        self._external_prediction_enabled = False
+        self._clean_command.zero_()
+        self._noisy_command.zero_()
+        self._applied_wrench.zero_()
 
     def _update_metrics(self):
         pass
@@ -82,6 +127,8 @@ class WrenchSequenceCommand(CommandTerm):
     def _resample_command(self, env_ids: torch.Tensor):
         if len(env_ids) == 0:
             return
+        if self._external_prediction_enabled:
+            return
         self._points[env_ids, 0] = self._sample_uniform(env_ids)
         self._points[env_ids, 1] = self._sample_uniform(env_ids)
         self._points[env_ids, 2] = self._sample_uniform(env_ids)
@@ -97,6 +144,8 @@ class WrenchSequenceCommand(CommandTerm):
         self._refresh_commands(env_ids)
 
     def _update_command(self):
+        if self._external_prediction_enabled:
+            return
         dt = self._env.step_dt
         shift_times = torch.tensor([dt, 1.0 + dt, 2.0 + dt], device=self.device)
         shifted = self._evaluate_quadratic(self._points, shift_times)
