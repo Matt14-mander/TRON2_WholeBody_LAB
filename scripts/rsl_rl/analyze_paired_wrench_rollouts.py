@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 from collections import defaultdict
+import json
 from pathlib import Path
 
 import numpy as np
@@ -126,6 +127,19 @@ def main() -> None:
     }
     if not rows or not required.issubset(rows[0]):
         raise ValueError(f"Not a paired schema-2 rollout manifest: {manifest_path}")
+    contract_path = root / "wrench_contract.json"
+    if contract_path.is_file():
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        expected_ids = set(contract.get("assignments", {}))
+        actual_ids = {row["trajectory_id"] for row in rows}
+        missing_ids = sorted(expected_ids - actual_ids)
+        if contract.get("paired") and missing_ids:
+            raise ValueError(
+                f"Paired dataset is incomplete: expected={len(expected_ids)}, "
+                f"found={len(actual_ids)}, missing={len(missing_ids)}. "
+                "Resume collection before analysis. "
+                f"First missing ids: {missing_ids[:5]}"
+            )
 
     controls = {
         (row["source_trajectory_id"], row["external_wrench_profile"]): row

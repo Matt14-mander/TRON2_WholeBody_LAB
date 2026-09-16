@@ -40,11 +40,13 @@ def main() -> None:
     total_frames = 0
     peak_payload = np.zeros(6, dtype=np.float64)
     peak_base = np.zeros(6, dtype=np.float64)
+    episode_ids = set()
     for path in files:
         with np.load(path, allow_pickle=False) as data:
             missing = [name for name in REQUIRED_FIELDS if name not in data]
             if missing:
                 raise ValueError(f"{path} is missing fields: {missing}")
+            episode_ids.add(str(data["meta_trajectory_id"]))
             if not np.array_equal(data["future_wrench"], data["ocs2_arm_on_base_wrench_plan"]):
                 raise ValueError(f"Deprecated future_wrench alias differs in {path}")
             axis = str(data["meta_external_wrench_axis"])
@@ -69,6 +71,18 @@ def main() -> None:
         print(f"condition={condition} episodes={count}")
     print("peak_payload_local=" + np.array2string(peak_payload, precision=4))
     print("peak_base_origin=" + np.array2string(peak_base, precision=4))
+    if contract.get("paired"):
+        expected_ids = set(contract.get("assignments", {}))
+        missing_ids = sorted(expected_ids - episode_ids)
+        unexpected_ids = sorted(episode_ids - expected_ids)
+        if missing_ids or unexpected_ids:
+            raise ValueError(
+                "Paired dataset is incomplete or inconsistent: "
+                f"expected={len(expected_ids)}, found={len(episode_ids)}, "
+                f"missing={len(missing_ids)}, unexpected={len(unexpected_ids)}. "
+                "Resume collection with the original arguments and --resume_collection. "
+                f"First missing ids: {missing_ids[:5]}"
+            )
 
 
 if __name__ == "__main__":
