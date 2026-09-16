@@ -85,28 +85,51 @@ def make_paired_external_wrench_excitations(
     force_amplitude: float = 5.0,
     torque_amplitude: float = 1.0,
     profiles: Sequence[str] = ("step", "ramp", "sine"),
+    force_amplitudes: Sequence[float] | None = None,
+    torque_amplitudes: Sequence[float] | None = None,
+    step_force_max: float | None = None,
+    step_torque_max: float | None = None,
 ) -> list[tuple[str, ExternalWrenchExcitation]]:
-    """Return the full matched zero/+/- Fx/Fy/Mz x profile protocol."""
+    """Return a matched, optionally multi-amplitude wrench protocol."""
     # Reuse assignment validation so paired and unpaired protocols accept the
     # same amplitude/profile domain.
     make_external_wrench_assignments(
         ["validation"], 0, force_amplitude, torque_amplitude, profiles
     )
-    conditions = (
-        ("zero", 0), ("fx", 1), ("fx", -1), ("fy", 1),
-        ("fy", -1), ("mz", 1), ("mz", -1),
-    )
+    force_levels = tuple(force_amplitudes or (force_amplitude,))
+    torque_levels = tuple(torque_amplitudes or (torque_amplitude,))
+    if any(level <= 0.0 for level in (*force_levels, *torque_levels)):
+        raise ValueError("Every paired wrench amplitude must be positive.")
+    if len(set(force_levels)) != len(force_levels) or len(set(torque_levels)) != len(torque_levels):
+        raise ValueError("Paired wrench amplitude lists must not contain duplicates.")
+
+    def amplitude_name(value: float) -> str:
+        return f"{value:g}".replace("-", "m").replace(".", "p")
+
     jobs = []
     for profile in profiles:
-        for axis, sign in conditions:
-            amplitude = 0.0 if axis == "zero" else (
-                torque_amplitude if axis == "mz" else force_amplitude
-            )
-            sign_name = "zero" if sign == 0 else "pos" if sign > 0 else "neg"
-            episode_suffix = f"{profile}_{axis}_{sign_name}"
-            jobs.append((episode_suffix, ExternalWrenchExcitation(
-                axis=axis, sign=sign, profile=profile, amplitude=amplitude
-            )))
+        jobs.append((f"{profile}_zero_zero_a0", ExternalWrenchExcitation(
+            axis="zero", sign=0, profile=profile, amplitude=0.0
+        )))
+        for amplitude in force_levels:
+            if profile == "step" and step_force_max is not None and amplitude > step_force_max:
+                continue
+            for axis, sign in (("fx", 1), ("fx", -1), ("fy", 1), ("fy", -1)):
+                sign_name = "pos" if sign > 0 else "neg"
+                episode_suffix = f"{profile}_{axis}_{sign_name}_a{amplitude_name(amplitude)}"
+                jobs.append((episode_suffix, ExternalWrenchExcitation(
+                    axis=axis, sign=sign, profile=profile, amplitude=amplitude
+                )))
+        for amplitude in torque_levels:
+            if profile == "step" and step_torque_max is not None and amplitude > step_torque_max:
+                continue
+            for sign in (1, -1):
+                axis = "mz"
+                sign_name = "pos" if sign > 0 else "neg"
+                episode_suffix = f"{profile}_{axis}_{sign_name}_a{amplitude_name(amplitude)}"
+                jobs.append((episode_suffix, ExternalWrenchExcitation(
+                    axis=axis, sign=sign, profile=profile, amplitude=amplitude
+                )))
     return jobs
 
 

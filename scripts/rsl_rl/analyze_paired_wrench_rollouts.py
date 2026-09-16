@@ -58,6 +58,7 @@ def compare_pair(
         "axis": treatment_row["external_wrench_axis"],
         "sign": int(treatment_row["external_wrench_sign"]),
         "profile": treatment_row["external_wrench_profile"],
+        "amplitude": float(treatment_row["external_wrench_amplitude"]),
         "treatment_accepted": as_bool(treatment_row["accepted"]),
         "control_accepted": as_bool(control_row["accepted"]),
         "incremental_fall": (
@@ -120,7 +121,7 @@ def main() -> None:
         rows = list(csv.DictReader(stream))
     required = {
         "trajectory_id", "source_trajectory_id", "external_wrench_axis",
-        "external_wrench_sign", "external_wrench_profile", "accepted",
+        "external_wrench_sign", "external_wrench_profile", "external_wrench_amplitude", "accepted",
         "max_base_tilt_deg", "episode_file",
     }
     if not rows or not required.issubset(rows[0]):
@@ -153,7 +154,10 @@ def main() -> None:
     print(f"incremental_falls={sum(bool(item['incremental_fall']) for item in metrics)}")
     grouped = defaultdict(list)
     for item in metrics:
-        grouped[(str(item["axis"]), int(item["sign"]), str(item["profile"]))].append(item)
+        grouped[(
+            str(item["axis"]), int(item["sign"]), str(item["profile"]),
+            float(item["amplitude"]),
+        )].append(item)
     for condition, samples in sorted(grouped.items()):
         stable_samples = [
             item for item in samples

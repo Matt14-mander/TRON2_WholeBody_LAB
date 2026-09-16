@@ -59,6 +59,26 @@ class Ocs2RolloutDatasetTest(unittest.TestCase):
             }
             self.assertEqual(len(conditions), 7)
 
+    def test_multilevel_paired_protocol_applies_step_safety_limits(self):
+        jobs = _MODULE.make_paired_external_wrench_excitations(
+            profiles=("step", "ramp", "sine"),
+            force_amplitudes=(3.0, 4.0, 5.0),
+            torque_amplitudes=(0.5, 1.0, 1.5),
+            step_force_max=4.0,
+            step_torque_max=1.0,
+        )
+        self.assertEqual(len(jobs), 51)
+        excitations = [item for _, item in jobs]
+        self.assertFalse(any(
+            item.profile == "step" and item.axis in ("fx", "fy") and item.amplitude > 4.0
+            for item in excitations
+        ))
+        self.assertFalse(any(
+            item.profile == "step" and item.axis == "mz" and item.amplitude > 1.0
+            for item in excitations
+        ))
+        self.assertEqual(sum(item.axis == "zero" for item in excitations), 3)
+
     def test_wrench_transform_shifts_torque_reference_point(self):
         wrench = np.asarray([1.0, 0.0, 0.0, 0.0, 0.0, 2.0])
         transformed = _MODULE.transform_wrench_to_base_origin(

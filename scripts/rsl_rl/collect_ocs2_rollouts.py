@@ -51,6 +51,22 @@ parser.add_argument(
 parser.add_argument("--external_wrench_body", default="gripper_base_Link")
 parser.add_argument("--external_wrench_force_amplitude", type=float, default=5.0)
 parser.add_argument("--external_wrench_torque_amplitude", type=float, default=1.0)
+parser.add_argument(
+    "--external_wrench_force_amplitudes", type=float, nargs="+",
+    help="Paired multi-level force amplitudes in N; overrides the singular option.",
+)
+parser.add_argument(
+    "--external_wrench_torque_amplitudes", type=float, nargs="+",
+    help="Paired multi-level torque amplitudes in Nm; overrides the singular option.",
+)
+parser.add_argument(
+    "--external_wrench_step_force_max", type=float,
+    help="Skip step-force levels above this safety limit.",
+)
+parser.add_argument(
+    "--external_wrench_step_torque_max", type=float,
+    help="Skip step-torque levels above this safety limit.",
+)
 parser.add_argument("--external_wrench_start_time", type=float, default=1.0)
 parser.add_argument("--external_wrench_duration", type=float, default=0.8)
 parser.add_argument(
@@ -258,6 +274,11 @@ def main() -> None:
         raise ValueError("External-wrench timing must have non-negative start and positive duration.")
     if args_cli.external_wrench_paired and not args_cli.external_wrench_validation:
         raise ValueError("--external_wrench_paired requires --external_wrench_validation.")
+    if (
+        (args_cli.external_wrench_force_amplitudes or args_cli.external_wrench_torque_amplitudes)
+        and not args_cli.external_wrench_paired
+    ):
+        raise ValueError("Multi-amplitude wrench collection requires --external_wrench_paired.")
 
     specs = load_trajectory_manifest(args_cli.trajectory_manifest)
     assignments = make_split_assignments([spec.trajectory_id for spec in specs], args_cli.split_seed)
@@ -282,6 +303,10 @@ def main() -> None:
             args_cli.external_wrench_force_amplitude,
             args_cli.external_wrench_torque_amplitude,
             args_cli.external_wrench_profiles,
+            force_amplitudes=args_cli.external_wrench_force_amplitudes,
+            torque_amplitudes=args_cli.external_wrench_torque_amplitudes,
+            step_force_max=args_cli.external_wrench_step_force_max,
+            step_torque_max=args_cli.external_wrench_step_torque_max,
         )
         jobs = [
             (spec, f"{spec.trajectory_id}__{suffix}", excitation)
@@ -336,6 +361,16 @@ def main() -> None:
             "profiles": list(args_cli.external_wrench_profiles),
             "force_amplitude_n": args_cli.external_wrench_force_amplitude,
             "torque_amplitude_nm": args_cli.external_wrench_torque_amplitude,
+            "force_amplitudes_n": (
+                args_cli.external_wrench_force_amplitudes
+                or [args_cli.external_wrench_force_amplitude]
+            ),
+            "torque_amplitudes_nm": (
+                args_cli.external_wrench_torque_amplitudes
+                or [args_cli.external_wrench_torque_amplitude]
+            ),
+            "step_force_max_n": args_cli.external_wrench_step_force_max,
+            "step_torque_max_nm": args_cli.external_wrench_step_torque_max,
             "start_time_s": args_cli.external_wrench_start_time,
             "duration_s": args_cli.external_wrench_duration,
         },
