@@ -75,6 +75,7 @@ import numpy as np
 import torch
 
 from isaaclab.envs import DirectMARLEnv, ManagerBasedRLEnvCfg, multi_agent_to_single_agent
+from isaaclab.managers import SceneEntityCfg
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 from rsl_rl.runner import OnPolicyRunner
@@ -131,6 +132,11 @@ def configure_collection_environment(
     reset_joints.params["position_range"] = (0.0, 0.0)
     reset_joints.params["velocity_range"] = (0.0, 0.0)
     if deterministic_pairing:
+        # The SFYG task normally restricts joint reset to the legs so training
+        # randomization cannot kick the arm.  Here the offset is exactly zero,
+        # so reset the complete articulation; otherwise each paired rollout
+        # inherits the previous rollout's terminal arm/gripper state.
+        reset_joints.params["asset_cfg"] = SceneEntityCfg("robot")
         # PLAY already disables policy corruption, but the history group feeds
         # the encoder independently and otherwise retains its training noise.
         env_cfg.observations.policy.enable_corruption = False
@@ -305,6 +311,7 @@ def main() -> None:
         "enabled": args_cli.external_wrench_validation,
         "paired": args_cli.external_wrench_paired,
         "deterministic_pairing": args_cli.external_wrench_paired,
+        "full_articulation_reset": args_cli.external_wrench_paired,
         "seed": args_cli.split_seed,
         "component_order": ["Fx", "Fy", "Fz", "Mx", "My", "Mz"],
         "application": {
