@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import math
 import os
 from pathlib import Path
@@ -38,6 +39,14 @@ parser.add_argument("--max_tilt_deg", type=float, default=45.0)
 parser.add_argument(
     "--external_wrench_validation", action="store_true",
     help="Apply balanced zero/+/- Fx/Fy/Mz validation wrenches to the payload proxy.",
+)
+parser.add_argument(
+    "--external_wrench_paired", action="store_true",
+    help="Replay every selected source trajectory under every configured wrench condition.",
+)
+parser.add_argument(
+    "--baseline_rollout_manifest",
+    help="Optional prior rollout manifest; only source trajectories accepted there are collected.",
 )
 parser.add_argument("--external_wrench_body", default="gripper_base_Link")
 parser.add_argument("--external_wrench_force_amplitude", type=float, default=5.0)
@@ -78,6 +87,7 @@ from bipedal_locomotion.controllers.ocs2_rollout_dataset import (
     load_trajectory_manifest,
     evaluate_external_wrench,
     make_external_wrench_assignments,
+    make_paired_external_wrench_excitations,
     make_split_assignments,
     save_episode_npz,
     transform_wrench_to_base_origin,
@@ -90,14 +100,16 @@ from bipedal_locomotion.utils.wrappers.rsl_rl import RslRlPpoAlgorithmMlpCfg
 
 
 ROLLOUT_FIELDS = (
-    "trajectory_id", "split", "accepted", "fall", "termination_reason", "frames",
+    "trajectory_id", "source_trajectory_id", "split", "accepted", "fall",
+    "termination_reason", "frames",
     "arrival_time", "target_x", "target_y", "target_z", "terminal_vx", "terminal_vy",
     "terminal_wz", "max_base_tilt_deg", "arm_position_rmse", "base_velocity_rmse",
     "external_wrench_enabled", "external_wrench_axis", "external_wrench_sign",
     "external_wrench_profile", "external_wrench_amplitude", "episode_file",
 )
 FAILURE_FIELDS = (
-    "trajectory_id", "split", "frames", "termination_reason", "max_base_tilt_deg",
+    "trajectory_id", "source_trajectory_id", "split", "frames",
+    "termination_reason", "max_base_tilt_deg",
 )
 PHASE_CODE = {"warmup": 0, "motion": 1, "terminal": 2}
 
@@ -167,6 +179,20 @@ def apply_external_wrench(robot, body_id: int, wrench_local: np.ndarray) -> None
     )
 
 
+def accepted_source_ids(path: str | None) -> set[str] | None:
+    if path is None:
+        return None
+    manifest = Path(path).expanduser().resolve()
+    if not manifest.is_file():
+        raise FileNotFoundError(f"Baseline rollout manifest does not exist: {manifest}")
+    with manifest.open("r", encoding="utf-8", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    required = {"trajectory_id", "accepted"}
+    if not rows or not required.issubset(rows[0]):
+        raise ValueError(f"Baseline rollout manifest lacks columns {sorted(required)}: {manifest}")
+    return {row["trajectory_id"] for row in rows if row["accepted"] == "True"}
+
+
 def extract_observations(env) -> tuple[dict, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     obs_dict = env.get_observations()
     obs = obs_dict["policy"]
@@ -211,6 +237,8 @@ def main() -> None:
         raise ValueError("--max_tilt_deg must be positive and finite.")
     if args_cli.external_wrench_duration <= 0.0 or args_cli.external_wrench_start_time < 0.0:
         raise ValueError("External-wrench timing must have non-negative start and positive duration.")
+    if args_cli.external_wrench_paired and not args_cli.external_wrench_validation:
+        raise ValueError("--external_wrench_paired requires --external_wrench_validation.")
 
     specs = load_trajectory_manifest(args_cli.trajectory_manifest)
     assignments = make_split_assignments([spec.trajectory_id for spec in specs], args_cli.split_seed)
@@ -221,11 +249,31 @@ def main() -> None:
         torque_amplitude=args_cli.external_wrench_torque_amplitude,
         profiles=args_cli.external_wrench_profiles,
     )
-    selected = specs[args_cli.start_index:]
+    accepted_ids = accepted_source_ids(args_cli.baseline_rollout_manifest)
+    eligible_specs = specs if accepted_ids is None else [
+        spec for spec in specs if spec.trajectory_id in accepted_ids
+    ]
+    selected = eligible_specs[args_cli.start_index:]
     if args_cli.max_trajectories is not None:
         selected = selected[:args_cli.max_trajectories]
     if not selected:
         raise ValueError("No trajectories selected for collection.")
+    if args_cli.external_wrench_paired:
+        paired_excitations = make_paired_external_wrench_excitations(
+            args_cli.external_wrench_force_amplitude,
+            args_cli.external_wrench_torque_amplitude,
+            args_cli.external_wrench_profiles,
+        )
+        jobs = [
+            (spec, f"{spec.trajectory_id}__{suffix}", excitation)
+            for spec in selected
+            for suffix, excitation in paired_excitations
+        ]
+    else:
+        jobs = [
+            (spec, spec.trajectory_id, wrench_assignments[spec.trajectory_id])
+            for spec in selected
+        ]
 
     output_dir = Path(args_cli.output_dir).expanduser().resolve()
     rollout_manifest = output_dir / "rollout_manifest.csv"
@@ -242,6 +290,7 @@ def main() -> None:
     write_json_contract(output_dir / "wrench_contract.json", {
         "schema_version": "2.0",
         "enabled": args_cli.external_wrench_validation,
+        "paired": args_cli.external_wrench_paired,
         "seed": args_cli.split_seed,
         "component_order": ["Fx", "Fy", "Fz", "Mx", "My", "Mz"],
         "application": {
@@ -276,7 +325,7 @@ def main() -> None:
                 "profile": excitation.profile,
                 "amplitude": excitation.amplitude,
             }
-            for trajectory_id, excitation in sorted(wrench_assignments.items())
+            for _, trajectory_id, excitation in jobs
         },
     })
 
@@ -327,12 +376,15 @@ def main() -> None:
     success_count = 0
     rejected_count = 0
     try:
-        for ordinal, spec in enumerate(selected, start=1):
-            if spec.trajectory_id in completed:
+        for ordinal, (spec, episode_id, excitation) in enumerate(jobs, start=1):
+            if episode_id in completed:
                 continue
             if not simulation_app.is_running():
                 break
-            print(f"[INFO] [{ordinal}/{len(selected)}] collecting {spec.trajectory_id}: {spec.path}")
+            print(
+                f"[INFO] [{ordinal}/{len(jobs)}] collecting {episode_id} "
+                f"from {spec.trajectory_id}: {spec.path}"
+            )
             if previous_actions is not None:
                 obs, obs_history, commands = force_timeout_reset(env, previous_actions)
             bridge = Ocs2TrajectoryPlayBridge(
@@ -341,7 +393,6 @@ def main() -> None:
                 terminal_base_command=tuple(args_cli.terminal_base_command),
                 start_delay_s=args_cli.start_delay,
             )
-            excitation = wrench_assignments[spec.trajectory_id]
             frames = []
             fall = False
             termination_reason = "completed"
@@ -462,12 +513,13 @@ def main() -> None:
                 termination_reason = "tilt_limit"
             split = assignments[spec.trajectory_id]
             episode_subdir = split if accepted else "rejected"
-            episode_path = output_dir / "episodes" / episode_subdir / f"{spec.trajectory_id}.npz"
+            episode_path = output_dir / "episodes" / episode_subdir / f"{episode_id}.npz"
             save_episode_npz(
                 episode_path,
                 frames,
                 {
-                    "trajectory_id": spec.trajectory_id,
+                    "trajectory_id": episode_id,
+                    "source_trajectory_id": spec.trajectory_id,
                     "split": split,
                     "accepted": accepted,
                     "target_position": spec.target_position,
@@ -491,7 +543,8 @@ def main() -> None:
                 },
             )
             manifest_row = {
-                "trajectory_id": spec.trajectory_id,
+                "trajectory_id": episode_id,
+                "source_trajectory_id": spec.trajectory_id,
                 "split": split,
                 "accepted": accepted,
                 "fall": fall,
@@ -520,14 +573,15 @@ def main() -> None:
             else:
                 rejected_count += 1
                 append_manifest_row(replay_failures, FAILURE_FIELDS, {
-                    "trajectory_id": spec.trajectory_id,
+                    "trajectory_id": episode_id,
+                    "source_trajectory_id": spec.trajectory_id,
                     "split": split,
                     "frames": len(frames),
                     "termination_reason": termination_reason,
                     "max_base_tilt_deg": max_tilt,
                 })
             print(
-                f"[INFO] {spec.trajectory_id}: accepted={accepted}, frames={len(frames)}, "
+                f"[INFO] {episode_id}: accepted={accepted}, frames={len(frames)}, "
                 f"max_tilt={max_tilt:.2f}deg, arm_rmse={manifest_row['arm_position_rmse']:.4f}rad"
             )
     finally:

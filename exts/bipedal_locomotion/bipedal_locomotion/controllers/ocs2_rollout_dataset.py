@@ -81,6 +81,35 @@ def make_external_wrench_assignments(
     return assignments
 
 
+def make_paired_external_wrench_excitations(
+    force_amplitude: float = 5.0,
+    torque_amplitude: float = 1.0,
+    profiles: Sequence[str] = ("step", "ramp", "sine"),
+) -> list[tuple[str, ExternalWrenchExcitation]]:
+    """Return the full matched zero/+/- Fx/Fy/Mz x profile protocol."""
+    # Reuse assignment validation so paired and unpaired protocols accept the
+    # same amplitude/profile domain.
+    make_external_wrench_assignments(
+        ["validation"], 0, force_amplitude, torque_amplitude, profiles
+    )
+    conditions = (
+        ("zero", 0), ("fx", 1), ("fx", -1), ("fy", 1),
+        ("fy", -1), ("mz", 1), ("mz", -1),
+    )
+    jobs = []
+    for profile in profiles:
+        for axis, sign in conditions:
+            amplitude = 0.0 if axis == "zero" else (
+                torque_amplitude if axis == "mz" else force_amplitude
+            )
+            sign_name = "zero" if sign == 0 else "pos" if sign > 0 else "neg"
+            episode_suffix = f"{profile}_{axis}_{sign_name}"
+            jobs.append((episode_suffix, ExternalWrenchExcitation(
+                axis=axis, sign=sign, profile=profile, amplitude=amplitude
+            )))
+    return jobs
+
+
 def evaluate_external_wrench(
     excitation: ExternalWrenchExcitation,
     time_s: float,

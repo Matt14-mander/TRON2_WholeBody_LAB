@@ -47,6 +47,18 @@ class Ocs2RolloutDatasetTest(unittest.TestCase):
             _MODULE.evaluate_external_wrench(excitation, 1.8, 1.0, 0.8), np.zeros(6)
         )
 
+    def test_paired_protocol_has_every_condition_per_profile(self):
+        jobs = _MODULE.make_paired_external_wrench_excitations(
+            force_amplitude=5.0, torque_amplitude=1.0
+        )
+        self.assertEqual(len(jobs), 21)
+        self.assertEqual(len({suffix for suffix, _ in jobs}), 21)
+        for profile in ("step", "ramp", "sine"):
+            conditions = {
+                (item.axis, item.sign) for _, item in jobs if item.profile == profile
+            }
+            self.assertEqual(len(conditions), 7)
+
     def test_wrench_transform_shifts_torque_reference_point(self):
         wrench = np.asarray([1.0, 0.0, 0.0, 0.0, 0.0, 2.0])
         transformed = _MODULE.transform_wrench_to_base_origin(
