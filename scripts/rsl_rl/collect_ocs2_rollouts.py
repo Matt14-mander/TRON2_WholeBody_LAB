@@ -36,6 +36,19 @@ parser.add_argument(
 )
 parser.add_argument("--max_tilt_deg", type=float, default=45.0)
 parser.add_argument(
+    "--external_wrench_validation", action="store_true",
+    help="Apply balanced zero/+/- Fx/Fy/Mz validation wrenches to the payload proxy.",
+)
+parser.add_argument("--external_wrench_body", default="gripper_base_Link")
+parser.add_argument("--external_wrench_force_amplitude", type=float, default=5.0)
+parser.add_argument("--external_wrench_torque_amplitude", type=float, default=1.0)
+parser.add_argument("--external_wrench_start_time", type=float, default=1.0)
+parser.add_argument("--external_wrench_duration", type=float, default=0.8)
+parser.add_argument(
+    "--external_wrench_profiles", nargs="+", default=("step", "ramp", "sine"),
+    choices=("step", "ramp", "sine"),
+)
+parser.add_argument(
     "--resume_collection", action="store_true",
     help="Continue an interrupted rollout dataset and skip recorded trajectory ids.",
 )
@@ -63,8 +76,12 @@ from bipedal_locomotion.controllers.ocs2_rollout_dataset import (
     append_manifest_row,
     completed_trajectory_ids,
     load_trajectory_manifest,
+    evaluate_external_wrench,
+    make_external_wrench_assignments,
     make_split_assignments,
     save_episode_npz,
+    transform_wrench_to_base_origin,
+    write_json_contract,
     write_split_file,
 )
 from bipedal_locomotion.controllers.ocs2_trajectory_play_bridge import Ocs2TrajectoryPlayBridge
@@ -76,7 +93,8 @@ ROLLOUT_FIELDS = (
     "trajectory_id", "split", "accepted", "fall", "termination_reason", "frames",
     "arrival_time", "target_x", "target_y", "target_z", "terminal_vx", "terminal_vy",
     "terminal_wz", "max_base_tilt_deg", "arm_position_rmse", "base_velocity_rmse",
-    "episode_file",
+    "external_wrench_enabled", "external_wrench_axis", "external_wrench_sign",
+    "external_wrench_profile", "external_wrench_amplitude", "episode_file",
 )
 FAILURE_FIELDS = (
     "trajectory_id", "split", "frames", "termination_reason", "max_base_tilt_deg",
@@ -117,8 +135,12 @@ def observation_term_slice(env, group: str, term: str) -> slice:
     return slice(start, start + widths[term_index])
 
 
-def robot_snapshot(robot, arm_joint_ids, leg_joint_ids, ee_body_id) -> dict[str, np.ndarray]:
+def robot_snapshot(
+    robot, arm_joint_ids, leg_joint_ids, ee_body_id, base_body_id, payload_body_id
+) -> dict[str, np.ndarray]:
     data = robot.data
+    body_com_pos_w = getattr(data, "body_com_pos_w", data.body_pos_w)
+    body_com_quat_w = getattr(data, "body_com_quat_w", data.body_quat_w)
     return {
         "base_position_world": numpy_row(data.root_pos_w),
         "base_quaternion_world": numpy_row(data.root_quat_w),
@@ -131,7 +153,18 @@ def robot_snapshot(robot, arm_joint_ids, leg_joint_ids, ee_body_id) -> dict[str,
         "leg_velocity_actual": numpy_row(data.joint_vel[:, leg_joint_ids]),
         "end_effector_position_world": numpy_row(data.body_pos_w[:, ee_body_id]),
         "end_effector_quaternion_world": numpy_row(data.body_quat_w[:, ee_body_id]),
+        "base_link_position_world": numpy_row(data.body_pos_w[:, base_body_id]),
+        "base_link_quaternion_world": numpy_row(data.body_quat_w[:, base_body_id]),
+        "payload_proxy_com_position_world": numpy_row(body_com_pos_w[:, payload_body_id]),
+        "payload_proxy_com_quaternion_world": numpy_row(body_com_quat_w[:, payload_body_id]),
     }
+
+
+def apply_external_wrench(robot, body_id: int, wrench_local: np.ndarray) -> None:
+    wrench = torch.as_tensor(wrench_local, dtype=torch.float32, device=robot.device).reshape(1, 1, 6)
+    robot.set_external_force_and_torque(
+        wrench[..., :3], wrench[..., 3:], body_ids=[body_id], is_global=False
+    )
 
 
 def extract_observations(env) -> tuple[dict, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -176,9 +209,18 @@ def main() -> None:
         raise ValueError("Collection timing values must be non-negative.")
     if args_cli.max_tilt_deg <= 0.0 or not math.isfinite(args_cli.max_tilt_deg):
         raise ValueError("--max_tilt_deg must be positive and finite.")
+    if args_cli.external_wrench_duration <= 0.0 or args_cli.external_wrench_start_time < 0.0:
+        raise ValueError("External-wrench timing must have non-negative start and positive duration.")
 
     specs = load_trajectory_manifest(args_cli.trajectory_manifest)
     assignments = make_split_assignments([spec.trajectory_id for spec in specs], args_cli.split_seed)
+    wrench_assignments = make_external_wrench_assignments(
+        [spec.trajectory_id for spec in specs],
+        seed=args_cli.split_seed,
+        force_amplitude=args_cli.external_wrench_force_amplitude,
+        torque_amplitude=args_cli.external_wrench_torque_amplitude,
+        profiles=args_cli.external_wrench_profiles,
+    )
     selected = specs[args_cli.start_index:]
     if args_cli.max_trajectories is not None:
         selected = selected[:args_cli.max_trajectories]
@@ -197,6 +239,46 @@ def main() -> None:
         if args_cli.resume_collection else set()
     )
     write_split_file(output_dir / "split.json", assignments, args_cli.split_seed)
+    write_json_contract(output_dir / "wrench_contract.json", {
+        "schema_version": "2.0",
+        "enabled": args_cli.external_wrench_validation,
+        "seed": args_cli.split_seed,
+        "component_order": ["Fx", "Fy", "Fz", "Mx", "My", "Mz"],
+        "application": {
+            "body": args_cli.external_wrench_body,
+            "frame": "body_local",
+            "reference_point": "body_center_of_mass",
+            "semantics": "external_on_payload_proxy",
+        },
+        "base_label": {
+            "frame": "base_Link",
+            "reference_point": "base_Link_origin",
+            "semantics": "external_on_payload_proxy",
+        },
+        "ocs2_label": {
+            "frame": "base_Link",
+            "reference_point": "base_Link_origin",
+            "semantics": "arm_on_base_planned_reaction",
+            "prediction_times_s": [0.0, 0.2, 0.4, 0.6, 0.8],
+        },
+        "protocol": {
+            "axes": ["zero", "+fx", "-fx", "+fy", "-fy", "+mz", "-mz"],
+            "profiles": list(args_cli.external_wrench_profiles),
+            "force_amplitude_n": args_cli.external_wrench_force_amplitude,
+            "torque_amplitude_nm": args_cli.external_wrench_torque_amplitude,
+            "start_time_s": args_cli.external_wrench_start_time,
+            "duration_s": args_cli.external_wrench_duration,
+        },
+        "assignments": {
+            trajectory_id: {
+                "axis": excitation.axis,
+                "sign": excitation.sign,
+                "profile": excitation.profile,
+                "amplitude": excitation.amplitude,
+            }
+            for trajectory_id, excitation in sorted(wrench_assignments.items())
+        },
+    })
 
     env_cfg: ManagerBasedRLEnvCfg = parse_env_cfg(
         task_name=args_cli.task, device=args_cli.device, num_envs=1
@@ -219,11 +301,24 @@ def main() -> None:
     arm_joint_ids, arm_names = robot.find_joints(list(ARM_JOINT_NAMES), preserve_order=True)
     leg_joint_ids, leg_names = robot.find_joints(joint_order_name, preserve_order=True)
     ee_body_ids, ee_names = robot.find_bodies(["gripper_base_Link"], preserve_order=True)
+    wrench_body_ids, wrench_body_names = robot.find_bodies(
+        [args_cli.external_wrench_body], preserve_order=True
+    )
+    base_body_ids, base_body_names = robot.find_bodies(["base_Link"], preserve_order=True)
     if tuple(arm_names) != ARM_JOINT_NAMES or tuple(leg_names) != tuple(joint_order_name):
         raise RuntimeError("Unexpected arm or leg joint ordering in rollout task.")
     if len(ee_body_ids) != 1 or tuple(ee_names) != ("gripper_base_Link",):
         raise RuntimeError(f"Unexpected end-effector body match: {ee_names}")
+    if len(wrench_body_ids) != 1:
+        raise RuntimeError(
+            f"Expected one external-wrench body matching {args_cli.external_wrench_body!r}, "
+            f"found {wrench_body_names}."
+        )
+    if len(base_body_ids) != 1 or tuple(base_body_names) != ("base_Link",):
+        raise RuntimeError(f"Unexpected base-link body match: {base_body_names}")
     ee_body_id = ee_body_ids[0]
+    wrench_body_id = wrench_body_ids[0]
+    base_body_id = base_body_ids[0]
     gait_phase_slice = observation_term_slice(env.unwrapped, "policy", "gait_phase")
     last_action_slice = observation_term_slice(env.unwrapped, "policy", "last_action")
     _, obs, obs_history, commands, _ = extract_observations(env)
@@ -246,6 +341,7 @@ def main() -> None:
                 terminal_base_command=tuple(args_cli.terminal_base_command),
                 start_delay_s=args_cli.start_delay,
             )
+            excitation = wrench_assignments[spec.trajectory_id]
             frames = []
             fall = False
             termination_reason = "completed"
@@ -261,11 +357,35 @@ def main() -> None:
                     solution = bridge.current_solution
                     if solution is None:
                         raise RuntimeError("Offline bridge did not publish a trajectory sample.")
-                    state = robot_snapshot(robot, arm_joint_ids, leg_joint_ids, ee_body_id)
+                    state = robot_snapshot(
+                        robot, arm_joint_ids, leg_joint_ids, ee_body_id,
+                        base_body_id, wrench_body_id,
+                    )
+                    episode_time = frame_index * float(env.unwrapped.step_dt)
+                    external_wrench_payload = (
+                        evaluate_external_wrench(
+                            excitation,
+                            episode_time,
+                            args_cli.external_wrench_start_time,
+                            args_cli.external_wrench_duration,
+                        )
+                        if args_cli.external_wrench_validation else np.zeros(6, dtype=np.float64)
+                    )
+                    apply_external_wrench(robot, wrench_body_id, external_wrench_payload)
+                    external_wrench_base = transform_wrench_to_base_origin(
+                        external_wrench_payload,
+                        state["payload_proxy_com_position_world"],
+                        state["payload_proxy_com_quaternion_world"],
+                        state["base_link_position_world"],
+                        state["base_link_quaternion_world"],
+                    )
                     estimate = encoder(obs_history)
                     actions = policy(torch.cat((estimate, obs, commands), dim=-1).detach())
                     obs_dict_next, rewards, dones, infos = env.step(actions)
-                    next_state = robot_snapshot(robot, arm_joint_ids, leg_joint_ids, ee_body_id)
+                    next_state = robot_snapshot(
+                        robot, arm_joint_ids, leg_joint_ids, ee_body_id,
+                        base_body_id, wrench_body_id,
+                    )
 
                 gravity_z = float(np.clip(-state["projected_gravity_body"][2], -1.0, 1.0))
                 tilt_deg = math.degrees(math.acos(gravity_z))
@@ -280,7 +400,7 @@ def main() -> None:
                 arm_squared_errors.append(float(np.mean(np.square(arm_error))))
                 base_squared_errors.append(float(np.mean(np.square(base_error))))
                 frame = {
-                    "episode_time": np.asarray(frame_index * float(env.unwrapped.step_dt)),
+                    "episode_time": np.asarray(episode_time),
                     "playback_time": np.asarray(bridge.playback_time),
                     "phase": np.asarray(PHASE_CODE[bridge.phase], dtype=np.int8),
                     "policy_observation": numpy_row(obs),
@@ -298,7 +418,14 @@ def main() -> None:
                     "arm_velocity_reference": solution.arm_velocity.copy(),
                     "arm_feedforward_effort": solution.arm_feedforward_effort.copy(),
                     "base_velocity_command": solution.base_velocity_command.copy(),
+                    # Deprecated compatibility alias for existing MHCT loaders.
                     "future_wrench": solution.base_wrench_prediction.copy(),
+                    "ocs2_arm_on_base_wrench_plan": solution.base_wrench_prediction.copy(),
+                    "external_wrench_payload_at_body_com": external_wrench_payload,
+                    "external_wrench_base_at_base_origin": external_wrench_base,
+                    "external_wrench_active": np.asarray(bool(np.any(external_wrench_payload))),
+                    # Commanded at this simulation interval [t, t + step_dt).
+                    "external_wrench_command_time": np.asarray(episode_time),
                     "reward": np.asarray(float(rewards[0].item())),
                     "done": np.asarray(bool(dones[0].item())),
                     "next_base_position_world": next_state["base_position_world"],
@@ -326,6 +453,7 @@ def main() -> None:
                 if bridge.playback_time >= bridge.trajectory_duration + args_cli.post_motion_duration:
                     break
 
+            apply_external_wrench(robot, wrench_body_id, np.zeros(6, dtype=np.float64))
             bridge.close()
             previous_actions = actions.detach().clone()
             max_tilt = max(tilt_values) if tilt_values else math.inf
@@ -348,6 +476,18 @@ def main() -> None:
                     "terminal_base_command": np.asarray(args_cli.terminal_base_command),
                     "step_dt": float(env.unwrapped.step_dt),
                     "phase_codes": np.asarray(["warmup", "motion", "terminal"]),
+                    "wrench_schema_version": "2.0",
+                    "ocs2_wrench_semantics": "arm_on_base; frame=base_Link; point=base_Link_origin",
+                    "external_wrench_semantics": "external_on_payload_proxy; local_frame; point=body_COM",
+                    "external_wrench_enabled": args_cli.external_wrench_validation,
+                    "external_wrench_body": args_cli.external_wrench_body,
+                    "external_wrench_axis": excitation.axis,
+                    "external_wrench_sign": excitation.sign,
+                    "external_wrench_profile": excitation.profile,
+                    "external_wrench_amplitude": excitation.amplitude,
+                    "external_wrench_start_time": args_cli.external_wrench_start_time,
+                    "external_wrench_duration": args_cli.external_wrench_duration,
+                    "wrench_component_order": np.asarray(["Fx", "Fy", "Fz", "Mx", "My", "Mz"]),
                 },
             )
             manifest_row = {
@@ -367,6 +507,11 @@ def main() -> None:
                 "max_base_tilt_deg": max_tilt,
                 "arm_position_rmse": math.sqrt(float(np.mean(arm_squared_errors))),
                 "base_velocity_rmse": math.sqrt(float(np.mean(base_squared_errors))),
+                "external_wrench_enabled": args_cli.external_wrench_validation,
+                "external_wrench_axis": excitation.axis,
+                "external_wrench_sign": excitation.sign,
+                "external_wrench_profile": excitation.profile,
+                "external_wrench_amplitude": excitation.amplitude,
                 "episode_file": str(episode_path.relative_to(output_dir)),
             }
             append_manifest_row(rollout_manifest, ROLLOUT_FIELDS, manifest_row)
