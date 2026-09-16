@@ -170,17 +170,25 @@ def main() -> None:
             float(item["active_base_linear_velocity_body_rmse"]) for item in stable_samples
         ])
         falls = sum(bool(item["incremental_fall"]) for item in samples)
+        if stable_samples:
+            detail = (
+                f"tilt_delta_mean={np.nanmean(tilt):.3f}deg "
+                f"active_linear_velocity_rmse={np.nanmean(active_linear):.4f}m/s"
+            )
+        else:
+            detail = "metrics=unavailable(control_or_treatment_failed)"
         print(
             f"condition={condition} n={len(samples)} stable_pairs={len(stable_samples)} "
-            f"incremental_falls={falls} "
-            f"tilt_delta_mean={np.nanmean(tilt):.3f}deg "
-            f"active_linear_velocity_rmse={np.nanmean(active_linear):.4f}m/s"
+            f"incremental_falls={falls} {detail}"
         )
-    print("zero_repeat_noise_median:")
     stable_metrics = [
         item for item in metrics
         if bool(item["control_accepted"]) and bool(item["treatment_accepted"])
     ]
+    if not noise:
+        print("zero_repeat_noise_median=unavailable(fewer_than_two_accepted_controls_per_source)")
+    else:
+        print("zero_repeat_noise_median:")
     for key, value in sorted(noise.items()):
         treatment_values = np.asarray([float(item[key]) for item in stable_metrics])
         treatment_median = float(np.nanmedian(treatment_values))
