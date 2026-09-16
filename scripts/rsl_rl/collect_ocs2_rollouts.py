@@ -114,7 +114,9 @@ FAILURE_FIELDS = (
 PHASE_CODE = {"warmup": 0, "motion": 1, "terminal": 2}
 
 
-def configure_collection_environment(env_cfg: ManagerBasedRLEnvCfg) -> None:
+def configure_collection_environment(
+    env_cfg: ManagerBasedRLEnvCfg, deterministic_pairing: bool = False
+) -> None:
     env_cfg.commands.base_velocity.resampling_time_range = (1e9, 1e9)
     env_cfg.commands.base_velocity.heading_command = False
     env_cfg.commands.base_velocity.rel_standing_envs = 0.0
@@ -128,6 +130,17 @@ def configure_collection_environment(env_cfg: ManagerBasedRLEnvCfg) -> None:
             reset_range[axis] = (0.0, 0.0)
     reset_joints.params["position_range"] = (0.0, 0.0)
     reset_joints.params["velocity_range"] = (0.0, 0.0)
+    if deterministic_pairing:
+        # PLAY already disables policy corruption, but the history group feeds
+        # the encoder independently and otherwise retains its training noise.
+        env_cfg.observations.policy.enable_corruption = False
+        env_cfg.observations.obsHistory.enable_corruption = False
+        # DelayedImplicitActuator samples a fresh lag on every reset.  Matched
+        # zero/treatment rollouts require identical actuator timing.
+        for actuator_cfg in env_cfg.scene.robot.actuators.values():
+            if hasattr(actuator_cfg, "min_delay") and hasattr(actuator_cfg, "max_delay"):
+                actuator_cfg.min_delay = 0
+                actuator_cfg.max_delay = 0
 
 
 def numpy_row(tensor: torch.Tensor) -> np.ndarray:
@@ -291,6 +304,7 @@ def main() -> None:
         "schema_version": "2.0",
         "enabled": args_cli.external_wrench_validation,
         "paired": args_cli.external_wrench_paired,
+        "deterministic_pairing": args_cli.external_wrench_paired,
         "seed": args_cli.split_seed,
         "component_order": ["Fx", "Fy", "Fz", "Mx", "My", "Mz"],
         "application": {
@@ -334,7 +348,9 @@ def main() -> None:
     )
     agent_cfg: RslRlPpoAlgorithmMlpCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
     env_cfg.seed = args_cli.seed
-    configure_collection_environment(env_cfg)
+    configure_collection_environment(
+        env_cfg, deterministic_pairing=args_cli.external_wrench_paired
+    )
     raw_env = gym.make(args_cli.task, cfg=env_cfg)
     if isinstance(raw_env.unwrapped, DirectMARLEnv):
         raw_env = multi_agent_to_single_agent(raw_env)
