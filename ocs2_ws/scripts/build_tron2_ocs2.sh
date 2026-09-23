@@ -11,16 +11,25 @@ if [[ -z "${CONDA_PREFIX:-}" ]]; then
   echo "ERROR: activate the tron2_ocs2 Conda environment first." >&2
   exit 1
 fi
-if [[ ! -f "$ROS_SETUP" ]]; then
-  echo "ERROR: ROS setup not found: $ROS_SETUP" >&2
+if [[ -f "$ROS_SETUP" ]]; then
+  # A system ROS installation may add ros2 and colcon to PATH here.
+  # shellcheck disable=SC1090
+  source "$ROS_SETUP"
+  ROS_SOURCE="$ROS_SETUP"
+else
+  # Conda-based ROS installations may already be active without /opt/ros.
+  ROS_SOURCE="active environment"
+fi
+if ! command -v ros2 >/dev/null 2>&1; then
+  echo "ERROR: ros2 is unavailable; source a ROS 2 environment first." >&2
   exit 1
 fi
-# Load ROS before checking for colcon because some installations expose it
-# only through the ROS environment hooks.
-# shellcheck disable=SC1090
-source "$ROS_SETUP"
 if ! command -v colcon >/dev/null 2>&1; then
-  echo "ERROR: colcon is not available." >&2
+  echo "ERROR: colcon is unavailable in the active ROS 2 environment." >&2
+  exit 1
+fi
+if ! ros2 pkg prefix ament_cmake >/dev/null 2>&1; then
+  echo "ERROR: ROS 2 package ament_cmake is unavailable in the active environment." >&2
   exit 1
 fi
 
@@ -73,7 +82,7 @@ echo "  workspace:       $WORKSPACE_DIR"
 echo "  conda prefix:    $CONDA_PREFIX"
 echo "  pinocchio_DIR:   $PINOCCHIO_DIR"
 echo "  hpp-fcl_DIR:     $HPP_FCL_DIR"
-echo "  ROS setup:       $ROS_SETUP"
+echo "  ROS source:      $ROS_SOURCE"
 
 cd "$WORKSPACE_DIR"
 colcon build \
