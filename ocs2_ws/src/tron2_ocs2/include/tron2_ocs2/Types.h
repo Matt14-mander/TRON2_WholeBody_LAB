@@ -18,6 +18,11 @@ constexpr std::size_t kBasePoseDim = 6;
 constexpr std::size_t kArmPositionIndex = 6;
 constexpr std::size_t kArmVelocityIndex = 12;
 constexpr std::array<double, 5> kWrenchPredictionTimes{0.0, 0.2, 0.4, 0.6, 0.8};
+// The locomotion actor was trained only inside these body-frame command
+// bounds. OCS2 must never optimize a command outside that distribution.
+constexpr double kPolicyForwardVelocityLimit = 1.0;
+constexpr double kPolicyLateralVelocityLimit = 0.5;
+constexpr double kPolicyYawRateLimit = 1.5;
 
 // State: [p_WB xyz, yaw, pitch, roll, q_arm, dq_arm].
 // Input: [v_Bx, v_By, yaw_rate, ddq_arm].

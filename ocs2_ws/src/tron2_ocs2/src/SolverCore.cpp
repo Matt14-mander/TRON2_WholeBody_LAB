@@ -209,13 +209,24 @@ std::unique_ptr<ocs2::StateInputCost> SolverCore::makeBoxConstraints(
   boost::property_tree::read_info(taskFile, pt);
   const double armVelocityLimit = pt.get<double>("limits.armVelocity", 5.0);
   const double armAccelerationLimit = pt.get<double>("limits.armAcceleration", 20.0);
-  const double forwardVelocityLimit = pt.get<double>("limits.forwardVelocity", 1.5);
-  const double lateralVelocityLimit = pt.get<double>("limits.lateralVelocity", 1.0);
-  const double yawRateLimit = pt.get<double>("limits.yawRate", 2.0);
-  if (armVelocityLimit <= 0.0 || armAccelerationLimit <= 0.0 ||
-      forwardVelocityLimit <= 0.0 || lateralVelocityLimit <= 0.0 ||
-      yawRateLimit <= 0.0) {
-    throw std::invalid_argument("All velocity and acceleration limits must be positive.");
+  const double forwardVelocityLimit =
+      pt.get<double>("limits.forwardVelocity", kPolicyForwardVelocityLimit);
+  const double lateralVelocityLimit =
+      pt.get<double>("limits.lateralVelocity", kPolicyLateralVelocityLimit);
+  const double yawRateLimit = pt.get<double>("limits.yawRate", kPolicyYawRateLimit);
+  if (!std::isfinite(armVelocityLimit) || !std::isfinite(armAccelerationLimit) ||
+      !std::isfinite(forwardVelocityLimit) || !std::isfinite(lateralVelocityLimit) ||
+      !std::isfinite(yawRateLimit) || armVelocityLimit <= 0.0 ||
+      armAccelerationLimit <= 0.0 || forwardVelocityLimit <= 0.0 ||
+      lateralVelocityLimit <= 0.0 || yawRateLimit <= 0.0) {
+    throw std::invalid_argument(
+        "All velocity and acceleration limits must be finite and positive.");
+  }
+  if (forwardVelocityLimit > kPolicyForwardVelocityLimit ||
+      lateralVelocityLimit > kPolicyLateralVelocityLimit ||
+      yawRateLimit > kPolicyYawRateLimit) {
+    throw std::invalid_argument(
+        "OCS2 planar command limits exceed the locomotion-policy training range.");
   }
   auto addBox = [](std::vector<Box>& boxes, std::size_t index, double lower, double upper) {
     Box box;

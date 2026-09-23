@@ -166,6 +166,20 @@ ROS 2 包位于 [`ocs2_ws/src/tron2_ocs2`](ocs2_ws/src/tron2_ocs2)。当前已�
 自碰撞，以及基于 Pinocchio RNEA 机械臂子树内力的 5 点基座 wrench 预测。构建与
 smoke test 命令见该目录的 README；Isaac Lab PLAY 与 MuJoCo 桥接属于下一步。
 
+OCS2 上游源码不要手工反复克隆和修改。仓库已提供可复现入口：
+
+```bash
+bash ocs2_ws/scripts/prepare_sources.sh
+conda activate tron2_ocs2
+bash ocs2_ws/scripts/build_tron2_ocs2.sh
+source ocs2_ws/install/setup.bash
+ros2 pkg executables tron2_ocs2
+```
+
+该流程会固定 OCS2/robotic-assets 版本、幂等应用兼容补丁、显式定位 Conda
+中的 Pinocchio/hpp-fcl CMake 配置，并规避旧版 GoogleTest 缺少 `<cstdint>`
+导致的 GCC 编译失败。详细依赖诊断见 [`ocs2_ws/README.md`](ocs2_ws/README.md)。
+
 ## 架构概览
 
 主要代码现在分为四个顶层部分：

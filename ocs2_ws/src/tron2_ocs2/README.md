@@ -21,21 +21,29 @@ Runtime bridges should call `SolverCore::trySolve()`. On any solver or
 validation failure it returns a zero, invalid command and resets MPC warm-start
 state; `solve()` remains available for tests that need exceptions.
 
-Build from a ROS 2 workspace in which the OCS2 `ros2` branch and
-`robot_description` are available:
+The repository root provides reproducible preparation and build scripts. They
+pin the supported OCS2 revisions, apply the tracked compatibility patches,
+require discoverable Pinocchio/hpp-fcl CMake packages, and work around the old
+vendored GoogleTest build failure:
 
 ```bash
-cd ocs2_ws
-colcon build --base-paths src ../robot_description --packages-up-to tron2_ocs2
-source install/setup.bash
+cd /path/to/TRON2_WholeBody_LAB
+bash ocs2_ws/scripts/prepare_sources.sh
+conda activate tron2_ocs2
+bash ocs2_ws/scripts/build_tron2_ocs2.sh
+source ocs2_ws/install/setup.bash
 ```
+
+See [`../../README.md`](../../README.md) for dependency installation and
+diagnostics. Do not continue to the commands below until
+`ros2 pkg executables tron2_ocs2` lists all three executables.
 
 Run a complete construction/solve/RNEA smoke pass:
 
 ```bash
 ros2 run tron2_ocs2 tron2_ocs2_smoke \
-  "$PWD/src/tron2_ocs2/config/task.info" \
-  "$PWD/../robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf" \
+  "$PWD/ocs2_ws/src/tron2_ocs2/config/task.info" \
+  "$PWD/robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf" \
   /tmp/tron2_ocs2_codegen
 ```
 
@@ -49,11 +57,11 @@ localhost-only TCP service keeps ROS 2 and OCS2 libraries out of the Isaac Sim
 Python process. Start the service from the OCS2 environment after building:
 
 ```bash
-source install_v3c/setup.bash
+source ocs2_ws/install/setup.bash
 export OCS2_CODEGEN_COMPILER="$(command -v x86_64-conda-linux-gnu-gcc)"
 ros2 run tron2_ocs2 tron2_ocs2_bridge \
-  "$PWD/src/tron2_ocs2/config/task.info" \
-  "$PWD/../robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf" \
+  "$PWD/ocs2_ws/src/tron2_ocs2/config/task.info" \
+  "$PWD/robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf" \
   /tmp/tron2_ocs2_codegen \
   5555
 ```
@@ -98,7 +106,7 @@ WXYZ orientation, and the default sample period is 0.02 s:
 ```bash
 ros2 run tron2_ocs2 tron2_ocs2_trajectory_export \
   /tmp/tron2_ocs2_runtime.info \
-  "$PWD/../robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf" \
+  "$PWD/robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf" \
   /tmp/tron2_ocs2_codegen \
   /tmp/tron2_reach.csv
 ```
