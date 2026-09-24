@@ -42,7 +42,9 @@ Pinocchio 2.7 names a frame's parent-joint field `parent`, whereas the pinned
 OCS2 source uses the Pinocchio 3 name `parentJoint`. The frame-parent patches
 adapt all six OCS2 Frame call sites for the documented 2.7 dependency. The
 preparation script rejects any remaining `Frame::parentJoint` call sites in
-the pinned OCS2 Pinocchio packages. The build script:
+the pinned OCS2 Pinocchio packages. It also removes the Pinocchio 3-only
+`collision/distance.hpp` include: Pinocchio 2.7 declares `computeDistances` in
+`algorithm/geometry.hpp`, which the same source already includes. The build script:
 
 - uses `/opt/ros/$ROS_DISTRO/setup.bash` when available, otherwise checks that
   the active environment provides `ros2`, `colcon`, and `ament_cmake`;
