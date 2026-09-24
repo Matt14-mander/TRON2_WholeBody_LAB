@@ -65,7 +65,14 @@ clone_at_revision "$ASSETS_URL" "$SOURCE_DIR/ocs2_robotic_assets" "$ASSETS_REVIS
 apply_patch_once "$SOURCE_DIR/ocs2" "$PATCH_DIR/ocs2-urdfdom5.patch"
 apply_patch_once "$SOURCE_DIR/ocs2" "$PATCH_DIR/ocs2-pinocchio2-frame-parent.patch" unidiff-zero
 apply_patch_once "$SOURCE_DIR/ocs2" "$PATCH_DIR/ocs2-pinocchio2-frame-jacobian.patch" unidiff-zero
+apply_patch_once "$SOURCE_DIR/ocs2" "$PATCH_DIR/ocs2-pinocchio2-remaining-frame-parents.patch"
 apply_patch_once "$SOURCE_DIR/ocs2_robotic_assets" "$PATCH_DIR/ocs2-robotic-assets-ament.patch"
+
+if grep -R -n -E --include='*.cpp' --include='*.h' --include='*.hpp' \
+    'frame[.]parentJoint|frames\[[^]]+\][.]parentJoint' "$SOURCE_DIR/ocs2/ocs2_pinocchio"; then
+  echo "ERROR: Pinocchio 3 Frame::parentJoint references remain in OCS2 sources." >&2
+  exit 1
+fi
 
 echo "OCS2 sources are ready:"
 echo "  ocs2:                 $OCS2_REVISION"

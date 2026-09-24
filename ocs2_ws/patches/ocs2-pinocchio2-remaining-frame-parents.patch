@@ -1,0 +1,27 @@
+diff --git a/ocs2_pinocchio/ocs2_pinocchio_interface/src/PinocchioEndEffectorKinematics.cpp b/ocs2_pinocchio/ocs2_pinocchio_interface/src/PinocchioEndEffectorKinematics.cpp
+--- a/ocs2_pinocchio/ocs2_pinocchio_interface/src/PinocchioEndEffectorKinematics.cpp
++++ b/ocs2_pinocchio/ocs2_pinocchio_interface/src/PinocchioEndEffectorKinematics.cpp
+@@ -223,5 +223,5 @@
+     // WORLD and LOCAL_WORLD_ALIGNED have the same angular Jacobian. Reading
+     // the parent joint avoids copying Data merely to refresh one frame.
+-    pinocchio::getJointJacobian(model, data, model.frames[frameId].parentJoint, pinocchio::WORLD, J);
++    pinocchio::getJointJacobian(model, data, model.frames[frameId].parent, pinocchio::WORLD, J);
+     const matrix_t Jqdist =
+         (quaternionDistanceJacobian(q, referenceOrientations[i]) * angularVelocityToQuaternionTimeDerivative(q)) * J.bottomRows<3>();
+diff --git a/ocs2_pinocchio/ocs2_centroidal_model/src/CentroidalModelRbdConversions.cpp b/ocs2_pinocchio/ocs2_centroidal_model/src/CentroidalModelRbdConversions.cpp
+--- a/ocs2_pinocchio/ocs2_centroidal_model/src/CentroidalModelRbdConversions.cpp
++++ b/ocs2_pinocchio/ocs2_centroidal_model/src/CentroidalModelRbdConversions.cpp
+@@ -190,5 +190,5 @@
+   for (size_t i = 0; i < info.numThreeDofContacts; i++) {
+     const auto frameIndex = info.endEffectorFrameIndices[i];
+-    const auto jointIndex = model.frames[frameIndex].parentJoint;
++    const auto jointIndex = model.frames[frameIndex].parent;
+     const Vector3 translationJointFrameToContactFrame = model.frames[frameIndex].placement.translation();
+     const Matrix3 rotationWorldFrameToJointFrame = data.oMi[jointIndex].rotation().transpose();
+@@ -199,5 +199,5 @@
+   for (size_t i = info.numThreeDofContacts; i < info.numThreeDofContacts + info.numSixDofContacts; i++) {
+     const auto frameIndex = info.endEffectorFrameIndices[i];
+-    const auto jointIndex = model.frames[frameIndex].parentJoint;
++    const auto jointIndex = model.frames[frameIndex].parent;
+     const Vector3 translationJointFrameToContactFrame = model.frames[frameIndex].placement.translation();
+     const Matrix3 rotationWorldFrameToJointFrame = data.oMi[jointIndex].rotation().transpose();
