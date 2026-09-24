@@ -44,33 +44,43 @@ void writeEigen(std::ostream& stream, const Eigen::MatrixBase<Derived>& value) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 5 && argc != 12 && argc != 13 && argc != 14) {
+  const bool relativeTarget = argc == 11 && std::string(argv[5]) == "--relative-target";
+  if (!relativeTarget && argc != 5 && argc != 12 && argc != 13 && argc != 14) {
     std::cerr
         << "usage: tron2_ocs2_trajectory_export TASK_INFO ROBOT_URDF "
            "GENERATED_LIBRARY_DIR OUTPUT_CSV "
            "[TARGET_X TARGET_Y TARGET_Z TARGET_QW TARGET_QX TARGET_QY TARGET_QZ "
-           "[SAMPLE_PERIOD [ARRIVAL_TIME]]]\n";
+           "[SAMPLE_PERIOD [ARRIVAL_TIME]]]\n"
+           "   or: ... OUTPUT_CSV --relative-target DX DY DZ SAMPLE_PERIOD ARRIVAL_TIME\n";
     return 2;
   }
   try {
     tron2_ocs2::Observation observation;
     observation.basePositionWorld.z() = 0.74;
     observation.armPosition << 0.0, 1.57079632679, -1.48352986420, 0.0, 0.0, 0.0;
+    tron2_ocs2::SolverCore solver(argv[1], argv[2], argv[3]);
     tron2_ocs2::EndEffectorTarget target;
     target.positionWorld << 0.35, 0.0, 0.85;
-    if (argc >= 12) {
+    double samplePeriod = 0.02;
+    if (relativeTarget) {
+      // Keep the home end-effector orientation. A fixed identity orientation
+      // can demand an unreachable wrist pose even for a small XYZ move.
+      target = solver.currentEndEffectorTarget(observation);
+      target.positionWorld += Eigen::Vector3d(
+          parseDouble(argv[6], "DX"), parseDouble(argv[7], "DY"),
+          parseDouble(argv[8], "DZ"));
+      samplePeriod = parseDouble(argv[9], "SAMPLE_PERIOD");
+      target.arrivalTime = parseDouble(argv[10], "ARRIVAL_TIME");
+    } else if (argc >= 12) {
       target.positionWorld << parseDouble(argv[5], "TARGET_X"),
           parseDouble(argv[6], "TARGET_Y"), parseDouble(argv[7], "TARGET_Z");
       target.orientationWorld = Eigen::Quaterniond(
           parseDouble(argv[8], "TARGET_QW"), parseDouble(argv[9], "TARGET_QX"),
           parseDouble(argv[10], "TARGET_QY"), parseDouble(argv[11], "TARGET_QZ"));
-    }
-    const double samplePeriod = argc >= 13 ? parseDouble(argv[12], "SAMPLE_PERIOD") : 0.02;
-    if (argc == 14) {
-      target.arrivalTime = parseDouble(argv[13], "ARRIVAL_TIME");
+      if (argc >= 13) samplePeriod = parseDouble(argv[12], "SAMPLE_PERIOD");
+      if (argc == 14) target.arrivalTime = parseDouble(argv[13], "ARRIVAL_TIME");
     }
 
-    tron2_ocs2::SolverCore solver(argv[1], argv[2], argv[3]);
     const auto samples = solver.solveTrajectory(observation, target, samplePeriod);
     std::ofstream output(argv[4]);
     if (!output) throw std::runtime_error(std::string("Cannot write trajectory: ") + argv[4]);

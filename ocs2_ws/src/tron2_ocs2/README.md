@@ -122,6 +122,26 @@ the MPC horizon. A positive value creates a smooth position/quaternion
 reference from the initial end-effector pose to the target. Omitting it keeps
 the legacy immediate step reference used by earlier commands.
 
+For a safer first dataset, prefer a small displacement from the *initial*
+`gripper_base_Link` pose. This preserves its initial orientation instead of
+forcing an identity wrist orientation:
+
+```bash
+ros2 run tron2_ocs2 tron2_ocs2_trajectory_export \
+  /tmp/tron2_ocs2_runtime.info \
+  "$PWD/robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf" \
+  /tmp/tron2_ocs2_codegen \
+  /tmp/tron2_reach_safe.csv \
+  --relative-target 0.02 0.0 0.0 0.02 1.0
+```
+
+Offline export checks every MPC knot and every 52-column output sample against
+the URDF arm position limits with a 0.05 rad margin, arm velocity/effort
+limits, and the walking policy's body-frame velocity-command limits. The MPC
+uses soft constraint penalties, so a solve may complete but fail this strict
+export check. Such a trajectory is rejected before the output CSV is opened;
+do not clip its joint positions or use it for training or replay.
+
 For reproducible batch generation over the initially validated compact
 workspace, run:
 
@@ -130,15 +150,23 @@ python scripts/ocs2/generate_trajectory_dataset.py \
   --task-info /tmp/tron2_ocs2_runtime.info \
   --robot-urdf "$PWD/robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf" \
   --library-dir /tmp/tron2_ocs2_codegen \
-  --output-dir "$HOME/datasets/tron2_ocs2_compact_v1" \
+  --output-dir "$HOME/datasets/tron2_ocs2_safe_v2" \
   --count 200 \
   --seed 42 \
-  --arrival-times 0.5 0.75 1.0
+  --target-mode relative \
+  --arrival-times 0.75 1.0
 ```
 
-The batch tool writes one 52-column CSV per successful solve, a `manifest.csv`
-with targets/timing/numerical bounds, and `failures.csv` for rejected solves.
-Use `--resume` to continue an interrupted output directory.
+The relative-target defaults sample XYZ offsets within 0.03/0.02/0.02 m of
+the home end-effector pose. This is a conservative *candidate generator*, not
+a guarantee of feasibility: the strict checks decide what succeeds. The batch
+tool writes one unchanged 52-column CSV per accepted solve, a `manifest.csv`
+with targets/timing/numerical bounds, `failures.csv` for rejected solves, and
+`contract.json` documenting the column order, arm limits, wrench frame/sign,
+five prediction offsets, normalization, and 78-input/10-action walking actor
+contract. `--target-mode absolute` retains the older absolute-world target
+interface. Use a new output directory for this revised manifest; `--resume`
+continues only an interrupted dataset with the same contract.
 
 ## Isaac Lab rollout collection
 
@@ -149,8 +177,8 @@ states, and success metrics in one Isaac Lab process with:
 ```bash
 python scripts/rsl_rl/collect_ocs2_rollouts.py \
   --task Isaac-Limx-SFYG-TRON2A-WholeBody-Flat-Play-v0 \
-  --trajectory_manifest "$HOME/datasets/tron2_ocs2_compact_v1/manifest.csv" \
-  --output_dir "$HOME/datasets/tron2_ocs2_compact_v1_rollout" \
+  --trajectory_manifest "$HOME/datasets/tron2_ocs2_safe_v2/manifest.csv" \
+  --output_dir "$HOME/datasets/tron2_ocs2_safe_v2_rollout" \
   --max_trajectories 10 \
   --start_delay 1.0 \
   --post_motion_duration 2.0 \

@@ -21,6 +21,7 @@ class SolverCore {
  public:
   SolverCore(const std::string& taskFile, const std::string& urdfFile,
              const std::string& libraryFolder);
+  EndEffectorTarget currentEndEffectorTarget(const Observation& observation) const;
   Solution solve(const Observation& observation, const EndEffectorTarget& target);
   std::vector<Solution> solveTrajectory(const Observation& observation,
                                         const EndEffectorTarget& target,

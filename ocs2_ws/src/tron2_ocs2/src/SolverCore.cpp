@@ -337,6 +337,24 @@ ocs2::TargetTrajectories SolverCore::makeTarget(
                                   std::move(inputs));
 }
 
+EndEffectorTarget SolverCore::currentEndEffectorTarget(
+    const Observation& observation) const {
+  const auto state = observationToState(observation);
+  const auto& model = pinocchioInterface_->getModel();
+  const auto frameId = model.getFrameId(kEndEffectorFrame);
+  if (frameId >= model.frames.size()) {
+    throw std::runtime_error("End-effector frame not found in reduced model.");
+  }
+  pinocchio::Data data(model);
+  Tron2PinocchioMappingD mapping(settings_);
+  pinocchio::forwardKinematics(model, data, mapping.getPinocchioJointPosition(state));
+  pinocchio::updateFramePlacements(model, data);
+  EndEffectorTarget target;
+  target.positionWorld = data.oMf[frameId].translation();
+  target.orientationWorld = Eigen::Quaterniond(data.oMf[frameId].rotation());
+  return target;
+}
+
 ocs2::PrimalSolution SolverCore::runMpc(const Observation& observation,
                                         const EndEffectorTarget& target) {
   const ocs2::vector_t initialState = observationToState(observation);
@@ -424,6 +442,58 @@ std::vector<Solution> SolverCore::solveTrajectory(const Observation& observation
   }
   const auto trajectory = runMpc(observation, target);
   validateTrajectory(observation.time, trajectory);
+  // The optimizer uses soft boxes. An offline export must never turn a
+  // penalized but infeasible solution into a seemingly valid training sample.
+  // Check every solver knot as well as the commands sampled below; linear
+  // interpolation cannot cross a position box if both adjacent knots pass.
+  constexpr double kExportPositionMargin = 0.05;
+  constexpr double kExportTolerance = 1e-6;
+  const auto& model = pinocchioInterface_->getModel();
+  const auto lower = model.lowerPositionLimit.tail(kArmDof);
+  const auto upper = model.upperPositionLimit.tail(kArmDof);
+  const auto velocity = model.velocityLimit.tail(kArmDof);
+  const auto effort = model.effortLimit.tail(kArmDof);
+  for (std::size_t i = 0; i < kArmDof; ++i) {
+    if (!std::isfinite(lower(i)) || !std::isfinite(upper(i)) ||
+        !std::isfinite(velocity(i)) || !std::isfinite(effort(i)) ||
+        lower(i) + 2.0 * kExportPositionMargin >= upper(i) ||
+        velocity(i) <= 0.0 || effort(i) <= 0.0) {
+      throw std::runtime_error("Invalid URDF limit for export arm" + std::to_string(i + 1));
+    }
+  }
+  auto checkArm = [&](const auto& q, const auto& dq, const auto& tau,
+                      double time, const char* source) {
+    for (std::size_t i = 0; i < kArmDof; ++i) {
+      if (q(i) < lower(i) + kExportPositionMargin - kExportTolerance ||
+          q(i) > upper(i) - kExportPositionMargin + kExportTolerance ||
+          std::abs(dq(i)) > velocity(i) + kExportTolerance ||
+          std::abs(tau(i)) > effort(i) + kExportTolerance) {
+        throw std::runtime_error(std::string("Unsafe OCS2 ") + source + " at t=" +
+                                 std::to_string(time) + ", arm" + std::to_string(i + 1) +
+                                 " (q=" + std::to_string(q(i)) + ", dq=" +
+                                 std::to_string(dq(i)) + ", tau=" +
+                                 std::to_string(tau(i)) + ")");
+      }
+    }
+  };
+  auto checkBase = [&](const Eigen::Vector3d& command, double time) {
+    if (std::abs(command(0)) > kPolicyForwardVelocityLimit + kExportTolerance ||
+        std::abs(command(1)) > kPolicyLateralVelocityLimit + kExportTolerance ||
+        std::abs(command(2)) > kPolicyYawRateLimit + kExportTolerance) {
+      throw std::runtime_error("Unsafe OCS2 base command at t=" + std::to_string(time));
+    }
+  };
+  for (std::size_t index = 0; index < trajectory.timeTrajectory_.size(); ++index) {
+    const auto& state = trajectory.stateTrajectory_[index];
+    const auto& input = trajectory.inputTrajectory_[index];
+    const auto rawEffort = wrenchEstimator_->armEffort(state, input);
+    if (!rawEffort.allFinite()) {
+      throw std::runtime_error("Non-finite OCS2 arm effort at a solver knot.");
+    }
+    checkArm(state.segment<6>(kArmPositionIndex), state.segment<6>(kArmVelocityIndex),
+             rawEffort, trajectory.timeTrajectory_[index], "solver knot");
+    checkBase(input.head<3>(), trajectory.timeTrajectory_[index]);
+  }
   const double finalTime = trajectory.timeTrajectory_.back();
   std::vector<Solution> samples;
   for (double time = observation.time; time <= finalTime + 1e-9; time += samplePeriod) {
@@ -434,6 +504,12 @@ std::vector<Solution> SolverCore::solveTrajectory(const Observation& observation
   }
   samples.emplace_back(terminalHoldSolution(
       finalTime - observation.time + terminalTransitionDuration, trajectory));
+  for (const auto& sample : samples) {
+    if (!sample.valid) throw std::runtime_error("Invalid OCS2 export sample.");
+    checkArm(sample.armPosition, sample.armVelocity, sample.armEffort, sample.time,
+             "export sample");
+    checkBase(sample.baseVelocityCommand, sample.time);
+  }
   return samples;
 }
 
