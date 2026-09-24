@@ -1,0 +1,6 @@
+diff --git a/ocs2_pinocchio/ocs2_pinocchio_interface/src/PinocchioEndEffectorKinematics.cpp b/ocs2_pinocchio/ocs2_pinocchio_interface/src/PinocchioEndEffectorKinematics.cpp
+--- a/ocs2_pinocchio/ocs2_pinocchio_interface/src/PinocchioEndEffectorKinematics.cpp
++++ b/ocs2_pinocchio/ocs2_pinocchio_interface/src/PinocchioEndEffectorKinematics.cpp
+@@ -136 +136 @@
+-    pinocchio::getJointJacobian(model, data, frame.parentJoint, pinocchio::WORLD, J);
++    pinocchio::getJointJacobian(model, data, frame.parent, pinocchio::WORLD, J);

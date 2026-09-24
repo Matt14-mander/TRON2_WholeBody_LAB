@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <cmath>
 #include <utility>
 
@@ -21,8 +22,11 @@
 #include <ocs2_pinocchio_interface/PinocchioEndEffectorKinematicsCppAd.h>
 #include <ocs2_self_collision/PinocchioGeometryInterface.h>
 #include <ocs2_self_collision/SelfCollisionConstraintCppAd.h>
+#include <pinocchio/algorithm/frames.hpp>
+#include <pinocchio/algorithm/kinematics.hpp>
 
 #include "tron2_ocs2/NominalCost.h"
+#include "tron2_ocs2/TerminalStateRegularizationCost.h"
 #include "tron2_ocs2/Tron2Dynamics.h"
 #include "tron2_ocs2/Tron2PinocchioMapping.h"
 
@@ -39,11 +43,15 @@ const std::vector<std::string> kFixedJoints{
     "proximal_roll_R_Joint", "proximal_yaw_R_Joint", "knee_R_Joint",
     "ankle_pitch_R_Joint", "gripper1_Joint", "gripper2_Joint"};
 
+std::string readTextFile(const std::string& path) {
+  std::ifstream stream(path);
+  if (!stream) throw std::runtime_error("Cannot read file: " + path);
+  return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+}
+
 std::string makeMeshUrisPortable(const std::string& urdfFile,
                                  const std::string& libraryFolder) {
-  std::ifstream stream(urdfFile);
-  if (!stream) throw std::runtime_error("Cannot read URDF: " + urdfFile);
-  std::string xml((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+  std::string xml = readTextFile(urdfFile);
   const std::string oldPrefix = "package://bipedal_robot/meshes/";
   const auto meshDirectory =
       std::filesystem::absolute(std::filesystem::path(urdfFile).parent_path() / ".." / "meshes")
@@ -101,10 +109,12 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
     throw std::invalid_argument("Model height/gains must be positive and commandLeadTime non-negative.");
   }
 
+  auto reducedPinocchioInterface = ocs2::mobile_manipulator::createPinocchioInterface(
+      resolvedUrdf, ocs2::mobile_manipulator::ManipulatorModelType::FloatingArmManipulator,
+      kFixedJoints);
   pinocchioInterface_ = std::make_unique<ocs2::PinocchioInterface>(
-      ocs2::mobile_manipulator::createPinocchioInterface(
-          resolvedUrdf, ocs2::mobile_manipulator::ManipulatorModelType::FloatingArmManipulator,
-          kFixedJoints));
+      reducedPinocchioInterface.getModel(), reducedPinocchioInterface.getUrdfModelPtr(),
+      readTextFile(resolvedUrdf));
   const auto& pinModel = pinocchioInterface_->getModel();
   if (pinModel.nq != kBasePoseDim + kArmDof || pinModel.nv != kBasePoseDim + kArmDof) {
     throw std::runtime_error("Reduced Pinocchio model must have nq=nv=12; got nq=" +
@@ -113,8 +123,9 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
 
   nominalState_ = ocs2::vector_t::Zero(kStateDim);
   nominalState_(2) = settings_.desiredBaseHeight;
-  ocs2::loadData::loadEigenMatrix(taskFile, "nominalArmPosition",
-                                  nominalState_.segment(kArmPositionIndex, kArmDof));
+  ocs2::vector_t nominalArmPosition = ocs2::vector_t::Zero(kArmDof);
+  ocs2::loadData::loadEigenMatrix(taskFile, "nominalArmPosition", nominalArmPosition);
+  nominalState_.segment(kArmPositionIndex, kArmDof) = nominalArmPosition;
   ocs2::vector_t stateWeights = ocs2::vector_t::Zero(kStateDim);
   ocs2::vector_t inputWeights = ocs2::vector_t::Zero(kInputDim);
   ocs2::loadData::loadEigenMatrix(taskFile, "cost.stateWeights", stateWeights);
@@ -127,6 +138,15 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
   const double eePositionWeight = pt.get<double>("cost.eePositionWeight", 100.0);
   const double eeOrientationWeight = pt.get<double>("cost.eeOrientationWeight", 20.0);
   const double terminalScale = pt.get<double>("cost.terminalScale", 5.0);
+  const double terminalStateRegularization =
+      pt.get<double>("cost.terminalStateRegularization", 1e-5);
+  if (!std::isfinite(terminalStateRegularization) || terminalStateRegularization <= 0.0) {
+    throw std::invalid_argument(
+        "cost.terminalStateRegularization must be positive and finite.");
+  }
+  problem_.finalCostPtr->add(
+      "state_regularization", std::make_unique<TerminalStateRegularizationCost>(
+                                  nominalState_, terminalStateRegularization));
   problem_.stateSoftConstraintPtr->add(
       "end_effector", makeEndEffectorCost(*pinocchioInterface_, referenceManager_, settings_,
                                            libraryFolder, "tron2_ee_running",
@@ -189,13 +209,24 @@ std::unique_ptr<ocs2::StateInputCost> SolverCore::makeBoxConstraints(
   boost::property_tree::read_info(taskFile, pt);
   const double armVelocityLimit = pt.get<double>("limits.armVelocity", 5.0);
   const double armAccelerationLimit = pt.get<double>("limits.armAcceleration", 20.0);
-  const double forwardVelocityLimit = pt.get<double>("limits.forwardVelocity", 1.5);
-  const double lateralVelocityLimit = pt.get<double>("limits.lateralVelocity", 1.0);
-  const double yawRateLimit = pt.get<double>("limits.yawRate", 2.0);
-  if (armVelocityLimit <= 0.0 || armAccelerationLimit <= 0.0 ||
-      forwardVelocityLimit <= 0.0 || lateralVelocityLimit <= 0.0 ||
-      yawRateLimit <= 0.0) {
-    throw std::invalid_argument("All velocity and acceleration limits must be positive.");
+  const double forwardVelocityLimit =
+      pt.get<double>("limits.forwardVelocity", kPolicyForwardVelocityLimit);
+  const double lateralVelocityLimit =
+      pt.get<double>("limits.lateralVelocity", kPolicyLateralVelocityLimit);
+  const double yawRateLimit = pt.get<double>("limits.yawRate", kPolicyYawRateLimit);
+  if (!std::isfinite(armVelocityLimit) || !std::isfinite(armAccelerationLimit) ||
+      !std::isfinite(forwardVelocityLimit) || !std::isfinite(lateralVelocityLimit) ||
+      !std::isfinite(yawRateLimit) || armVelocityLimit <= 0.0 ||
+      armAccelerationLimit <= 0.0 || forwardVelocityLimit <= 0.0 ||
+      lateralVelocityLimit <= 0.0 || yawRateLimit <= 0.0) {
+    throw std::invalid_argument(
+        "All velocity and acceleration limits must be finite and positive.");
+  }
+  if (forwardVelocityLimit > kPolicyForwardVelocityLimit ||
+      lateralVelocityLimit > kPolicyLateralVelocityLimit ||
+      yawRateLimit > kPolicyYawRateLimit) {
+    throw std::invalid_argument(
+        "OCS2 planar command limits exceed the locomotion-policy training range.");
   }
   auto addBox = [](std::vector<Box>& boxes, std::size_t index, double lower, double upper) {
     Box box;
@@ -241,35 +272,110 @@ ocs2::vector_t SolverCore::observationToState(const Observation& observation) co
   return x;
 }
 
-ocs2::TargetTrajectories SolverCore::makeTarget(double time,
-                                                 const EndEffectorTarget& target) const {
+ocs2::TargetTrajectories SolverCore::makeTarget(
+    double time, const ocs2::vector_t& initialState,
+    const EndEffectorTarget& target) const {
   if (!target.positionWorld.allFinite() || !target.orientationWorld.coeffs().allFinite() ||
       target.orientationWorld.norm() < 1e-9) {
     throw std::invalid_argument("End-effector target contains non-finite values.");
+  }
+  if (!std::isfinite(target.arrivalTime) || target.arrivalTime < 0.0 ||
+      target.arrivalTime > horizon_ + 1e-9) {
+    throw std::invalid_argument(
+        "End-effector arrival time must be finite and within the MPC horizon.");
   }
   Eigen::Quaterniond q = target.orientationWorld.normalized();
   ocs2::vector_t pose(7);
   pose.head<3>() = target.positionWorld;
   pose.tail<4>() = q.coeffs();  // Eigen/OCS2 convention: [qx, qy, qz, qw].
-  return ocs2::TargetTrajectories({time, time + horizon_}, {pose, pose},
-                                  {ocs2::vector_t(), ocs2::vector_t()});
+  if (target.arrivalTime <= 1e-9) {
+    return ocs2::TargetTrajectories({time, time + horizon_}, {pose, pose},
+                                    {ocs2::vector_t(), ocs2::vector_t()});
+  }
+
+  requireSize(initialState, kStateDim, "initial state");
+  const auto& model = pinocchioInterface_->getModel();
+  pinocchio::Data data(model);
+  Tron2PinocchioMappingD mapping(settings_);
+  const auto pinocchioQ = mapping.getPinocchioJointPosition(initialState);
+  pinocchio::forwardKinematics(model, data, pinocchioQ);
+  pinocchio::updateFramePlacements(model, data);
+  const auto frameId = model.getFrameId(kEndEffectorFrame);
+  if (frameId >= model.frames.size()) {
+    throw std::runtime_error("End-effector frame not found in reduced model.");
+  }
+  ocs2::vector_t initialPose(7);
+  initialPose.head<3>() = data.oMf[frameId].translation();
+  const Eigen::Quaterniond initialOrientation(data.oMf[frameId].rotation());
+  initialPose.tail<4>() = initialOrientation.coeffs();
+
+  const double arrival = std::min(target.arrivalTime, horizon_);
+  constexpr int kReferenceIntervals = 10;
+  std::vector<double> times;
+  std::vector<ocs2::vector_t> poses;
+  std::vector<ocs2::vector_t> inputs;
+  times.reserve(kReferenceIntervals + 2);
+  poses.reserve(kReferenceIntervals + 2);
+  inputs.reserve(kReferenceIntervals + 2);
+  for (int index = 0; index <= kReferenceIntervals; ++index) {
+    const double phase = static_cast<double>(index) / kReferenceIntervals;
+    const double alpha = phase * phase * (3.0 - 2.0 * phase);
+    ocs2::vector_t referencePose(7);
+    referencePose.head<3>() =
+        (1.0 - alpha) * initialPose.head<3>() + alpha * pose.head<3>();
+    referencePose.tail<4>() = initialOrientation.slerp(alpha, q).coeffs();
+    times.emplace_back(time + phase * arrival);
+    poses.emplace_back(std::move(referencePose));
+    inputs.emplace_back();
+  }
+  if (arrival < horizon_ - 1e-9) {
+    times.emplace_back(time + horizon_);
+    poses.emplace_back(pose);
+    inputs.emplace_back();
+  }
+  return ocs2::TargetTrajectories(std::move(times), std::move(poses),
+                                  std::move(inputs));
 }
 
-Solution SolverCore::solve(const Observation& observation, const EndEffectorTarget& target) {
+EndEffectorTarget SolverCore::currentEndEffectorTarget(
+    const Observation& observation) const {
+  const auto state = observationToState(observation);
+  const auto& model = pinocchioInterface_->getModel();
+  const auto frameId = model.getFrameId(kEndEffectorFrame);
+  if (frameId >= model.frames.size()) {
+    throw std::runtime_error("End-effector frame not found in reduced model.");
+  }
+  pinocchio::Data data(model);
+  Tron2PinocchioMappingD mapping(settings_);
+  pinocchio::forwardKinematics(model, data, mapping.getPinocchioJointPosition(state));
+  pinocchio::updateFramePlacements(model, data);
+  EndEffectorTarget target;
+  target.positionWorld = data.oMf[frameId].translation();
+  target.orientationWorld = Eigen::Quaterniond(data.oMf[frameId].rotation());
+  return target;
+}
+
+ocs2::PrimalSolution SolverCore::runMpc(const Observation& observation,
+                                        const EndEffectorTarget& target) {
   const ocs2::vector_t initialState = observationToState(observation);
-  referenceManager_->setTargetTrajectories(makeTarget(observation.time, target));
+  referenceManager_->setTargetTrajectories(
+      makeTarget(observation.time, initialState, target));
   if (!mpc_->run(observation.time, initialState)) {
     throw std::runtime_error("OCS2 MPC did not produce a new policy.");
   }
-  ocs2::PrimalSolution trajectory =
-      mpc_->getSolverPtr()->primalSolution(observation.time + horizon_);
+  return mpc_->getSolverPtr()->primalSolution(observation.time + horizon_);
+}
+
+void SolverCore::validateTrajectory(double initialTime,
+                                    const ocs2::PrimalSolution& trajectory) const {
   if (trajectory.timeTrajectory_.empty() || trajectory.stateTrajectory_.empty() ||
       trajectory.inputTrajectory_.empty()) {
     throw std::runtime_error("OCS2 returned an empty primal solution.");
   }
   if (trajectory.stateTrajectory_.size() != trajectory.timeTrajectory_.size() ||
-      trajectory.timeTrajectory_.front() > observation.time + 1e-6 ||
-      trajectory.timeTrajectory_.back() < observation.time + kWrenchPredictionTimes.back() - 1e-6 ||
+      trajectory.inputTrajectory_.size() != trajectory.timeTrajectory_.size() ||
+      trajectory.timeTrajectory_.front() > initialTime + 1e-6 ||
+      trajectory.timeTrajectory_.back() < initialTime + kWrenchPredictionTimes.back() - 1e-6 ||
       !std::is_sorted(trajectory.timeTrajectory_.begin(), trajectory.timeTrajectory_.end())) {
     throw std::runtime_error("OCS2 returned a malformed or too-short trajectory.");
   }
@@ -281,31 +387,154 @@ Solution SolverCore::solve(const Observation& observation, const EndEffectorTarg
     requireSize(input, kInputDim, "trajectory input");
     if (!input.allFinite()) throw std::runtime_error("OCS2 trajectory input is non-finite.");
   }
+}
+
+Solution SolverCore::sampleSolution(double sampleTime, double outputTime,
+                                    const ocs2::PrimalSolution& trajectory) {
+  const double boundedTime = std::clamp(
+      sampleTime, trajectory.timeTrajectory_.front(), trajectory.timeTrajectory_.back());
   const auto commandState = ocs2::LinearInterpolation::interpolate(
-      observation.time + settings_.commandLeadTime, trajectory.timeTrajectory_,
+      std::min(boundedTime + settings_.commandLeadTime, trajectory.timeTrajectory_.back()),
+      trajectory.timeTrajectory_,
       trajectory.stateTrajectory_);
   const auto commandInput = ocs2::LinearInterpolation::interpolate(
-      observation.time, trajectory.timeTrajectory_, trajectory.inputTrajectory_);
+      boundedTime, trajectory.timeTrajectory_, trajectory.inputTrajectory_);
   const auto commandInputLead = ocs2::LinearInterpolation::interpolate(
-      observation.time + settings_.commandLeadTime, trajectory.timeTrajectory_,
+      std::min(boundedTime + settings_.commandLeadTime, trajectory.timeTrajectory_.back()),
+      trajectory.timeTrajectory_,
       trajectory.inputTrajectory_);
   requireSize(commandState, kStateDim, "command state");
   requireSize(commandInput, kInputDim, "command input");
   requireSize(commandInputLead, kInputDim, "lead command input");
 
   Solution out;
-  out.time = observation.time;
+  out.time = outputTime;
   out.armPosition = commandState.segment<6>(kArmPositionIndex);
   out.armVelocity = commandState.segment<6>(kArmVelocityIndex);
   out.baseVelocityCommand = commandInput.head<3>();
   out.armEffort = wrenchEstimator_->armEffort(commandState, commandInputLead);
   const auto effortLimits = pinocchioInterface_->getModel().effortLimit.tail(kArmDof);
   out.armEffort = out.armEffort.cwiseMax(-effortLimits).cwiseMin(effortLimits);
-  out.baseWrenchPrediction = wrenchEstimator_->predict(observation.time, trajectory);
+  out.baseWrenchPrediction = wrenchEstimator_->predict(boundedTime, trajectory);
   out.valid = out.armPosition.allFinite() && out.armVelocity.allFinite() &&
               out.armEffort.allFinite() && out.baseVelocityCommand.allFinite() &&
               out.baseWrenchPrediction.allFinite();
   if (!out.valid) throw std::runtime_error("OCS2 solution contains non-finite values.");
+  return out;
+}
+
+Solution SolverCore::solve(const Observation& observation, const EndEffectorTarget& target) {
+  const auto trajectory = runMpc(observation, target);
+  validateTrajectory(observation.time, trajectory);
+  return sampleSolution(observation.time, observation.time, trajectory);
+}
+
+std::vector<Solution> SolverCore::solveTrajectory(const Observation& observation,
+                                                  const EndEffectorTarget& target,
+                                                  double samplePeriod,
+                                                  double terminalTransitionDuration) {
+  if (!std::isfinite(samplePeriod) || samplePeriod <= 0.0) {
+    throw std::invalid_argument("Trajectory sample period must be positive and finite.");
+  }
+  if (!std::isfinite(terminalTransitionDuration) || terminalTransitionDuration <= 0.0) {
+    throw std::invalid_argument(
+        "Terminal transition duration must be positive and finite.");
+  }
+  const auto trajectory = runMpc(observation, target);
+  validateTrajectory(observation.time, trajectory);
+  // The optimizer uses soft boxes. An offline export must never turn a
+  // penalized but infeasible solution into a seemingly valid training sample.
+  // Check every solver knot as well as the commands sampled below; linear
+  // interpolation cannot cross a position box if both adjacent knots pass.
+  constexpr double kExportPositionMargin = 0.05;
+  constexpr double kExportTolerance = 1e-6;
+  const auto& model = pinocchioInterface_->getModel();
+  const auto lower = model.lowerPositionLimit.tail(kArmDof);
+  const auto upper = model.upperPositionLimit.tail(kArmDof);
+  const auto velocity = model.velocityLimit.tail(kArmDof);
+  const auto effort = model.effortLimit.tail(kArmDof);
+  for (std::size_t i = 0; i < kArmDof; ++i) {
+    if (!std::isfinite(lower(i)) || !std::isfinite(upper(i)) ||
+        !std::isfinite(velocity(i)) || !std::isfinite(effort(i)) ||
+        lower(i) + 2.0 * kExportPositionMargin >= upper(i) ||
+        velocity(i) <= 0.0 || effort(i) <= 0.0) {
+      throw std::runtime_error("Invalid URDF limit for export arm" + std::to_string(i + 1));
+    }
+  }
+  auto checkArm = [&](const auto& q, const auto& dq, const auto& tau,
+                      double time, const char* source) {
+    for (std::size_t i = 0; i < kArmDof; ++i) {
+      if (q(i) < lower(i) + kExportPositionMargin - kExportTolerance ||
+          q(i) > upper(i) - kExportPositionMargin + kExportTolerance ||
+          std::abs(dq(i)) > velocity(i) + kExportTolerance ||
+          std::abs(tau(i)) > effort(i) + kExportTolerance) {
+        throw std::runtime_error(std::string("Unsafe OCS2 ") + source + " at t=" +
+                                 std::to_string(time) + ", arm" + std::to_string(i + 1) +
+                                 " (q=" + std::to_string(q(i)) + ", dq=" +
+                                 std::to_string(dq(i)) + ", tau=" +
+                                 std::to_string(tau(i)) + ")");
+      }
+    }
+  };
+  auto checkBase = [&](const Eigen::Vector3d& command, double time) {
+    if (std::abs(command(0)) > kPolicyForwardVelocityLimit + kExportTolerance ||
+        std::abs(command(1)) > kPolicyLateralVelocityLimit + kExportTolerance ||
+        std::abs(command(2)) > kPolicyYawRateLimit + kExportTolerance) {
+      throw std::runtime_error("Unsafe OCS2 base command at t=" + std::to_string(time));
+    }
+  };
+  for (std::size_t index = 0; index < trajectory.timeTrajectory_.size(); ++index) {
+    const auto& state = trajectory.stateTrajectory_[index];
+    const auto& input = trajectory.inputTrajectory_[index];
+    const auto rawEffort = wrenchEstimator_->armEffort(state, input);
+    if (!rawEffort.allFinite()) {
+      throw std::runtime_error("Non-finite OCS2 arm effort at a solver knot.");
+    }
+    checkArm(state.segment<6>(kArmPositionIndex), state.segment<6>(kArmVelocityIndex),
+             rawEffort, trajectory.timeTrajectory_[index], "solver knot");
+    checkBase(input.head<3>(), trajectory.timeTrajectory_[index]);
+  }
+  const double finalTime = trajectory.timeTrajectory_.back();
+  std::vector<Solution> samples;
+  for (double time = observation.time; time <= finalTime + 1e-9; time += samplePeriod) {
+    samples.emplace_back(sampleSolution(time, time - observation.time, trajectory));
+  }
+  if (samples.empty() || samples.back().time < finalTime - observation.time - 1e-9) {
+    samples.emplace_back(sampleSolution(finalTime, finalTime - observation.time, trajectory));
+  }
+  samples.emplace_back(terminalHoldSolution(
+      finalTime - observation.time + terminalTransitionDuration, trajectory));
+  for (const auto& sample : samples) {
+    if (!sample.valid) throw std::runtime_error("Invalid OCS2 export sample.");
+    checkArm(sample.armPosition, sample.armVelocity, sample.armEffort, sample.time,
+             "export sample");
+    checkBase(sample.baseVelocityCommand, sample.time);
+  }
+  return samples;
+}
+
+Solution SolverCore::terminalHoldSolution(double outputTime,
+                                          const ocs2::PrimalSolution& trajectory) {
+  ocs2::vector_t state = trajectory.stateTrajectory_.back();
+  requireSize(state, kStateDim, "terminal state");
+  state.segment<6>(kArmVelocityIndex).setZero();
+  const ocs2::vector_t input = ocs2::vector_t::Zero(kInputDim);
+
+  Solution out;
+  out.time = outputTime;
+  out.armPosition = state.segment<6>(kArmPositionIndex);
+  out.armVelocity.setZero();
+  out.baseVelocityCommand.setZero();
+  out.armEffort = wrenchEstimator_->armEffort(state, input);
+  const auto effortLimits = pinocchioInterface_->getModel().effortLimit.tail(kArmDof);
+  out.armEffort = out.armEffort.cwiseMax(-effortLimits).cwiseMin(effortLimits);
+  const auto holdWrench = wrenchEstimator_->armOnBaseWrench(state, input);
+  for (Eigen::Index row = 0; row < out.baseWrenchPrediction.rows(); ++row) {
+    out.baseWrenchPrediction.row(row) = holdWrench.transpose();
+  }
+  out.valid = out.armPosition.allFinite() && out.armEffort.allFinite() &&
+              out.baseWrenchPrediction.allFinite();
+  if (!out.valid) throw std::runtime_error("OCS2 terminal hold contains non-finite values.");
   return out;
 }
 

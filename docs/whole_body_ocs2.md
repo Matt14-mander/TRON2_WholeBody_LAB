@@ -36,6 +36,9 @@ The numerical interface is defined in
 - Implement the paper-style 18-state/9-input floating-base arm model.
 - Add end-effector tracking, nominal-arm, joint-limit, input, and self-collision
   costs/constraints.
+- Add a configurable positive terminal-state regularizer so strict DDP
+  numerical-stability checks remain enabled despite round-off in the terminal
+  end-effector Hessian.
 - Use Pinocchio RNEA arm-subtree forces to produce the base-frame wrench
   sequence without including the legs or trunk wrench.
 - Add a full solver/RNEA smoke executable and dynamics unit test.
@@ -45,11 +48,51 @@ The internal planar command is body-frame `[vx, vy, yaw_rate]`, matching the
 locomotion policy command convention. The optimizer uses a 1.0 s horizon so all
 five prediction offsets are always available.
 
-### Stage 2B - runtime bridges (next)
+### Stage 2B - runtime bridges (in progress)
 
-- Connect the C++ solver output to Isaac Lab PLAY and add stale-solution and
-  solver-failure fallbacks.
+- A localhost TCP service and non-blocking Isaac Lab PLAY client now connect
+  the native C++ solver without mixing the OCS2 and Isaac Sim Conda environments.
+- The PLAY adapter writes arm position/velocity/feed-forward effort targets,
+  the planar base command, and the normalized 5x6 predicted-wrench observation.
+- OCS2 runs on one background worker; requests are coalesced to the newest
+  observation so a slow solver cannot block rendering or build an unbounded
+  queue. Until a fresh solution is available, PLAY pumps the render/WebRTC
+  event loop but pauses physics, preventing fallback falls and episode resets
+  from invalidating a slow solve. Stale solutions, transport errors, and solver
+  failures hold the arm and zero both the locomotion command and predicted
+  wrench.
+- Build and closed-loop simulation validation on the Linux Isaac Lab host is
+  still required before this stage is marked implemented.
 - Reuse the same transport-neutral contract for the MuJoCo deployment bridge.
+
+### Stage 2C - offline trajectory replay (implemented, awaiting host validation)
+
+- `tron2_ocs2_trajectory_export` performs one OCS2 solve and samples the full
+  primal trajectory at 50 Hz into a fixed 52-column CSV contract.
+- Each row contains arm position, velocity, feed-forward effort, planar base
+  command, and the 5x6 predicted base wrench used by the WholeBody actor.
+- The last optimized state is extended as a constant for wrench preview near
+  the horizon boundary. A 0.5 s transition blends into an RNEA-recomputed
+  static hold with zero arm velocity, acceleration, and planar base command.
+- Isaac Lab accepts `--ocs2_trajectory PATH` as a mutually exclusive
+  alternative to the live TCP bridge and interpolates the CSV against
+  simulation time without any OCS2 process at PLAY time.
+- A configurable terminal planar command supports continued walking after the
+  one-shot arm motion; its final 0.5 s transition uses cubic smoothstep.
+- An optional startup delay holds the first arm sample while locomotion,
+  contacts, actuator targets, and policy observations settle.
+- An optional deterministic-reset validation mode removes base and joint reset
+  offsets so repeated falls can be separated from randomized startup states.
+- The single-trajectory exporter accepts an arrival time and constructs a
+  smooth end-effector reference from the initial pose to the target.
+- `scripts/ocs2/generate_trajectory_dataset.py` reproducibly samples the
+  compact workspace and multiple arrival times, records successful expert
+  trajectories in a manifest, and preserves solver failures separately.
+- `scripts/rsl_rl/collect_ocs2_rollouts.py` replays a manifest in one Isaac Lab
+  process with deterministic resets. It stores timestamp-aligned policy
+  observations, actual robot states, intent, expert arm/base/wrench labels,
+  next states, tracking metrics, rejection reasons, and trajectory-level
+  train/validation/test splits.
 
 ### Stage 3 - policy fidelity and hardware
 

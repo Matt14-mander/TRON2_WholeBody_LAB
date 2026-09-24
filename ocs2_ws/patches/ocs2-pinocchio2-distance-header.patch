@@ -1,0 +1,12 @@
+diff --git a/ocs2_pinocchio/ocs2_self_collision/src/PinocchioGeometryInterface.cpp b/ocs2_pinocchio/ocs2_self_collision/src/PinocchioGeometryInterface.cpp
+--- a/ocs2_pinocchio/ocs2_self_collision/src/PinocchioGeometryInterface.cpp
++++ b/ocs2_pinocchio/ocs2_self_collision/src/PinocchioGeometryInterface.cpp
+@@ -32,8 +32,7 @@
+ #include <ocs2_self_collision/PinocchioGeometryInterface.h>
+ 
+ #include <pinocchio/algorithm/geometry.hpp>
+-#include <pinocchio/collision/distance.hpp>
+ #include <pinocchio/multibody/data.hpp>
+ #include <pinocchio/multibody/fcl.hpp>
+ #include <pinocchio/multibody/geometry.hpp>
+ #include <pinocchio/multibody/model.hpp>

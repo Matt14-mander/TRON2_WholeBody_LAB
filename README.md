@@ -161,6 +161,22 @@ nominal-arm cost, joint/input limits, self-collision, and five-sample base-wrenc
 prediction from Pinocchio RNEA arm-subtree forces. See its README for build and
 smoke-test commands. Isaac Lab PLAY and MuJoCo bridges are the next stage.
 
+Use the reproducible workspace entry points rather than cloning and patching
+the OCS2 dependencies by hand:
+
+```bash
+bash ocs2_ws/scripts/prepare_sources.sh
+conda activate tron2_ocs2
+bash ocs2_ws/scripts/build_tron2_ocs2.sh
+source ocs2_ws/install/setup.bash
+ros2 pkg executables tron2_ocs2
+```
+
+They pin both upstream repositories, apply the tracked compatibility patches,
+locate the Conda Pinocchio/hpp-fcl CMake packages explicitly, and handle the
+old vendored GoogleTest `<cstdint>` build failure. See
+[`ocs2_ws/README.md`](ocs2_ws/README.md) for dependency diagnostics.
+
 ## Architecture Overview
 
 The main code is now split into four top-level areas:

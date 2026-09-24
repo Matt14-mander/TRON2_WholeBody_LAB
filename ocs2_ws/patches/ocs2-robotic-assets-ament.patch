@@ -1,0 +1,54 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 7a06af7..c412c53 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,16 +1,13 @@
+-cmake_minimum_required(VERSION 3.0.2)
++cmake_minimum_required(VERSION 3.8)
+ project(ocs2_robotic_assets)
+ 
+-find_package(catkin)
++find_package(ament_cmake REQUIRED)
+ 
+ ###################################
+ ## catkin specific configuration ##
+ ###################################
+ 
+-catkin_package(
+-  INCLUDE_DIRS
+-    include
+-)
++ament_export_include_directories(include)
+ 
+ ###########
+ ## Build ##
+@@ -27,9 +24,10 @@ configure_file (
+ #############
+ 
+ install(DIRECTORY include/${PROJECT_NAME}/
+-  DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
++  DESTINATION include/${PROJECT_NAME}
+ )
+ 
+ install(DIRECTORY resources
+-  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+-)
+\ No newline at end of file
++  DESTINATION share/${PROJECT_NAME}
++)
++ament_package()
+diff --git a/package.xml b/package.xml
+index b6160a8..bc93153 100644
+--- a/package.xml
++++ b/package.xml
+@@ -9,6 +9,9 @@
+ 
+   <license>BSD-3</license>
+ 
+-  <buildtool_depend>catkin</buildtool_depend>
++  <buildtool_depend>ament_cmake</buildtool_depend>
+ 
++  <export>
++    <build_type>ament_cmake</build_type>
++  </export>
+ </package>

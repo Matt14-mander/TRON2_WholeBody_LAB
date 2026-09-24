@@ -63,9 +63,9 @@ mpc
 
 limits
 {
-  forwardVelocity  1.5
-  lateralVelocity  1.0
-  yawRate          2.0
+  forwardVelocity  1.0
+  lateralVelocity  0.5
+  yawRate          1.5
   armVelocity      5.0
   armAcceleration 20.0
 }
@@ -119,6 +119,7 @@ cost
   eePositionWeight    100.0
   eeOrientationWeight 20.0
   terminalScale       5.0
+  terminalStateRegularization 1e-5
 }
 
 selfCollision

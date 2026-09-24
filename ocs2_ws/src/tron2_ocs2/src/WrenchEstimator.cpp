@@ -1,5 +1,7 @@
 #include "tron2_ocs2/WrenchEstimator.h"
 
+#include <algorithm>
+
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/rnea.hpp>
 #include <ocs2_core/misc/LinearInterpolation.h>
@@ -62,10 +64,15 @@ std::pair<ocs2::vector_t, ocs2::vector_t> WrenchEstimator::sample(
       trajectory.inputTrajectory_.empty()) {
     throw std::runtime_error("Cannot sample an empty OCS2 solution.");
   }
+  // Offline playback asks for a full 0.8 s wrench preview even near the end
+  // of the optimized horizon. Extend the terminal state/input as a constant
+  // rather than extrapolating beyond the valid OCS2 trajectory.
+  const double boundedTime = std::clamp(
+      time, trajectory.timeTrajectory_.front(), trajectory.timeTrajectory_.back());
   auto x = ocs2::LinearInterpolation::interpolate(
-      time, trajectory.timeTrajectory_, trajectory.stateTrajectory_);
+      boundedTime, trajectory.timeTrajectory_, trajectory.stateTrajectory_);
   auto u = ocs2::LinearInterpolation::interpolate(
-      time, trajectory.timeTrajectory_, trajectory.inputTrajectory_);
+      boundedTime, trajectory.timeTrajectory_, trajectory.inputTrajectory_);
   requireSize(x, kStateDim, "sampled state");
   requireSize(u, kInputDim, "sampled input");
   return {std::move(x), std::move(u)};
