@@ -1,0 +1,12 @@
+diff --git a/ocs2_pinocchio/ocs2_pinocchio_interface/src/PinocchioInterface.cpp b/ocs2_pinocchio/ocs2_pinocchio_interface/src/PinocchioInterface.cpp
+--- a/ocs2_pinocchio/ocs2_pinocchio_interface/src/PinocchioInterface.cpp
++++ b/ocs2_pinocchio/ocs2_pinocchio_interface/src/PinocchioInterface.cpp
+@@ -78 +78 @@
+-    os << ", parentJoint = " << model.frames[k].parentJoint;
++    os << ", parentJoint = " << model.frames[k].parent;
+diff --git a/ocs2_pinocchio/ocs2_pinocchio_interface/src/PinocchioEndEffectorKinematics.cpp b/ocs2_pinocchio/ocs2_pinocchio_interface/src/PinocchioEndEffectorKinematics.cpp
+--- a/ocs2_pinocchio/ocs2_pinocchio_interface/src/PinocchioEndEffectorKinematics.cpp
++++ b/ocs2_pinocchio/ocs2_pinocchio_interface/src/PinocchioEndEffectorKinematics.cpp
+@@ -134 +134 @@
+-    const vector3_t position = data.oMi[frame.parentJoint].act(frame.placement.translation());
++    const vector3_t position = data.oMi[frame.parent].act(frame.placement.translation());

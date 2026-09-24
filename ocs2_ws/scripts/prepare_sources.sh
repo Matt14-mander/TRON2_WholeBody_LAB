@@ -56,6 +56,7 @@ clone_at_revision "$OCS2_URL" "$SOURCE_DIR/ocs2" "$OCS2_REVISION" ros2
 clone_at_revision "$ASSETS_URL" "$SOURCE_DIR/ocs2_robotic_assets" "$ASSETS_REVISION"
 
 apply_patch_once "$SOURCE_DIR/ocs2" "$PATCH_DIR/ocs2-urdfdom5.patch"
+apply_patch_once "$SOURCE_DIR/ocs2" "$PATCH_DIR/ocs2-pinocchio2-frame-parent.patch"
 apply_patch_once "$SOURCE_DIR/ocs2_robotic_assets" "$PATCH_DIR/ocs2-robotic-assets-ament.patch"
 
 echo "OCS2 sources are ready:"

@@ -37,7 +37,10 @@ ros2 pkg executables tron2_ocs2
 ```
 
 `prepare_sources.sh` checks out the recorded upstream revisions and applies the
-tracked ROS 2/urdfdom compatibility patches exactly once. The build script:
+tracked ROS 2/urdfdom and Pinocchio 2.7 compatibility patches exactly once.
+Pinocchio 2.7 names a frame's parent-joint field `parent`, whereas the pinned
+OCS2 source uses the Pinocchio 3 name `parentJoint`. The frame-parent patch
+adapts those OCS2 call sites for the documented 2.7 dependency. The build script:
 
 - uses `/opt/ros/$ROS_DISTRO/setup.bash` when available, otherwise checks that
   the active environment provides `ros2`, `colcon`, and `ament_cmake`;
