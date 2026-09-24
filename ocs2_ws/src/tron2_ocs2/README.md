@@ -41,14 +41,24 @@ diagnostics. Do not continue to the commands below until
 Run a complete construction/solve/RNEA smoke pass:
 
 ```bash
-ros2 run tron2_ocs2 tron2_ocs2_smoke \
-  "$PWD/ocs2_ws/src/tron2_ocs2/config/task.info" \
-  "$PWD/robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf" \
-  /tmp/tron2_ocs2_codegen
+(
+  set -e
+  CODEGEN_CC="$(command -v x86_64-conda-linux-gnu-gcc)"
+  printf 'int main(void) { return 0; }\n' | "$CODEGEN_CC" -x c -fsyntax-only -
+  export OCS2_CODEGEN_COMPILER="$CODEGEN_CC"
+  ros2 run tron2_ocs2 tron2_ocs2_smoke \
+    "$PWD/ocs2_ws/src/tron2_ocs2/config/task.info" \
+    "$PWD/robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf" \
+    /tmp/tron2_ocs2_codegen
+)
 ```
 
 The first run should set `model.recompileLibraries=true`; after CppAD models
-have been generated, set it back to `false` for fast startup.
+have been generated, set it back to `false` for fast startup. CppAD compiles
+generated C code at runtime. The pinned OCS2 patch otherwise defaults to
+`/usr/bin/gcc`, which may not have a working `cc1` in the Conda environment.
+If the Conda compiler is absent, install `gcc_linux-64` from conda-forge in
+the active `tron2_ocs2` environment before running the smoke test.
 
 ## Isaac Lab runtime bridge
 
