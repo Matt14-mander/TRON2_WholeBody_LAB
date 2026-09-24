@@ -88,13 +88,21 @@ PLAY task with `--ocs2`. The bridge currently supports one environment:
 ```bash
 LIVESTREAM=2 python scripts/rsl_rl/play.py \
   --task Isaac-Limx-SFYG-TRON2A-WholeBody-Flat-Play-v0 \
-  --num_envs 1 --headless --ocs2 \
+  --num_envs 1 --headless --ocs2 --ocs2_deterministic_reset \
   --ocs2_update_period 0.1 \
   --ocs2_max_solution_age 0.5 \
-  --ocs2_target_position 0.35 0.0 0.85 \
-  --ocs2_target_quaternion 1.0 0.0 0.0 0.0 \
+  --ocs2_target_offset_world 0.0 0.0 0.0 \
+  --ocs2_target_arrival_time 1.0 \
   --checkpoint_path /absolute/path/to/model.pt
 ```
+
+The default live target holds the first measured `gripper_base_Link` world
+pose. After confirming a stable hold, `--ocs2_target_offset_world 0.02 0 0`
+requests a small world-frame displacement while retaining the measured wrist
+orientation. An explicit `--ocs2_target_position` and optional
+`--ocs2_target_quaternion` remain available for absolute targets. The target
+arrival time must be within the configured MPC horizon; unlike the former
+zero-arrival live request, a positive value avoids an immediate reference step.
 
 OCS2 owns the six arm position/velocity/feed-forward-effort targets and the
 planar locomotion command. Its 5x6 base-wrench prediction replaces the zero
@@ -106,6 +114,10 @@ is available, PLAY pauses physics but continues pumping the render/WebRTC event
 loop. A timeout, invalid response, stale timestamp, or solver failure therefore
 cannot advance the robot with mismatched inputs; the arm is held and both the
 planar command and predicted wrench are zeroed.
+
+The bridge reports wall-clock solve duration. If solves are slower than the
+requested update period, the bridge is useful for functional validation but
+not real-time locomotion; use offline export/replay until MPC latency is reduced.
 
 ## Offline trajectory export and replay
 

@@ -73,14 +73,24 @@ parser.add_argument(
     "--ocs2_update_period", type=float, default=0.1, help="Simulation-time period between OCS2 submissions."
 )
 parser.add_argument(
-    "--ocs2_target_position", type=float, nargs=3, default=(0.35, 0.0, 0.85), metavar=("X", "Y", "Z")
+    "--ocs2_target_position", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"),
+    help="Absolute world-frame end-effector target; defaults to the initial measured pose.",
 )
 parser.add_argument(
     "--ocs2_target_quaternion",
     type=float,
     nargs=4,
-    default=(1.0, 0.0, 0.0, 0.0),
+    default=None,
     metavar=("W", "X", "Y", "Z"),
+    help="Target orientation in WXYZ order; defaults to the initial measured orientation.",
+)
+parser.add_argument(
+    "--ocs2_target_offset_world", type=float, nargs=3, default=(0.0, 0.0, 0.0),
+    metavar=("DX", "DY", "DZ"), help="World-frame offset from the initial measured end-effector position.",
+)
+parser.add_argument(
+    "--ocs2_target_arrival_time", type=float, default=1.0,
+    help="Seconds from the first observation to the target; must not exceed the MPC horizon.",
 )
 
 # append RSL-RL cli arguments
@@ -215,6 +225,8 @@ def main():
             args_cli.ocs2_target_quaternion,
             args_cli.ocs2_max_solution_age,
             args_cli.ocs2_update_period,
+            args_cli.ocs2_target_offset_world,
+            args_cli.ocs2_target_arrival_time,
         )
         print(
             f"[INFO] OCS2 asynchronous client configured for {args_cli.ocs2_host}:{args_cli.ocs2_port}; "
@@ -287,7 +299,7 @@ def main():
                 # but do not advance physics with a missing or stale MPC
                 # result. This also prevents episode resets from continually
                 # invalidating a slow first OCS2 solve.
-                simulation_app.update()
+                env.unwrapped.sim.render()
                 continue
             # agent stepping
             est = encoder(obs_history)

@@ -104,6 +104,11 @@ std::string handleRequest(const std::string& line, tron2_ocs2::SolverCore& solve
       !readEigen(stream, target.positionWorld) || !readEigen(stream, targetQuaternionWxyz)) {
     return "ERR " + std::to_string(requestId) + " malformed_solve\n";
   }
+  // Older clients omit arrival time and retain the original step reference.
+  // New clients send seconds remaining until the end-effector target is due.
+  if (!(stream >> target.arrivalTime) && !stream.eof()) {
+    return "ERR " + std::to_string(requestId) + " malformed_arrival_time\n";
+  }
   std::string trailing;
   if (stream >> trailing) return "ERR " + std::to_string(requestId) + " extra_fields\n";
 

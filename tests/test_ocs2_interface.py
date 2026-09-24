@@ -1,4 +1,5 @@
 import importlib.util
+from dataclasses import replace
 from pathlib import Path
 import sys
 import threading
@@ -25,6 +26,7 @@ Ocs2MpcObservation = _MODULE.Ocs2MpcObservation
 Ocs2MpcSolution = _MODULE.Ocs2MpcSolution
 Ocs2AsyncClient = _MODULE.Ocs2AsyncClient
 Ocs2TcpClient = _MODULE.Ocs2TcpClient
+validate_mpc_observation = _MODULE.validate_mpc_observation
 
 
 class _FakeSocket:
@@ -58,15 +60,27 @@ class Ocs2TcpClientTest(unittest.TestCase):
             arm_velocity=np.zeros(6),
             end_effector_target_position_world=np.array([0.35, 0.0, 0.85]),
             end_effector_target_quaternion_world=np.array([1.0, 0.0, 0.0, 0.0]),
+            end_effector_arrival_time=1.0,
         )
 
         solution = client.solve(observation)
 
-        self.assertEqual(len(fake_socket.sent.decode("ascii").split()), 35)
+        sent_fields = fake_socket.sent.decode("ascii").split()
+        self.assertEqual(len(sent_fields), 36)
+        self.assertEqual(float(sent_fields[-1]), 1.0)
         self.assertEqual(solution.time, 0.0)
         np.testing.assert_array_equal(solution.arm_position, np.arange(1, 7))
         np.testing.assert_array_equal(solution.base_velocity_command, np.arange(19, 22))
         np.testing.assert_array_equal(solution.base_wrench_prediction, np.arange(22, 52).reshape(5, 6))
+
+    def test_rejects_invalid_arrival_time(self):
+        observation = Ocs2AsyncClientTest._observation(0.0)
+        for invalid in (-0.1, float("nan")):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    validate_mpc_observation(
+                        replace(observation, end_effector_arrival_time=invalid)
+                    )
 
 
 class _ControlledClient:

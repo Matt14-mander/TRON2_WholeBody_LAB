@@ -35,6 +35,7 @@ class Ocs2MpcObservation:
     arm_velocity: np.ndarray
     end_effector_target_position_world: np.ndarray
     end_effector_target_quaternion_world: np.ndarray
+    end_effector_arrival_time: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,8 @@ def validate_mpc_observation(observation: Ocs2MpcObservation, arm_dof: int = 6) 
     """Fail fast before malformed state is sent to the native solver."""
     if not np.isfinite(observation.time):
         raise ValueError("observation time must be finite.")
+    if not np.isfinite(observation.end_effector_arrival_time) or observation.end_effector_arrival_time < 0.0:
+        raise ValueError("end-effector arrival time must be finite and non-negative.")
     expected = {
         "base_position_world": (3,),
         "base_quaternion_world": (4,),
@@ -176,6 +179,7 @@ class Ocs2TcpClient:
                 observation.arm_velocity,
                 observation.end_effector_target_position_world,
                 observation.end_effector_target_quaternion_world,
+                observation.end_effector_arrival_time,
             )
         )
         request = "SOLVE " + str(request_id) + " " + " ".join(f"{value:.17g}" for value in values) + "\n"
