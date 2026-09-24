@@ -44,6 +44,9 @@ tracked ROS 2/urdfdom compatibility patches exactly once. The build script:
 - refuses to build until `pinocchioConfig.cmake` and `hpp-fclConfig.cmake` are
   actually present;
 - passes their exact directories to CMake;
+- verifies that the active Conda Python imports NumPy and `ament_package`,
+  then pins that interpreter and NumPy include directory for both
+  ament CMake and `FindPython3`/eigenpy;
 - works around the old vendored GoogleTest `uintptr_t` failure with
   `-include cstdint`;
 - keeps CMake's legacy FindBoost policy enabled for the pinned OCS2 revision.
