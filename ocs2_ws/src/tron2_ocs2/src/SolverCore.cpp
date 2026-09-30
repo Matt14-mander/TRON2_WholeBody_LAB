@@ -96,6 +96,7 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
 
   boost::property_tree::ptree pt;
   boost::property_tree::read_info(taskFile, pt);
+  settings_.initialBaseHeight = pt.get<double>("model.initialBaseHeight", settings_.initialBaseHeight);
   settings_.desiredBaseHeight = pt.get<double>("model.desiredBaseHeight", settings_.desiredBaseHeight);
   settings_.heightResponseGain = pt.get<double>("model.heightResponseGain", settings_.heightResponseGain);
   settings_.pitchResponseGain = pt.get<double>("model.pitchResponseGain", settings_.pitchResponseGain);
@@ -103,10 +104,11 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
   settings_.commandLeadTime = pt.get<double>("model.commandLeadTime", settings_.commandLeadTime);
   settings_.recompileLibraries = pt.get<bool>("model.recompileLibraries", settings_.recompileLibraries);
   settings_.verbose = pt.get<bool>("model.verbose", settings_.verbose);
-  if (settings_.desiredBaseHeight <= 0.0 || settings_.heightResponseGain <= 0.0 ||
+  if (!std::isfinite(settings_.initialBaseHeight) || settings_.initialBaseHeight <= 0.0 ||
+      settings_.desiredBaseHeight <= 0.0 || settings_.heightResponseGain <= 0.0 ||
       settings_.pitchResponseGain <= 0.0 || settings_.rollResponseGain <= 0.0 ||
       settings_.commandLeadTime < 0.0) {
-    throw std::invalid_argument("Model height/gains must be positive and commandLeadTime non-negative.");
+    throw std::invalid_argument("Model heights/gains must be positive and commandLeadTime non-negative.");
   }
 
   auto reducedPinocchioInterface = ocs2::mobile_manipulator::createPinocchioInterface(

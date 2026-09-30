@@ -32,6 +32,7 @@ class SolverCore {
   void reset();
 
   const ocs2::OptimalControlProblem& problem() const { return problem_; }
+  double initialBaseHeight() const { return settings_.initialBaseHeight; }
 
  private:
   ocs2::vector_t observationToState(const Observation& observation) const;

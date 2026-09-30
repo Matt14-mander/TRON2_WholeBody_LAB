@@ -1,5 +1,6 @@
 model
 {
+  initialBaseHeight  0.85
   desiredBaseHeight  0.74
   heightResponseGain 5.0
   pitchResponseGain  5.0

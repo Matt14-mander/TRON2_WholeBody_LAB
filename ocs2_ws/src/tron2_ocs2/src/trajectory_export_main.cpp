@@ -55,10 +55,10 @@ int main(int argc, char** argv) {
     return 2;
   }
   try {
-    tron2_ocs2::Observation observation;
-    observation.basePositionWorld.z() = 0.74;
-    observation.armPosition << 0.0, 1.57079632679, -1.48352986420, 0.0, 0.0, 0.0;
     tron2_ocs2::SolverCore solver(argv[1], argv[2], argv[3]);
+    tron2_ocs2::Observation observation;
+    observation.basePositionWorld.z() = solver.initialBaseHeight();
+    observation.armPosition << 0.0, 1.57079632679, -1.48352986420, 0.0, 0.0, 0.0;
     tron2_ocs2::EndEffectorTarget target;
     target.positionWorld << 0.35, 0.0, 0.85;
     double samplePeriod = 0.02;

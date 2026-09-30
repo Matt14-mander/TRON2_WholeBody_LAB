@@ -121,6 +121,16 @@ not real-time locomotion; use offline export/replay until MPC latency is reduced
 
 ## Offline trajectory export and replay
 
+The offline exporter initializes the base root height from
+`model.initialBaseHeight` in `config/task.info` (0.85 m, matching the Isaac Lab
+SFYG reset pose). This is intentionally separate from `model.desiredBaseHeight`
+(0.74 m), the steady-state height used by OCS2 dynamics. If playback begins
+after a warm-up and the simulated robot has settled to a different height,
+measure the actual root height at motion start and set `initialBaseHeight` in
+the runtime task-info copy to that value before exporting. Changing the
+desired height to match the spawn height would change the OCS2 model, not
+correct its initial observation.
+
 When the host cannot solve OCS2 in real time, export the complete primal
 solution once. The default target is position `[0.35, 0.0, 0.85]`, identity
 WXYZ orientation, and the default sample period is 0.02 s:
@@ -149,13 +159,16 @@ For a safer first dataset, prefer a small displacement from the *initial*
 forcing an identity wrist orientation:
 
 ```bash
+mkdir -p "$HOME/datasets/tron2_ocs2_debug"
 ros2 run tron2_ocs2 tron2_ocs2_trajectory_export \
-  /tmp/tron2_ocs2_runtime.info \
+  "$PWD/ocs2_ws/src/tron2_ocs2/config/task.info" \
   "$PWD/robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf" \
   /tmp/tron2_ocs2_codegen \
-  /tmp/tron2_reach_safe.csv \
+  "$HOME/datasets/tron2_ocs2_debug/reach_02m.csv" \
   --relative-target 0.02 0.0 0.0 0.02 1.0
 ```
+
+Keep replayable CSVs outside `/tmp`, which may be cleared between sessions.
 
 Offline export checks every MPC knot and every 52-column output sample against
 the URDF arm position limits with a 0.05 rad margin, arm velocity/effort

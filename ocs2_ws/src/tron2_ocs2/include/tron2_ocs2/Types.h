@@ -55,6 +55,9 @@ struct Solution {
 };
 
 struct ModelSettings {
+  // Base root height at the start of an offline rollout. This is distinct
+  // from the model's steady-state desired height below.
+  double initialBaseHeight = 0.85;
   double desiredBaseHeight = 0.74;
   double heightResponseGain = 5.0;
   double pitchResponseGain = 5.0;
