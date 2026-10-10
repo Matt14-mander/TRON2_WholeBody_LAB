@@ -350,6 +350,13 @@ def main() -> None:
             "reference_point": "base_Link_origin",
             "semantics": "external_on_payload_proxy",
         },
+        "intent_response_label": {
+            "field": "external_wrench_base_at_response",
+            "frame": "base_Link at t + step_dt",
+            "reference_point": "base_Link_origin at t + step_dt",
+            "semantics": "external_on_payload_proxy during [t, t + step_dt)",
+            "features": "next_arm_position_actual, next_arm_velocity_actual, arm_position_reference",
+        },
         "ocs2_label": {
             "frame": "base_Link",
             "reference_point": "base_Link_origin",
@@ -496,6 +503,19 @@ def main() -> None:
                         base_body_id, wrench_body_id,
                     )
 
+                # The pre-step state cannot reveal a wrench first applied in
+                # [t, t + step_dt). Pair that interval's known input with the
+                # arm response measured at t + step_dt instead.
+                response_time = episode_time + float(env.unwrapped.step_dt)
+                response_valid = not bool(dones[0].item())
+                external_wrench_base_at_response = transform_wrench_to_base_origin(
+                    external_wrench_payload,
+                    next_state["payload_proxy_com_position_world"],
+                    next_state["payload_proxy_com_quaternion_world"],
+                    next_state["base_link_position_world"],
+                    next_state["base_link_quaternion_world"],
+                )
+
                 gravity_z = float(np.clip(-state["projected_gravity_body"][2], -1.0, 1.0))
                 tilt_deg = math.degrees(math.acos(gravity_z))
                 arm_error = state["arm_position_actual"] - solution.arm_position
@@ -532,9 +552,14 @@ def main() -> None:
                     "ocs2_arm_on_base_wrench_plan": solution.base_wrench_prediction.copy(),
                     "external_wrench_payload_at_body_com": external_wrench_payload,
                     "external_wrench_base_at_base_origin": external_wrench_base,
+                    "external_wrench_base_at_response": external_wrench_base_at_response,
                     "external_wrench_active": np.asarray(bool(np.any(external_wrench_payload))),
                     # Commanded at this simulation interval [t, t + step_dt).
                     "external_wrench_command_time": np.asarray(episode_time),
+                    "external_wrench_response_time": np.asarray(response_time),
+                    # A done step may return an auto-reset state, not the
+                    # physical response to the force just applied.
+                    "response_observation_valid": np.asarray(response_valid),
                     "reward": np.asarray(float(rewards[0].item())),
                     "done": np.asarray(bool(dones[0].item())),
                     "next_base_position_world": next_state["base_position_world"],
@@ -587,6 +612,7 @@ def main() -> None:
                     "step_dt": float(env.unwrapped.step_dt),
                     "phase_codes": np.asarray(["warmup", "motion", "terminal"]),
                     "wrench_schema_version": "2.0",
+                    "intent_alignment_version": "post_step_v1",
                     "ocs2_wrench_semantics": "arm_on_base; frame=base_Link; point=base_Link_origin",
                     "external_wrench_semantics": "external_on_payload_proxy; local_frame; point=body_COM",
                     "external_wrench_enabled": args_cli.external_wrench_validation,

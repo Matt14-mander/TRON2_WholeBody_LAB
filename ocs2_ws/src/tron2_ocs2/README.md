@@ -229,6 +229,17 @@ and recorded in `replay_failures.csv`. `rollout_manifest.csv` stores per-run
 tracking metrics. Use `--resume_collection` to skip all trajectory ids already
 present in either metadata file.
 
+For intent-estimator training, use a new rollout output directory after the
+post-step alignment update. Each row retains the legacy pre-step state and
+applied interval wrench for existing consumers, and now also stores the arm
+response at `t + step_dt`, `external_wrench_base_at_response` in that response
+frame, both timestamps, and `response_observation_valid`. Done steps can
+contain an auto-reset state and are not valid response samples. The initial
+trajectory warm-up holds the first arm pose with zero arm velocity, zero
+feed-forward effort, and zero predicted wrench; it does not replay the first
+OCS2 wrench before arm motion. Older rollout NPZ files lack this alignment
+contract and must not be mixed into the new intent dataset.
+
 Replay requires only the Isaac Lab environment; do not start the TCP service:
 
 ```bash

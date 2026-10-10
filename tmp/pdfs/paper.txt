@@ -1,0 +1,536 @@
+IEEE ROBOTICS AND AUTOMATION LETTERS, VOL. 7, NO. 2, APRIL 2022                                                                                             2377
+
+
+
+
+Combining Learning-Based Locomotion Policy With
+     Model-Based Manipulation for Legged
+             Mobile Manipulators
+                  Yuntao Ma , Graduate Student Member, IEEE, Farbod Farshidian , Takahiro Miki ,
+                                 Joonho Lee , and Marco Hutter , Member, IEEE
+
+
+   Abstract—Deep reinforcement learning produces robust locomo-                 are mainly two complementary directions: model-based control
+tion policies for legged robots over challenging terrains. To date,             approaches and learning-based or data-driven approaches.
+few studies have leveraged model-based methods to combine these                    Model-based control algorithms such as Model Predictive
+locomotion skills with the precise control of manipulators. Here, we            Control (MPC) have demonstrated precise control of wheeled
+incorporate external dynamics plans into learning-based locomo-
+tion policies for mobile manipulation. We train the base policy by              mobile manipulators [1] and robustness to external distur-
+applying a random wrench sequence on the robot base in simulation               bances [2]. However, such methods face challenges for hybrid
+and add the noisified wrench sequence prediction to the policy ob-              systems. In particular, for the legged mobile manipulators, the
+servations. The policy then learns to counteract the partially-known            possible contact configurations drastically expand the search
+future disturbance. The random wrench sequences are replaced                    space of the trajectories, making the computational cost for
+with the wrench prediction generated with the dynamics plans                    optimal planning significantly higher and hard to meet real-time
+from model predictive control to enable deployment. We show                     requirements. To this end, many prior works use template models
+zero-shot adaptation for manipulators unseen during training. On
+                                                                                to reduce the computational cost, such as using zero-moment-
+the hardware, we demonstrate stable locomotion of legged robots
+with the prediction of the external wrench.                                     point criteria [3] or centroidal models [4]. With reduced systems,
+                                                                                online planning of the motion trajectory becomes feasible on flat
+   Index   Terms—Legged            robots,     mobile       manipulation,       ground [5], [6]. Unfortunately, however, applying such methods
+reinforcement learning.                                                         for robots operating over rough terrain is not straightforward.
+                                                                                There can be various disturbances, such as unplanned contacts
+                           I. INTRODUCTION                                      and slipping, which make even a simple task like online end-
+                                                                                effector tracking while walking difficult.
+       EGGED robots have potential to traverse rough unstruc-
+L      tured terrain that are unreachable by traditional wheeled
+or tracked robots, utilize human-oriented infrastructures such
+                                                                                   Model-free Reinforcement Learning (RL) has recently shown
+                                                                                promising results to learn legged locomotion [7], [8], [9], and
+                                                                                [10]. In contrast to the model-based methods, RL policies do
+as stairs and doors, and conduct various tasks by carrying                      not suffer from higher planning cost due to contacts, and learn
+task-specific payloads in harsh environments instead of human.                  to tackle unexpected contacts and slippage from environment
+   Mounting an arm and allowing the robot to manipulate                         interactions. Besides, a policy can be robustified by applying
+in complex environments can largely extend their potentials.                    controlled disturbances during training. Existing works apply
+However, controlling legged robots with arms is inherently a                    random external force and torques in the form of impulses [11],
+high-dimensional, contact-rich, and often non-smooth control                    constant external wrench within the same episode [8], or ad-
+problem, and it is still an open problem. To realize these poten-               versarial disturbances [12] to make the policy robust against
+tials, many different control methods have been proposed. There                 unobservable external disturbances and model mismatches.
+                                                                                   Despite the simplicity and versatility of RL-based approaches,
+   Manuscript received September 9, 2021; accepted January 7, 2022. Date of     transferring a policy to diverse robot configurations [13] and
+publication January 18, 2022; date of current version January 27, 2022. This    distinct tasks [14] still requires additional works. Usually, it
+letter was recommended for publication by Associate Editor R. Lioutikov and     requires re-training, which is time-consuming, and the policy
+Editor J. Kober upon evaluation of the reviewers’ comments. This work was       can typically only be deployed on the robot that the policy is
+supported in part by the Max Planck ETH Center for Learning Systems, in part
+by the Swiss National Science Foundation (SNSF) through Projects 166232 and     trained with, for the same task. Some recent works explored
+188596, in part by the National Centre of Competence in Research Robotics       combining RL with model-based control and showed improved
+(NCCR Robotics), and in part by the European Union’s Horizon 2020 under         transferability. Prior works trained an RL agent to output only
+Grant Agreement Number 852044. Moreover, this work has been conducted as        the desired twist for the base [15], or the desired foothold on
+part of ANYmal Research, a community to advance legged robotics. (Corre-
+sponding author: Yuntao Ma.)                                                    unstructured terrain [16]. The model-based leg controllers then
+   The authors are with the Robotic Systems Lab, ETH Zürich, 8092 Zürich,       track these outputs.
+Switzerland (e-mail: mayuntao94@gmail.com; farshidian@mavt.ethz.ch;                Similarly, in this work, we split the legged mobile manipulator
+tamiki@ethz.ch; jolee@ethz.ch; mahutter@ethz.ch).
+   This letter has supplementary downloadable material available at
+                                                                                controller into two parts: the base and the arm controllers,
+https://doi.org/10.1109/LRA.2022.3143567, provided by the authors.              which are separately constructed. For the base controller, we
+   Digital Object Identifier 10.1109/LRA.2022.3143567                           extend [8] and [10] by training a policy for the legged system
+
+                        2377-3766 © 2022 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission.
+                                      See https://www.ieee.org/publications/rights/index.html for more information.
+
+
+     Authorized licensed use limited to: Ocean University of China. Downloaded on September 08,2026 at 07:04:45 UTC from IEEE Xplore. Restrictions apply.
+2378                                                                                     IEEE ROBOTICS AND AUTOMATION LETTERS, VOL. 7, NO. 2, APRIL 2022
+
+
+
+that utilizes the external wrench (force and torque) observation
+to counteract disturbances. We further demonstrate that using
+wrench sequence prediction as observation improves the base
+RL policy’s performance over using only the current wrench.
+A proposed wrench sequence generator facilitates training of
+the policy without the arm controller. For deployment, we im-
+plement the arm controller with MPC. It allows us to extract
+the wrench predictions for the base policy while controlling the
+arm precisely. The combined system demonstrates the capabil-
+ity of manipulation on rough terrain in hardware experiments.
+Additionally, since the training of the base policy is decoupled
+from the manipulator configurations, it can adapt to multiple arm
+setups without re-training. This zero-shot adaptation would not
+be feasible with a single controller of the entire system trained
+end-to-end with RL.
+   Our main contributions are:
+   r A pipeline that combines model-based manipulator control
+      and base locomotion policies trained with RL for legged
+      mobile manipulation.
+   r Experiments showing the base locomotion policies having                       Fig. 1. Experiments with ALMA. (1a-1c) ALMA trotting with different ma-
+                                                                                   nipulator configurations: no end-effector, fixed brick, a wrist weighing 1.8 kg.
+      improved performance by using wrench predictions from                        (1d) ALMA trotting on challenging terrain.
+      MPC.
+   r Zero-shot adaptation to multiple manipulator configura-
+      tions on a legged robot platform for end-effector tracking.
+   r Validation of the combined control system on a robotic                        B. Reinforcement Learning for Robots
+      hardware. The legged mobile manipulator walks on rough                          To apply RL for robotic control, a control problem is typically
+      terrain while performing manipulation tasks.                                 modeled as a discrete-time Markov Decision Process (MDP).
+                                                                                   At each timestep, the RL agent receives an observation ot ∈ O
+                                                                                   from the environment and outputs an action at ∈ A. The envi-
+                              II. BACKGROUND                                       ronment then updates with the action via the transition function
+                                                                                   p(st+1 |st , at ), evaluates a reward rt ∈ R : A × S −       → R and
+A. Model Predictive Control                                                        generates a new observation for the agent. The agent may act
+  MPC solves the following Optimal Control (OC) problem                            according to a stochastic policy πθ (at |ot , ot−1 , . . . ). RL algo-
+                                                                                   rithms train the agent by updating the parameters θ of    the policies
+                                                                                   to maximize the cumulative discounted rewards E[ ∞                 t
+                                                                                                                                                 t=k γ rt ]
+                                            tf                                    through interactions with the environments, where k is the cur-
+         minimize           φ(x(tf )) +           l(x(t), u(t), t) dt,      (1)    rent timestep and γ is the discount factor. In practice, the robot’s
+             u(·)                            ts
+                                                                                   policy observation usually consists of its state measurements,
+         subject to         x(ts ) = xs ,                                  (2a)    sensor readings such as a height scan, internal states to enforce
+                                                                                   desired behavior patterns, and possibly a history of the above.
+                            ẋ = f (x, u, t),                             (2b)
+                            g(x, u, t) = 0,                                (2c)                                   III. METHOD
+                            h(x, u, t) ≥ 0,                               (2d)     A. Overview
+                                                                                      Our method combines the precision and the planning capa-
+where x(t), u(t) are the states and control inputs at time t re-                   bility of an MPC-based manipulation control and the robustness
+spectively. MPC finds the minimum-cost (1) trajectory under the                    and the agility of an RL-based locomotion policy. Fig. 2 shows
+system dynamics f , the equality constraints g and the inequality                  the schematics of our method. We decouple the manipulator
+constraints h. The output of MPC is the nominal trajectory x(t)                    control from base policy training by modeling the disturbances
+and u(t). If the dynamics model is perfect and the terminal                        from the manipulator as predictable external wrenches. The
+cost function φ(x(tf )) captures the true terminal cost at tf , the                base control policy takes predicted wrench sequences as in-
+optimized state trajectories would be identical to the experienced                 put and uses them to counteract the external wrench resulting
+state trajectories under the optimal input trajectories u(t) within                from the arm. During the training, we simulate external wrench
+the MPC horizon. In practice, u(ts ) is then applied to control                    predictions using a wrench sequence generator without having
+the robot in the receding horizon fashion to allow re-planning.                    the manipulator or solving MPC. This drastically reduces the
+   If the generalized positions, velocities and accelerations of                   computational cost during the training process.
+the articulated system are available in the optimized state tra-                      The floating-base arm is separately controlled by a whole-
+jectory, an inverse dynamics approach such as the recursive                        body MPC. When deploying on the robot, MPC takes the
+Newton-Euler algorithm (RNEA) can provide the generalized                          user commands and produces nominal state and input trajec-
+forces consistent with these motions.                                              tories of the floating-base manipulator, allowing for wrench
+
+       Authorized licensed use limited to: Ocean University of China. Downloaded on September 08,2026 at 07:04:45 UTC from IEEE Xplore. Restrictions apply.
+MA et al.: COMBINING LEARNING-BASED LOCOMOTION POLICY WITH MODEL-BASED MANIPULATION FOR LEGGED MOBILE MANIPULATORS                                          2379
+
+
+
+
+Fig. 2. Overview of the training and deployment pipeline. We train the RL policy with a wrench sequence generator and replace it with the wrench plan from
+MPC for deployment.
+
+
+
+sequence predictions. In this work, we deployed our controller                     The system dynamics of the base, f base , is shown in (5). We
+on ALMA platform [5], which consists of the Dynaarm manipu-                        assume perfect base velocity tracking in x, y, and yaw direc-
+lator mounted on ANYmal base [17] and we use Raisim physics                        tion. The base height, roll, and pitch have passive first-order
+engine [18] to simulate the robot during locomotion training.                      dynamics that decay to their desired values, where the coeffi-
+   The following sections describe the control problem for the                     cients κ are tuned from the trained student policy described in
+manipulator system, the wrench sequence generator, and the                         Section III-D2.
+structure of the RL agent.                                                            This simplified model captures the based behavior that is
+                                                                                   trained to horizontally align the base at a desired height.
+                                                                                      The cost function for the end-effector tracking task consists
+B. MPC for the Manipulation System                                                 of end-effector tracking cost, input cost, state deviation cost,
+   Fig. 1(a)–1(c) illustrate our different manipulator setups. For                 which penalizes the arm joints for being away from their nominal
+the N -dof arm system, we model the system as a manipulator                        values, and the joint velocity cost. In addition, we express joint
+on a floating base.                                                                position limits as inequality constraints. We solve the MPC
+                                                                                   problem defined with (3), (4), (5), and the above cost and
+                                                                                   constraints with Sequential Linear-Quadratic (SLQ) [19] using
+       x = [px , py , pz , rx , ry , rz , θ1 , . . . θN , ω1 , . . . ωN ]T   (3)   OCS2 [20].
+       u = [vx , vy , ωz , α1 , . . . αN ]T                                  (4)      Once the MPC solution is found, the planned state-input tra-
+                                                                                   jectory is used to calculate the sequence of joint torques and the
+                                                                                   wrench sequence exerted on the base using an inverse dynamic
+The state, x, consists of the base pose, manipulator joint posi-                   formulation. In our implementation, we use Pinocchio [21] for
+tions θ, and velocities ω. The input, u, is defined as the base linear             inverse dynamics.
+velocity in x, y, angular velocity in z, and the joint accelerations                  During deployment on the robot, dynamics mismatch between
+α. The system dynamics of the floating-base arm is defined in                      the systems and the simplified model for the base motion (5) is
+(5). We choose a first-order system to model the base dynamics                     inevitable. However, by running the MPC loop at a high rate
+since we observe that the locomotion policy’s transient behavior                   (over 200 Hz), we ensure the state deviation from the planned
+in tracking the command velocity resembles a first-order system                    trajectory is small.
+closely. In contrast, we choose second-order dynamics for the
+manipulator’s joints. Note we can directly calculate the joint
+torques through the inverse dynamics of the arm, and these two                     C. Wrench Sequence Generator
+representations are essentially identical.
+                                                                                      During the RL policy training, the wrench exerted by the
+                           ⎡         ⎤      ⎡                       ⎤              manipulator is simulated by the wrench sequence generator. Our
+                             ṗx         vx                                        wrench sequence generator consists of two models: Observed
+                        ⎢ ṗ ⎥ ⎢                 ⎥
+                        ⎢ y ⎥ ⎢          vy      ⎥                                 wrench and unobserved disturbances.
+                        ⎢          ⎥ ⎢           ⎥
+                        ⎢ ṗz ⎥ ⎢−κ1 (pz − hdes )⎥                                       1) Observed Wrench: This component generalizes the
+                        ⎢          ⎥ ⎢           ⎥                                 smooth wrench from MPC plan as the arm moves. We generate
+                        ⎢ r˙x ⎥ ⎢      −κ2 rx    ⎥
+           f base (x) = ⎢
+                        ⎢ r˙y ⎥ ⎢
+                                   ⎥=⎢           ⎥
+                                                 ⎥                           (5)   this component by with polynomials to capture its smoothness.
+                        ⎢          ⎥ ⎢ −κ3 ry    ⎥                                 We define a randomized quadratic function for each wrench
+                        ⎢          ⎥ ⎢           ⎥
+                        ⎢ r˙z ⎥ ⎢        ωz      ⎥                                 dimension over the two seconds after the current time.
+                        ⎢          ⎥ ⎢           ⎥
+                        ⎣θ̇1,...N ⎦ ⎣  ω1,...N   ⎦
+                          θ̈1,...N     α1,...N                                      wt=0 , wt=1.0 , wt=2.0 ∼ Uniform(wmin , wmax )                          (6)
+
+     Authorized licensed use limited to: Ocean University of China. Downloaded on September 08,2026 at 07:04:45 UTC from IEEE Xplore. Restrictions apply.
+2380                                                                                     IEEE ROBOTICS AND AUTOMATION LETTERS, VOL. 7, NO. 2, APRIL 2022
+
+
+
+                                                                                      At each timestep of the simulation, the sum of the two
+                                                                                   simulated external wrench is applied to the geometric center
+                                                                                   of ANYmal’s base. The RL agent receives the observed wrench
+                                                                                   prediction sequence in the form shown in (8), where wt is the
+                                                                                   6-d wrench queried at t seconds after the current time.
+                                                                                                                                                       T
+                                                                                        ow = w0 , w0.2 , . . . , w0.8 , commands, vbase , ωbase                (8)
+
+                                                                                   The predicted wrench sequence is expressed in the body frame
+                                                                                   at time 0. The observed wrench and unobserved disturbance
+                                                                                   parameters are re-sampled at the start of each episode. A sample
+                                                                                   wrench sequence applied to the robot in the simulator is depicted
+                                                                                   in Fig. 3(d).
+
+                                                                                   D. Base Policy Training
+                                                                                      We follow the privileged training method proposed in [8]. We
+                                                                                   first train a teacher policy (Fig. 4(a)) with privileged observation.
+Fig. 3. Characteristics of the simulated wrench. (3a) The rate of change of        The privileged observation includes accurate states of the simu-
+force in x for different β. (3b) Box plot of the prediction error for force in x   lation environment, such as ground friction coefficient or ground
+at time t in the future. (3c) The distribution of force in x that is applied on    reaction forces, which are not directly observable in the real
+ANYmal. (3d) A sample of simulated force sequence in z.
+                                                                                   world. Then we train a student policy (Fig. 4(b)) which imitates
+                                                                                   the teacher’s behavior without the privileged information. The
+                                                                                   student policy learns to extract meaningful information from the
+                                                                                   sequence of the non-privileged observations.
+ wt+2.0+dt ∼ Uniform(wt+2.0 − βwmin , wt+2.0 + βwmax ) (7)                            The teacher policy’s wrench observation consists of the poly-
+                                                                                   nomial observed wrench, the base velocity commands, and the
+At the start of each episode, we sample wrench wt=0 , wt=1.0 ,                     base twist (i.e., linear and angular velocities). For the student
+wt=2.0 (6) and fit a quadratic function of t. Each sampled wrench                  policy, we additionally noisify the wrench observations. The
+w is a six-dimensional vector representing the external force and                  perturbed wrench observation is concatenated with the proprio-
+torque in 3-D. For each subsequent timestep with dt = 0.02 s,                      ceptive observation and passed to the wrench Recurrent neural
+wt+dt and wt+1.0+dt are calculated from the the polynomial                         network (RNN) module, so that the policy may use the proprio-
+fitted in the previous timestep, and a random wt+2.0+dt is                         ceptive information to correct for the unobserved disturbances.
+sampled (7) and clipped between wmin and wmax . β randomizes                       In the case of quadrupedal robots, the teacher’s policy converges
+the rate of change of the polynomial term, which is also sampled                   to the trotting gait, and the student imitates this behavior. Readers
+per episode. The range of β values is tuned to produce smooth                      can refer to [8] for the detailed format of the proprioceptive
+wrench that resemble those from the planned manipulator tra-                       observation. The policies output the leg phases and a residual
+jectories. wt is applied to the robot in world frame. For each                     joint position. The phase here represents the progression of each
+dimension, we calculate the wrench at [0.0, 0.2, 0.4, 0.6, 0.8]                    foot in a cyclic stepping motion, and the residual joint position
+after the current time t from the polynomial, and convert them                     defines the offset joint angles of the joint-level PD controller.
+to the robot base frame to feed them to the policy at each timestep                During the training, ANYmal is given a velocity command in x,
+during the training. The characteristics of the generated wrench                   y, and yaw direction for locomotion on rough terrain.
+is summarized in Fig. 3.                                                              1) Teacher: The teacher agent is trained with Proximal Pol-
+       2) Unobserved Disturbances: In order to compute the in-                     icy Optimization (PPO) [22] to maximize the expected cumula-
+duced arm wrench at the robot’s base, we use inverse dynamics                      tive trajectory rewards from the environment. The environment
+while ignoring the acceleration of the floating base. However,                     reward follows [10], with a higher weight on the base orientation,
+this assumption does not hold in practice due to the base motion,                  the body velocity in z, and the base angular velocity in pitch and
+i.e., the cyclic pattern induced by the trotting gait. As a result,                roll.
+there is an unmodeled wrench component proportional to the                            2) Student: The student policy is distilled from the teacher
+inertia properties of the external loads: arm or other payloads.                   policy by minimizing the loss function in (9), where Laction
+To make the policy robust against this component, we intro-                        penalizes the difference between the student and teacher action,
+duce a wrench disturbance induced by the base acceleration                         and Lembedding regresses the student wrench and exteroceptive
+during the locomotion training. At the start of the episode,                       embeddings towards those from the teacher.
+two random vectors v force and v torque are sampled uniformly
+in spheres centered at the origin. At each simulation timestep,                                    Ltotal = Laction + Lembedding + Ldecoder                    (9)
+we multiply v force and v torque with the robot’s base linear and                               Ldecoder = Lprivileged + Lscan + Lw1 + Lw2                    (10)
+angular acceleration respectively (abase and αbase ) and apply the
+results on the robot as wrenches. Furthermore, we add Gaussian                     In (10), Lw1 is the scaled mean-squared error between the
+noise to this unobserved disturbance to simulate the remaining                     decoded wrench and the current external wrench applied to
+disturbances, such as cogging in the manipulator drives.                           the robot base. Lw2 regresses the decoded unobserved wrench
+
+       Authorized licensed use limited to: Ocean University of China. Downloaded on September 08,2026 at 07:04:45 UTC from IEEE Xplore. Restrictions apply.
+MA et al.: COMBINING LEARNING-BASED LOCOMOTION POLICY WITH MODEL-BASED MANIPULATION FOR LEGGED MOBILE MANIPULATORS                                           2381
+
+
+
+
+Fig. 4. (4a) Teacher policy structure. The teacher encodes the privileged observations with separate Multilayer Perceptron (MLP)s. gc: generalized coordinate,
+gv: generalized velocity. (4b) Student policy structure. The wrench module encodes the wrench prediction observation. The exteroceptive belief module is also
+trained to decode the external wrench from the proprioceptive history.
+
+
+
+                                                                                 B. End-Effector Tracking
+                                                                                    In this part, we deploy our proposed controller in simulation
+                                                                                 on ALMA to compare our method with the baselines for end-
+                                                                                 effector tracking. MPC receives a moving end-effector target
+                                                                                 at each timestep and produces the motion plan that includes
+                                                                                 the base velocity commands for the base RL policy, the arm
+                                                                                 joints trajectory, and predicted wrench induced at the base of the
+                                                                                 arm due to the arm motion. The performance of the base policy
+                                                                                 is measured with the mean absolute base tilt, the base angular
+                                                                                 velocity magnitude in pitch and roll, and the base linear velocity
+Fig. 5.   Comparing training progress of the teacher policies.                   tracking error. We choose these evaluation metrics because they
+                                                                                 reflect the validity of the simplified base dynamics we described
+                                                                                 for MPC in Section III-B. Two experiment settings are used
+characteristics towards the magnitude of v force and v torque in Sec-            to measure the performance of the combined control system.
+tion III-C. For manipulation tasks, the outputs from the decoder                 In both settings, we used Dynaarm with a 3 kg end-effector.
+(e.g. load estimation) can be used for application purposes. We                  To improve consistency, we set ALMA to always trot in these
+use two separate recurrent networks for the policy so that the                   experiments.
+decoder decodes the external wrench purely from propriocep-                            1) Experiment 1: On rough terrain, a random reference
+tive and perceptive information without being interfered by the                  point is selected in a square of 3 × 3 m2 , with height sampled
+predicted wrench observations during the training.                               from Uniform(0.6, 1.1) m. The reference point is re-sampled
+                                                                                 every five seconds. Each experiment runs for half an hour in
+                               IV. RESULTS                                       simulation time. This experiment assesses the performance of
+                                                                                 the policies with relatively static motion plans since the reference
+  This section shows the experimental results of our approach.                   target is not re-sampled frequently. The base moves close to the
+The video recordings of selected experiments are available in                    max speed command of 0.5 ms−1 when it is far away from the
+Movie 1. 1                                                                       reference target.
+                                                                                       2) Experiment 2: A reference point moves according
+A. Teacher Policy Performance                                                    to (11), where τ is the time since the start of the episode in
+                                                                                 seconds. The MPC commands the base to go to the origin with
+   Fig. 5 compares the training progress of the teacher policy
+                                                                                 zero yaw.
+with and without the wrench prediction observations for five
+random seeds. It is clear from the curve that the external wrench
+                                                                                                   p = [0.5, 0.5 × sin(τ /0.6), 1.1]T                        (11)
+prediction improves the teacher policy’s learning progress and
+final performance. This shows that the teacher policy could
+indeed utilize the wrench prediction observations to counteract                  The manipulator moves dynamically in this experiment as the
+the disturbances. We additionally found that training with the                   end-effector oscillates in y. Compared to Experiment 1, the
+smooth polynomial model as the predictable wrench results in                     external wrench from the manipulator changes more quickly.
+a smoother learning progress than with intermittent pushes. We                     3) Comparing Student Policy Structures: We ablate the stu-
+demonstrate with the other experiments in this section that the                  dents trained with the following settings, Policies in this exper-
+student policies can distill this ability.                                       iments are each trained with five seeds using the same teacher
+                                                                                 policy for the same number of environment steps, with the same
+                                                                                 rewards.
+  1 Movie 1: https://youtu.be/OZ9Adh0PYbw                                           r Ours: The policy structure described in Section III-D2.
+
+      Authorized licensed use limited to: Ocean University of China. Downloaded on September 08,2026 at 07:04:45 UTC from IEEE Xplore. Restrictions apply.
+2382                                                                                       IEEE ROBOTICS AND AUTOMATION LETTERS, VOL. 7, NO. 2, APRIL 2022
+
+
+
+                                                                                         4) Explicit External Wrench Information is Beneficial: Even in
+                                                                                      Experiment 1 that the manipulator has limited motion relative
+                                                                                      to the base, and the wrench is mainly from the weight of the
+                                                                                      manipulator, the external wrench improves the base tracking
+                                                                                      performance. Fig. 6(a) shows that all three policies with external
+                                                                                      wrench information have similar performance in base tilt and
+                                                                                      angular velocity, and they all outperform the policy with no
+                                                                                      external wrench observation. The mean tracking error assesses
+                                                                                      the base locomotion on rough terrain. The policy without wrench
+Fig. 6. Evaluation results of the tested student policy structures. (6a) Random       observation has a larger error because the base is more tilted,
+end-effector targets. (6b) The end-effector target oscillates between the two sides   making it harder to walk.
+of the robot.                                                                            5) Wrench Prediction is Beneficial During Fast and Dynamic
+                                                                                      Motions: In Experiment 2, the manipulator has larger motions
+                                                                                      with respect to the base, making it more challenging for the base
+                                                                                      to balance. The wrench prediction contains information about
+                                                                                      the wrench trends, and the base policy could utilize this infor-
+                                                                                      mation to counteract the wrench. In the experiment, the policy
+                                                                                      that only observes the current wrench from the manipulator tilts
+                                                                                      to the side more and takes longer to recover than the policies that
+                                                                                      have access to the wrench prediction sequence. This is shown
+                                                                                      in Fig. 6(b). In this experiment, the mean tracking error reflects
+                                                                                      the base’s drift from the origin.
+                                                                                         6) Note: In both experiments, we did not apply any constant
+                                                                                      offset or scaling to the wrench prediction, so the policy that uses
+                                                                                      the current wrench prediction is expected to perform similarly
+                                                                                      to the one with the RNN encoder. This is also consistent with
+Fig. 7.    Performance of the policy with different manipulator configurations.
+                                                                                      our experiment results.
+                                                                                         The advantage of the RNN encoder over the policy that only
+                                                                                      encodes the current prediction depends on the wrench noise
+                                                                                      magnitude during the training. A larger noise makes the RNN
+                                                                                      policy rely on the proprioceptive observation and deteriorates
+                                                                                      the overall policy performance. The improvement is visible on
+                                                                                      the hardware, but for the sake of consistency, we do not include
+                                                                                      this comparison.
+
+                                                                                      C. Adaptation to Different Manipulator Configurations
+                                                                                         We assess the adaptability of the combined control system
+                                                                                      to various manipulator configurations by testing Experiment 2
+                                                                                      with two additional settings in simulation.
+                                                                                          r Light arm: Dynaarm without any end-effector.
+                                                                                          r Long arm: The forearm of Dynaarm is increased to 0.6 m,
+Fig. 8. Testing MPC’s ability to track the desired end-effector position under              and the weight of forearm is adjusted accordingly. The
+base disturbances.                                                                          end-effector is also removed in this setup.
+                                                                                          r Heavy arm: Dynaarm with the 3 kg end-effector. This is
+                                                                                            the same setting as Experiment 2 above.
+    r Current prediction: Two layer of MLP is used instead of                            In this experiment, we compare our policy with the policy
+                                                                                      trained with no external wrench observation. When switching to
+      the RNN wrench encoder. The policy cannot utilize the                           manipulators that exert higher wrenches on the base, the policy
+      history of past wrench predictions.                                             that does not receive wrench observation tilts significantly more.
+   r Instantaneous wrench: Instead of using the wrench pre-
+                                                                                      In contrast, our policy is still able to keep the base close to
+      diction sequence of 1 s, we only feed the wrench output                         horizontal (Fig. 7). This experiment shows that our policy can
+      calculated for the current timestep to the agent.                               adapt to various manipulator configurations with a much smaller
+   r No wrench observation: We remove the wrench module.
+                                                                                      performance drop than the policy with no wrench observation.
+      The student policy only receives the proprioceptive and
+      height scan observation.
+                                                                                      D. End-Effector Tracking Under Base Disturbance
+   Fig. 6(a) and 6(b) summarize the performance of different
+policy structures for the student policy. In general, it can be                          We disturb base motion manually while ANYmal is in stance
+observed that the policies which utilize the external wrench pre-                     to evaluate MPC’s ability to track the desired end-effector po-
+dictions perform better. Close examination of these plots reveals                     sition under disturbances. This hardware experiment showed a
+a few interesting characteristics of our proposed controller.                         57% reduction of the end-effector’s position deviation compared
+
+       Authorized licensed use limited to: Ocean University of China. Downloaded on September 08,2026 at 07:04:45 UTC from IEEE Xplore. Restrictions apply.
+MA et al.: COMBINING LEARNING-BASED LOCOMOTION POLICY WITH MODEL-BASED MANIPULATION FOR LEGGED MOBILE MANIPULATORS                                            2383
+
+
+
+
+Fig. 9. Our proposed controller uses the wrench prediction to leaning against an incoming force of 100 N to maintain stability. (9a) Upright stance when no
+external force is anticipated. (9b) ANYmal leans right when it expects a force pulling from its left. (9c) ANYmal stands stably when the external force is applied.
+(9d)–(9e) ANYmal expects the pulling force to end, and returns to the upright posture.
+
+
+
+                                                                                   observes the current wrench estimation, (2) Naive Controller:
+                                                                                   it has no wrench observations.
+                                                                                      In each test, we set ANYmal to the same joint configuration
+                                                                                   and the same gait phase at the start of the episode and apply
+                                                                                   a force in y-direction that lasts for 1 s. This experiment is
+                                                                                   deterministic for each policy, and student policies trained with
+                                                                                   five seeds are used for each setting to ensure reproducibility.
+                                                                                   We increase the force with the decimation of 10 N to record the
+                                                                                   maximum force that the policy can stabilize without stepping.
+                                                                                   Since our control policy can leverage the force prediction and
+                                                                                   adjust its posture before experiencing the force, the robot could
+                                                                                   stabilize under a larger force of 150 N without stepping to the
+                                                                                   side (170% of the reactive controller, and 208% of the naive
+Fig. 10.   Performance of the policies under dynamics mismatch.                    controller). The policy that does not observe the external wrench
+                                                                                   could potentially counteract the force using the proprioceptive
+                                                                                   history. Still, the transient response is not as prompt as the policy
+                                                                                   that directly observes the current wrench.
+
+
+                                                                                   F. Explicit Wrench Compensation
+                                                                                      As described in Section III-D2, the RL agent is trained to
+                                                                                   decode the external wrench from proprioceptive information.
+                                                                                   This decoded output could be fed back to the RL actor and
+Fig. 11. Deterioration of the mean reward after occluding parts of the wrench      partially replace the external wrench prediction observation.
+observation.                                                                       In this simulated experiment, we compare ALMA’s motion
+                                                                                   when using this explicit wrench compensation and discuss the
+                                                                                   advantage of using the wrench prediction instead of the decoded
+to the base as we disturb the base in the x direction. This result                 wrench.
+is based on our default controller setting. The performance for                       Similarly to Experiment 2 in Section IV-B, we command
+disturbance rejection can be further improved by adjusting the                     the manipulator to move between the two sides of ALMA
+cost formulation of MPC and the manipulator configuration.                         periodically to compare our proposed controller with the con-
+                                                                                   troller that replaces the wrench observation with the decoded
+                                                                                   wrench. The frequency that the arm moves cyclically is varied
+E. Response to External Push: Anticipated Leaning                                  to evaluate the controllers. In this experiment, we use a 3 kg
+   This experiment tests how our proposed controller can utilize                   end-effector and command the arm shoulder rotation joint angle
+the external wrench prediction to gain more robustness. To this                    θ to move according to θSH_ROT = π2 sin(ωτ ), replacing the
+end, we simulate a lateral force as a step function of time to the                 end-effector tracking cost with penalizing the deviation from
+robot’s base. The policy observes this external force as part of                   commanded shoulder rotation for MPC. Table I indicates that
+its predicted wrench input. We quantify the robot’s stability as a                 using the decoded wrench to replace the MPC predictions re-
+maximum force that it can tolerate before stepping. As the policy                  sults in a similar angular velocity tracking performance as our
+receives a prediction of the incoming force, it starts leaning                     proposed controller when the arm moves slowly (when ω is
+against it before the actual push happens in order to increase                     below 2 rd s−1 ). But when the manipulator undertakes fast and
+its stability. Fig. 9 shows a qualitative response. This behavior is               dynamic motions, the wrench prediction reduces the angular
+compared to policies trained with the same teacher, but with                       velocity error of the base and the chance of falling due to the
+different observation input: (1) Reactive Controller: it only                      disturbance.
+
+      Authorized licensed use limited to: Ocean University of China. Downloaded on September 08,2026 at 07:04:45 UTC from IEEE Xplore. Restrictions apply.
+2384                                                                                     IEEE ROBOTICS AND AUTOMATION LETTERS, VOL. 7, NO. 2, APRIL 2022
+
+
+
+                           TABLE I                                                 will enable more challenging maneuvers for the legged mobile
+COMPARISON BETWEEN USING THE WRENCH PREDICTION OBSERVATION AND
+                       DECODED WRENCH
+                                                                                   manipulation systems.
+
+                                                                                                                     REFERENCES
+                                                                                    [1] A. Gawel et al., “A fully-integrated sensing and control system for high-
+                                                                                        accuracy mobile robotic building construction,” in Proc. IEEE/RSJ Int.
+                                                                                        Conf. Intell. Robots Syst., 2019, pp. 2300–2307.
+                                                                                    [2] M. Giftthaler, F. Farshidian, T. Sandy, L. Stadelmann, and J. Buchli, “Ef-
+                                                                                        ficient kinematic planning for mobile manipulators with non-holonomic
+G. Dynamics Mismatch                                                                    constraints using optimal control,” in Proc. IEEE Int. Conf. Robot. Au-
+                                                                                        tomat., 2017, pp. 3411–3417.
+   This experiment assesses the importance of training under                        [3] Y. Abe, B. Stephens, M. P. Murphy, and A. A. Rizzi, “Dynamic whole-body
+unobserved wrench disturbance for handling the dynamics mis-                            robotic manipulation,” Proc. SPIE, vol. 8741, 2013, Art. no. 87410V.
+                                                                                    [4] H. Dai, A. Valenzuela, and R. Tedrake, “Whole-body motion planning
+match during deployment. To this end, we train another policy                           with centroidal dynamics and full kinematics,” in Proc. IEEE-RAS Int.
+that is not exposed to the base-acceleration induced term of                            Conf. Humanoid Robots, 2014, pp. 295–302.
+the unobserved wrench during the training and compare its                           [5] C. D. Bellicoso et al., “Alma-articulated locomotion and manipulation for
+                                                                                        a torque-controllable robot,” in Proc. Int. Conf. Robot. Automat., 2019,
+performance against our policy in a setting similar to Sec-                             pp. 8477–8483.
+tion IV-B1 Experiment 1 with an additional, unobserved 1 kg                         [6] J.-P. Sleiman, F. Farshidian, M. V. Minniti, and M. Hutter, “A unified MPC
+payload at the end-effector. Fig. 10 shows a comparison of our                          framework for whole-body dynamic locomotion and manipulation,” IEEE
+performance indices for these two policies. While we observe                            Robot. Automat. Lett., vol. 6, no. 3, pp. 4688–4695, Jul. 2021.
+                                                                                    [7] J. Hwangbo et al., “Learning agile and dynamic motor skills for legged
+a reduction in tracking error for every metric, we note a sig-                          robots,” Sci. Robot., vol. 4, no. 26, 2019, Art. no. eaau5872, doi:
+nificant improvement with respect to the mean angular base                              10.1126/scirobotics.aau5872.
+velocity error, which translates to less undesired body motion in                   [8] J. Lee, J. Hwangbo, L. Wellhausen, V. Koltun, and M. Hutter, “Learning
+practice.                                                                               quadrupedal locomotion over challenging terrain,” Sci. Robot., vol. 5,
+                                                                                        no. 47, 2020, Art. no. eabc5986, doi: 10.1126/scirobotics.abc5986.
+                                                                                    [9] J. Tan et al., “Sim-to-real: Learning agile locomotion for quadruped
+H. Dependency on Wrench Observations                                                    robots,” in Proc. Robot. Sci. Syst., Pittsburgh, Pennsylvania, Jun. 2018,
+                                                                                        doi: 10.15607/RSS.2018.XIV.010.
+   We occlude segments of the wrench observation to evaluate                       [10] T. Miki, J. Lee, J. Hwanbo, L. Wellhausen, V. Koltun, and M. Hut-
+the policy’s dependency on each part of the observation. The                            ter, “Learning robust perceptive locomotion for quadrupedal robots in
+occlusion is implemented by replacing each dimension of the                             the wild,” Sci. Robot., vol. 7, no. 62, 2022, Art. no. eabk2822, doi:
+                                                                                        10.1126/scirobotics.abk2822.
+observation segment with a normal distribution with the running                    [11] X. B. Peng, P. Abbeel, S. Levine, and M. van de Panne, “Deep-
+mean and variance from the normalizer for that dimension. We                            mimic: Example-guided deep reinforcement learning of physics-
+rollout the policy for one hour in simulation time in the training                      based character skills,” ACM Trans. Graph., vol. 37, no. 4,
+environment. Fig. 11 shows the deterioration of the mean step                           pp. 1–14, 2018.
+                                                                                   [12] L. Pinto, J. Davidson, R. Sukthankar, and A. Gupta, “Robust adversarial
+rewards. For our wrench observation format, occluding the                               reinforcement learning,” in Proc. Int. Conf. Mach. Learn., 2017, pp. 2817–
+imminent wrench prediction (0.0 s and 0.2 s in the future) leads to                     2826.
+the most significant performance drop as expected. On average,                     [13] C. Finn, P. Abbeel, and S. Levine, “Model-agnostic meta-learning for fast
+the policy depends on the prediction at 0.8 s more than those at                        adaptation of deep networks,” in Proc. Int. Conf. Mach. Learn., 2017,
+                                                                                        pp. 1126–1135.
+0.4 s and 0.6 s. We hypothesize that this is because the predictions               [14] M. Yin, G. Tucker, M. Zhou, S. Levine, and C. Finn, “Meta-learning
+at 0.8 s are more informative than those at 0.4 s and 0.6 s as it                       without memorization,” in Proc. Int. Conf. Learn. Representations, 2020.
+evaluates the wrench trend further in the future.                                       [Online]. Available: https://openreview.net/forum?id=BklEFpEYwS
+                                                                                   [15] Z. Xie, X. Da, B. Babich, A. Garg, and M. van de Panne, “Glide: General-
+                                                                                        izable quadrupedal locomotion in diverse environments with a centroidal
+                              V. CONCLUSION                                             model,” 2021, arXiv:2104.09771.
+                                                                                   [16] V. Tsounis, M. Alge, J. Lee, F. Farshidian, and M. Hutter, “DeepGait: Plan-
+   This work presented a pipeline to combine learning-based                             ning and control of quadrupedal gaits using deep reinforcement learning,”
+locomotion policy with model-based manipulation for legged                              IEEE Robot. Automat. Lett., vol. 5, no. 2, pp. 3699–3706, Apr. 2020.
+mobile manipulators. We showed that the wrench sequence pre-                       [17] M. Hutter et al., “Anymal-a highly mobile and dynamic quadrupedal
+dictions from MPC improve the base controller’s performance                             robot,” in Proc. IEEE/RSJ Int. Conf. Intell. Robots Syst., 2016, pp. 38–44.
+                                                                                   [18] J. Hwangbo, J. Lee, and M. Hutter, “Per-contact iteration method for
+on rejecting the external wrench. The combined controller adapts                        solving contact dynamics,” IEEE Robot. Automat. Lett., vol. 3, no. 2,
+to a variety of manipulator configurations without re-training.                         pp. 895–902, Apr. 2018. [Online]. Available: www.raisim.com
+Apart from manipulation, the policy is also suited for other                       [19] F. Farshidian, M. Kamgarpour, D. Pardo, and J. Buchli, “Sequential
+applications such as load carrying and pulling. We demonstrated                         linear quadratic optimal control for nonlinear switched systems,” IFAC-
+                                                                                        PapersOnLine, vol. 50, no. 1, pp. 1463–1469, 2017.
+the controller on the robot hardware. To our knowledge, this is                    [20] “OCS2: An open source library for optimal control of switched systems,”
+the first published result of legged mobile manipulation on rough                       [Online]. Available: https://github.com/leggedrobotics/ocs2
+terrain.                                                                           [21] J. Carpentier et al., “Pinocchio: Fast forward and inverse dynamics for
+   Currently, our base policy responds to external wrench pas-                          poly-articulated systems,” 2015–2021. [Online]. Available: https://stack-
+                                                                                        of-tasks.github.io/pinocchio
+sively and has no control over it. An opportunity for future work                  [22] J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov, “Proximal
+is to allow the base policy to have partial control by tracking                         policy optimization algorithms,” 2017, arXiv:1707.06347.
+its desired wrench with manipulators. We hypothesize that this
+
+
+
+
+       Authorized licensed use limited to: Ocean University of China. Downloaded on September 08,2026 at 07:04:45 UTC from IEEE Xplore. Restrictions apply.
+

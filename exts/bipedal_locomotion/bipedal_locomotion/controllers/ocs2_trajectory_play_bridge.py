@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from .ocs2_play_bridge import Ocs2OutputApplicator
-from .ocs2_trajectory import Ocs2Trajectory
+from .ocs2_trajectory import Ocs2Trajectory, warmup_hold_solution
 
 
 class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
@@ -80,11 +80,7 @@ class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
                 if self._terminal_base_command is None
                 else self._terminal_base_command
             )
-            solution = replace(
-                solution,
-                arm_velocity=np.zeros(6, dtype=np.float64),
-                base_velocity_command=warmup_base_command.copy(),
-            )
+            solution = warmup_hold_solution(solution, warmup_base_command)
         if self._terminal_base_command is not None:
             transition_start = max(
                 0.0, self._trajectory.duration - self._terminal_transition_duration_s

@@ -20,6 +20,16 @@ REQUIRED_FIELDS = (
     "base_link_position_world",
 )
 
+POST_STEP_FIELDS = (
+    "external_wrench_base_at_response",
+    "external_wrench_command_time",
+    "external_wrench_response_time",
+    "response_observation_valid",
+    "next_arm_position_actual",
+    "next_arm_velocity_actual",
+    "meta_intent_alignment_version",
+)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -43,7 +53,8 @@ def main() -> None:
     episode_ids = set()
     for path in files:
         with np.load(path, allow_pickle=False) as data:
-            missing = [name for name in REQUIRED_FIELDS if name not in data]
+            required = REQUIRED_FIELDS + (POST_STEP_FIELDS if "intent_response_label" in contract else ())
+            missing = [name for name in required if name not in data]
             if missing:
                 raise ValueError(f"{path} is missing fields: {missing}")
             episode_ids.add(str(data["meta_trajectory_id"]))
@@ -60,6 +71,24 @@ def main() -> None:
                 raise ValueError(f"Unexpected wrench shape in {path}")
             if not np.array_equal(active, np.any(payload_wrench != 0.0, axis=1)):
                 raise ValueError(f"external_wrench_active is inconsistent in {path}")
+            if "intent_response_label" in contract:
+                if str(data["meta_intent_alignment_version"]) != "post_step_v1":
+                    raise ValueError(f"Unexpected intent alignment version in {path}")
+                response_wrench = data["external_wrench_base_at_response"]
+                valid = np.asarray(data["response_observation_valid"], dtype=bool)
+                command_time = data["external_wrench_command_time"]
+                response_time = data["external_wrench_response_time"]
+                step_dt = float(data["meta_step_dt"])
+                if (response_wrench.shape != base_wrench.shape
+                        or data["next_arm_position_actual"].shape != (len(active), 6)
+                        or data["next_arm_velocity_actual"].shape != (len(active), 6)
+                        or valid.shape != active.shape
+                        or command_time.shape != active.shape
+                        or response_time.shape != active.shape
+                        or not np.allclose(response_time - command_time, step_dt, rtol=0.0, atol=1e-6)):
+                    raise ValueError(f"Post-step intent response is misaligned in {path}")
+                if not np.any(valid) or np.any(valid[np.count_nonzero(valid):]):
+                    raise ValueError(f"Invalid post-step response mask in {path}")
             active_frames += int(active.sum())
             total_frames += len(active)
             peak_payload = np.maximum(peak_payload, np.max(np.abs(payload_wrench), axis=0))

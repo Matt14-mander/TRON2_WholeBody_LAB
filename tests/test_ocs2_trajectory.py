@@ -36,6 +36,7 @@ _load("bipedal_locomotion.controllers.ocs2_interface", "ocs2_interface.py")
 _TRAJECTORY_MODULE = _load("bipedal_locomotion.controllers.ocs2_trajectory", "ocs2_trajectory.py")
 Ocs2Trajectory = _TRAJECTORY_MODULE.Ocs2Trajectory
 TRAJECTORY_COLUMNS = _TRAJECTORY_MODULE.TRAJECTORY_COLUMNS
+warmup_hold_solution = _TRAJECTORY_MODULE.warmup_hold_solution
 
 
 class Ocs2TrajectoryTest(unittest.TestCase):
@@ -77,6 +78,21 @@ class Ocs2TrajectoryTest(unittest.TestCase):
             np.savetxt(path, data, delimiter=",", header=",".join(TRAJECTORY_COLUMNS), comments="")
             with self.assertRaisesRegex(ValueError, "strictly increasing"):
                 Ocs2Trajectory.from_csv(path)
+
+    def test_warmup_holds_arm_without_feedforward_or_predicted_wrench(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trajectory.csv"
+            self._write_trajectory(path)
+            first = Ocs2Trajectory.from_csv(path).sample(0.0)
+            held = warmup_hold_solution(first, np.asarray([-0.29, -0.08, 0.0]))
+
+        np.testing.assert_array_equal(held.arm_position, first.arm_position)
+        np.testing.assert_array_equal(held.arm_velocity, np.zeros(6))
+        np.testing.assert_array_equal(held.arm_feedforward_effort, np.zeros(6))
+        np.testing.assert_array_equal(held.base_wrench_prediction, np.zeros((5, 6)))
+        np.testing.assert_allclose(held.base_velocity_command, [-0.29, -0.08, 0.0])
+        self.assertGreater(np.max(np.abs(first.arm_feedforward_effort)), 0.0)
+        self.assertGreater(np.max(np.abs(first.base_wrench_prediction)), 0.0)
 
 
 if __name__ == "__main__":

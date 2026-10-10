@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +22,21 @@ def _column_names() -> tuple[str, ...]:
 
 
 TRAJECTORY_COLUMNS = _column_names()
+
+
+def warmup_hold_solution(
+    solution: Ocs2MpcSolution, base_command: np.ndarray
+) -> Ocs2MpcSolution:
+    """Hold the first arm pose without replaying its planned motion or wrench."""
+    held = replace(
+        solution,
+        arm_velocity=np.zeros(6, dtype=np.float64),
+        arm_feedforward_effort=np.zeros(6, dtype=np.float64),
+        base_velocity_command=np.asarray(base_command, dtype=np.float64).copy(),
+        base_wrench_prediction=np.zeros((5, 6), dtype=np.float64),
+    )
+    validate_mpc_solution(held)
+    return held
 
 
 @dataclass(frozen=True)
