@@ -345,6 +345,11 @@ def main():
         max_tilt_deg = 0.0
         min_root_height = math.inf
         max_arm_error = 0.0
+        max_arm_error_after_warmup = 0.0
+        motion_actual_min = [math.inf] * 6
+        motion_actual_max = [-math.inf] * 6
+        motion_target_min = [math.inf] * 6
+        motion_target_max = [-math.inf] * 6
         report_steps = max(1, round(1.0 / float(env.unwrapped.step_dt)))
         print("[DIAG] Starting one bounded offline replay; results use simulation time.", flush=True)
         
@@ -381,6 +386,16 @@ def main():
                 max_tilt_deg = max(max_tilt_deg, tilt_deg)
                 min_root_height = min(min_root_height, root_height)
                 max_arm_error = max(max_arm_error, arm_error)
+                if ocs2_bridge.phase != "warmup":
+                    max_arm_error_after_warmup = max(max_arm_error_after_warmup, arm_error)
+                if ocs2_bridge.phase == "motion":
+                    actual_values = robot.data.joint_pos[0, arm_joint_ids].detach().cpu().tolist()
+                    target_values = arm_target.detach().cpu().tolist()
+                    for index, (actual, target) in enumerate(zip(actual_values, target_values)):
+                        motion_actual_min[index] = min(motion_actual_min[index], actual)
+                        motion_actual_max[index] = max(motion_actual_max[index], actual)
+                        motion_target_min[index] = min(motion_target_min[index], target)
+                        motion_target_max[index] = max(motion_target_max[index], target)
             # agent stepping
             est = encoder(obs_history)
             actions = policy(torch.cat((est, obs, commands), dim=-1).detach())
@@ -412,9 +427,24 @@ def main():
                         f"[DIAG] result={reason} steps={diagnostic_steps} "
                         f"max_tilt={max_tilt_deg:.1f}deg "
                         f"min_root_z={min_root_height:.3f}m "
-                        f"max_arm_error={max_arm_error:.3f}rad",
+                        f"max_arm_error={max_arm_error:.3f}rad "
+                        f"max_arm_error_after_warmup={max_arm_error_after_warmup:.3f}rad",
                         flush=True,
                     )
+                    if all(math.isfinite(value) for value in motion_actual_min):
+                        actual_span = [
+                            maximum - minimum
+                            for minimum, maximum in zip(motion_actual_min, motion_actual_max)
+                        ]
+                        target_span = [
+                            maximum - minimum
+                            for minimum, maximum in zip(motion_target_min, motion_target_max)
+                        ]
+                        print(
+                            f"[DIAG] motion_arm_span_rad actual={[round(v, 4) for v in actual_span]} "
+                            f"target={[round(v, 4) for v in target_span]}",
+                            flush=True,
+                        )
                     break
             obs = obs_dict["policy"]
             obs_history = obs_dict.get("obsHistory")
