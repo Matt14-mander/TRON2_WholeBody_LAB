@@ -3,6 +3,7 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import math
 import os
 import sys
 
@@ -72,6 +73,17 @@ parser.add_argument(
     type=float,
     default=0.0,
     help="Warm-up seconds before starting offline arm motion.",
+)
+parser.add_argument(
+    "--ocs2_trajectory_diagnostic",
+    action="store_true",
+    help="Run one bounded headless replay and report tilt, root height, arm error, and reset reason.",
+)
+parser.add_argument(
+    "--ocs2_trajectory_diagnostic_post_duration",
+    type=float,
+    default=2.0,
+    help="Additional simulation seconds to observe after trajectory completion in diagnostic mode.",
 )
 parser.add_argument(
     "--ocs2_deterministic_reset",
@@ -153,11 +165,18 @@ def main():
         or args_cli.ocs2_trajectory_fixed_base_command is not None
         or args_cli.ocs2_trajectory_terminal_base_command is not None
         or args_cli.ocs2_trajectory_start_delay != 0.0
+        or args_cli.ocs2_trajectory_diagnostic
     )
     if trajectory_only_option_used and args_cli.ocs2_trajectory is None:
         raise ValueError("Offline trajectory ablation flags require --ocs2_trajectory.")
     if args_cli.ocs2_deterministic_reset and not ocs2_control_enabled:
         raise ValueError("--ocs2_deterministic_reset requires --ocs2 or --ocs2_trajectory.")
+    if args_cli.ocs2_trajectory_diagnostic and args_cli.ocs2_trajectory is None:
+        raise ValueError("--ocs2_trajectory_diagnostic requires --ocs2_trajectory.")
+    if not math.isfinite(args_cli.ocs2_trajectory_diagnostic_post_duration) or (
+        args_cli.ocs2_trajectory_diagnostic_post_duration < 0.0
+    ):
+        raise ValueError("Diagnostic post duration must be finite and non-negative.")
     if args_cli.ocs2_trajectory_zero_base_command and (
         args_cli.ocs2_trajectory_terminal_base_command is not None
         or args_cli.ocs2_trajectory_fixed_base_command is not None
@@ -317,6 +336,17 @@ def main():
         from bipedal_locomotion.utils.keyboard import Keyboard
         keyboard: Keyboard = Keyboard(env.unwrapped)  # type: ignore
         gamepad_control_active = False
+
+    diagnostic = args_cli.ocs2_trajectory_diagnostic
+    if diagnostic:
+        robot = env.unwrapped.scene["robot"]
+        arm_joint_ids = ocs2_bridge._arm_joint_ids
+        diagnostic_steps = 0
+        max_tilt_deg = 0.0
+        min_root_height = math.inf
+        max_arm_error = 0.0
+        report_steps = max(1, round(1.0 / float(env.unwrapped.step_dt)))
+        print("[DIAG] Starting one bounded offline replay; results use simulation time.", flush=True)
         
     # simulate environment
     while simulation_app.is_running():
@@ -334,11 +364,58 @@ def main():
                 # invalidating a slow first OCS2 solve.
                 env.unwrapped.sim.render()
                 continue
+            if diagnostic:
+                # Capture the state before env.step(): a terminal step can
+                # return an already auto-reset robot state.
+                gravity_z = float((-robot.data.projected_gravity_b[0, 2]).clamp(-1.0, 1.0).item())
+                tilt_deg = math.degrees(math.acos(gravity_z))
+                root_height = float(robot.data.root_pos_w[0, 2].item())
+                arm_target = torch.as_tensor(
+                    ocs2_bridge.current_solution.arm_position,
+                    device=robot.data.joint_pos.device,
+                    dtype=robot.data.joint_pos.dtype,
+                )
+                arm_error = float(
+                    (robot.data.joint_pos[0, arm_joint_ids] - arm_target).abs().max().item()
+                )
+                max_tilt_deg = max(max_tilt_deg, tilt_deg)
+                min_root_height = min(min_root_height, root_height)
+                max_arm_error = max(max_arm_error, arm_error)
             # agent stepping
             est = encoder(obs_history)
             actions = policy(torch.cat((est, obs, commands), dim=-1).detach())
             # env stepping
             obs_dict, _, dones, infos = env.step(actions)
+            if diagnostic:
+                diagnostic_steps += 1
+                if diagnostic_steps % report_steps == 0:
+                    print(
+                        f"[DIAG] phase={ocs2_bridge.phase} "
+                        f"playback_t={ocs2_bridge.playback_time:.2f}s "
+                        f"tilt={tilt_deg:.1f}deg root_z={root_height:.3f}m "
+                        f"arm_max_error={arm_error:.3f}rad",
+                        flush=True,
+                    )
+                if bool(torch.any(dones)):
+                    timeouts = infos.get("time_outs") if isinstance(infos, dict) else None
+                    timed_out = bool(timeouts[0].item()) if timeouts is not None else False
+                    reason = "environment_timeout" if timed_out else "environment_done"
+                elif ocs2_bridge.playback_time >= (
+                    ocs2_bridge.trajectory_duration
+                    + args_cli.ocs2_trajectory_diagnostic_post_duration
+                ):
+                    reason = "completed_without_reset"
+                else:
+                    reason = None
+                if reason is not None:
+                    print(
+                        f"[DIAG] result={reason} steps={diagnostic_steps} "
+                        f"max_tilt={max_tilt_deg:.1f}deg "
+                        f"min_root_z={min_root_height:.3f}m "
+                        f"max_arm_error={max_arm_error:.3f}rad",
+                        flush=True,
+                    )
+                    break
             obs = obs_dict["policy"]
             obs_history = obs_dict.get("obsHistory")
             obs_history = obs_history.flatten(start_dim=1)
