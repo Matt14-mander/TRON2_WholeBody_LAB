@@ -37,6 +37,7 @@ _TRAJECTORY_MODULE = _load("bipedal_locomotion.controllers.ocs2_trajectory", "oc
 Ocs2Trajectory = _TRAJECTORY_MODULE.Ocs2Trajectory
 TRAJECTORY_COLUMNS = _TRAJECTORY_MODULE.TRAJECTORY_COLUMNS
 warmup_hold_solution = _TRAJECTORY_MODULE.warmup_hold_solution
+replay_diagnostic_solution = _TRAJECTORY_MODULE.replay_diagnostic_solution
 
 
 class Ocs2TrajectoryTest(unittest.TestCase):
@@ -93,6 +94,41 @@ class Ocs2TrajectoryTest(unittest.TestCase):
         np.testing.assert_allclose(held.base_velocity_command, [-0.29, -0.08, 0.0])
         self.assertGreater(np.max(np.abs(first.arm_feedforward_effort)), 0.0)
         self.assertGreater(np.max(np.abs(first.base_wrench_prediction)), 0.0)
+
+    def test_replay_ablations_are_independent_and_do_not_mutate_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trajectory.csv"
+            self._write_trajectory(path)
+            trajectory = Ocs2Trajectory.from_csv(path)
+            source = trajectory.sample(0.5)
+            first_arm = trajectory.sample(0.0).arm_position
+
+        fixed = np.asarray([-0.29, -0.08, 0.0])
+        held = replay_diagnostic_solution(
+            source, hold_arm_position=first_arm, fixed_base_command=fixed, zero_wrench=True
+        )
+        np.testing.assert_array_equal(held.arm_position, first_arm)
+        np.testing.assert_array_equal(held.arm_velocity, np.zeros(6))
+        np.testing.assert_array_equal(held.arm_feedforward_effort, np.zeros(6))
+        np.testing.assert_array_equal(held.base_wrench_prediction, np.zeros((5, 6)))
+        np.testing.assert_array_equal(held.base_velocity_command, fixed)
+
+        pd_only = replay_diagnostic_solution(
+            source, zero_arm_effort=True, fixed_base_command=fixed, zero_wrench=True
+        )
+        np.testing.assert_array_equal(pd_only.arm_position, source.arm_position)
+        np.testing.assert_array_equal(pd_only.arm_velocity, source.arm_velocity)
+        np.testing.assert_array_equal(pd_only.arm_feedforward_effort, np.zeros(6))
+        np.testing.assert_array_equal(source.arm_feedforward_effort, trajectory.sample(0.5).arm_feedforward_effort)
+
+        with_effort = replay_diagnostic_solution(
+            source, fixed_base_command=fixed, zero_wrench=True
+        )
+        np.testing.assert_array_equal(with_effort.arm_feedforward_effort, source.arm_feedforward_effort)
+        with_wrench = replay_diagnostic_solution(source, fixed_base_command=fixed)
+        np.testing.assert_array_equal(with_wrench.base_wrench_prediction, source.base_wrench_prediction)
+        with self.assertRaisesRegex(ValueError, "base_velocity_command"):
+            replay_diagnostic_solution(source, fixed_base_command=np.zeros(2))
 
 
 if __name__ == "__main__":

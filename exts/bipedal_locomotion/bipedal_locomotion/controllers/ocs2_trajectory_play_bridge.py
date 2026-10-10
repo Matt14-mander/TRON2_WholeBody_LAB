@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from .ocs2_play_bridge import Ocs2OutputApplicator
-from .ocs2_trajectory import Ocs2Trajectory, warmup_hold_solution
+from .ocs2_trajectory import Ocs2Trajectory, replay_diagnostic_solution, warmup_hold_solution
 
 
 class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
@@ -20,6 +20,9 @@ class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
         trajectory_path: str,
         zero_base_command: bool = False,
         zero_wrench: bool = False,
+        zero_arm_effort: bool = False,
+        hold_arm: bool = False,
+        fixed_base_command: tuple[float, float, float] | None = None,
         terminal_base_command: tuple[float, float, float] | None = None,
         terminal_transition_duration_s: float = 0.5,
         start_delay_s: float = 0.0,
@@ -28,6 +31,18 @@ class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
         self._trajectory = Ocs2Trajectory.from_csv(trajectory_path)
         self._zero_base_command = zero_base_command
         self._zero_wrench = zero_wrench
+        self._zero_arm_effort = zero_arm_effort
+        self._hold_arm = hold_arm
+        self._fixed_base_command = (
+            None
+            if fixed_base_command is None
+            else np.asarray(fixed_base_command, dtype=np.float64)
+        )
+        if self._fixed_base_command is not None:
+            if self._fixed_base_command.shape != (3,) or not np.all(np.isfinite(self._fixed_base_command)):
+                raise ValueError("Fixed base command must contain three finite values.")
+            if zero_base_command or terminal_base_command is not None:
+                raise ValueError("Fixed base command conflicts with zero/terminal base command.")
         self._terminal_base_command = (
             None
             if terminal_base_command is None
@@ -61,6 +76,12 @@ class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
             f"max_arm_tau={abs(data[:, 13:19]).max():.3f}Nm, "
             f"max_base_cmd={abs(data[:, 19:22]).max():.3f}, "
             f"max_wrench={abs(data[:, 22:52]).max():.3f}."
+        )
+        print(
+            "[INFO] Replay ablations: "
+            f"hold_arm={self._hold_arm}, zero_arm_effort={self._zero_arm_effort}, "
+            f"zero_wrench={self._zero_wrench}, "
+            f"fixed_base_command={None if self._fixed_base_command is None else self._fixed_base_command.tolist()}."
         )
 
     def update(self, policy_observation: torch.Tensor, command_observation: torch.Tensor) -> bool:
@@ -100,8 +121,13 @@ class Ocs2TrajectoryPlayBridge(Ocs2OutputApplicator):
             solution = replace(solution, base_velocity_command=base_command)
         if self._zero_base_command:
             solution = replace(solution, base_velocity_command=np.zeros(3, dtype=np.float64))
-        if self._zero_wrench:
-            solution = replace(solution, base_wrench_prediction=np.zeros((5, 6), dtype=np.float64))
+        solution = replay_diagnostic_solution(
+            solution,
+            hold_arm_position=self._trajectory.data[0, 1:7] if self._hold_arm else None,
+            zero_arm_effort=self._zero_arm_effort,
+            fixed_base_command=self._fixed_base_command,
+            zero_wrench=self._zero_wrench,
+        )
         if elapsed_time < self._start_delay_s:
             self._phase = "warmup"
         elif playback_time < self._trajectory.duration:

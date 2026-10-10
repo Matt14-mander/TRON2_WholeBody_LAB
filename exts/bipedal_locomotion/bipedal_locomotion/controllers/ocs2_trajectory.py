@@ -39,6 +39,31 @@ def warmup_hold_solution(
     return held
 
 
+def replay_diagnostic_solution(
+    solution: Ocs2MpcSolution,
+    *,
+    hold_arm_position: np.ndarray | None = None,
+    zero_arm_effort: bool = False,
+    fixed_base_command: np.ndarray | None = None,
+    zero_wrench: bool = False,
+) -> Ocs2MpcSolution:
+    """Apply independent replay ablations without changing the source CSV."""
+    changes = {}
+    if hold_arm_position is not None:
+        changes["arm_position"] = np.asarray(hold_arm_position, dtype=np.float64).copy()
+        changes["arm_velocity"] = np.zeros(6, dtype=np.float64)
+        changes["arm_feedforward_effort"] = np.zeros(6, dtype=np.float64)
+    elif zero_arm_effort:
+        changes["arm_feedforward_effort"] = np.zeros(6, dtype=np.float64)
+    if fixed_base_command is not None:
+        changes["base_velocity_command"] = np.asarray(fixed_base_command, dtype=np.float64).copy()
+    if zero_wrench:
+        changes["base_wrench_prediction"] = np.zeros((5, 6), dtype=np.float64)
+    result = replace(solution, **changes)
+    validate_mpc_solution(result)
+    return result
+
+
 @dataclass(frozen=True)
 class Ocs2Trajectory:
     """A 52-column trajectory exported by ``tron2_ocs2_trajectory_export``."""

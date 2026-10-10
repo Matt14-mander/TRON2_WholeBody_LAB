@@ -42,6 +42,24 @@ parser.add_argument(
     help="Offline replay ablation: hide predicted wrench from the locomotion policy.",
 )
 parser.add_argument(
+    "--ocs2_trajectory_zero_arm_effort",
+    action="store_true",
+    help="Offline replay ablation: disable arm feed-forward effort while keeping position/velocity targets.",
+)
+parser.add_argument(
+    "--ocs2_trajectory_hold_arm",
+    action="store_true",
+    help="Offline replay ablation: hold the first arm pose with zero arm velocity and feed-forward effort.",
+)
+parser.add_argument(
+    "--ocs2_trajectory_fixed_base_command",
+    type=float,
+    nargs=3,
+    default=None,
+    metavar=("VX", "VY", "WZ"),
+    help="Offline replay ablation: keep this body-frame base command throughout warm-up, motion, and terminal hold.",
+)
+parser.add_argument(
     "--ocs2_trajectory_terminal_base_command",
     type=float,
     nargs=3,
@@ -130,6 +148,9 @@ def main():
     trajectory_only_option_used = (
         args_cli.ocs2_trajectory_zero_base_command
         or args_cli.ocs2_trajectory_zero_wrench
+        or args_cli.ocs2_trajectory_zero_arm_effort
+        or args_cli.ocs2_trajectory_hold_arm
+        or args_cli.ocs2_trajectory_fixed_base_command is not None
         or args_cli.ocs2_trajectory_terminal_base_command is not None
         or args_cli.ocs2_trajectory_start_delay != 0.0
     )
@@ -139,9 +160,18 @@ def main():
         raise ValueError("--ocs2_deterministic_reset requires --ocs2 or --ocs2_trajectory.")
     if args_cli.ocs2_trajectory_zero_base_command and (
         args_cli.ocs2_trajectory_terminal_base_command is not None
+        or args_cli.ocs2_trajectory_fixed_base_command is not None
     ):
         raise ValueError(
             "--ocs2_trajectory_zero_base_command conflicts with "
+            "--ocs2_trajectory_terminal_base_command and "
+            "--ocs2_trajectory_fixed_base_command."
+        )
+    if args_cli.ocs2_trajectory_fixed_base_command is not None and (
+        args_cli.ocs2_trajectory_terminal_base_command is not None
+    ):
+        raise ValueError(
+            "--ocs2_trajectory_fixed_base_command conflicts with "
             "--ocs2_trajectory_terminal_base_command."
         )
     if ocs2_control_enabled:
@@ -241,6 +271,9 @@ def main():
             args_cli.ocs2_trajectory,
             zero_base_command=args_cli.ocs2_trajectory_zero_base_command,
             zero_wrench=args_cli.ocs2_trajectory_zero_wrench,
+            zero_arm_effort=args_cli.ocs2_trajectory_zero_arm_effort,
+            hold_arm=args_cli.ocs2_trajectory_hold_arm,
+            fixed_base_command=args_cli.ocs2_trajectory_fixed_base_command,
             terminal_base_command=args_cli.ocs2_trajectory_terminal_base_command,
             start_delay_s=args_cli.ocs2_trajectory_start_delay,
         )
