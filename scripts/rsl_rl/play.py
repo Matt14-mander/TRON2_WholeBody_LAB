@@ -6,6 +6,7 @@ import argparse
 import math
 import os
 import sys
+import time
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, os.path.join(REPO_ROOT, "rsl_rl"))
@@ -122,6 +123,11 @@ parser.add_argument(
     "--ocs2_target_arrival_time", type=float, default=1.0,
     help="Seconds from the first observation to the target; must not exceed the MPC horizon.",
 )
+parser.add_argument("--ocs2_target_file", help="Hot-update JSON target with id, position_world, quaternion_wxyz, arrival_s.")
+parser.add_argument("--ocs2_diagnostic_log", help="Write timestamp-aligned live control/response JSONL.")
+parser.add_argument("--ocs2_live_duration", type=float, default=0.0, help="Bound live diagnostic run in simulation seconds; 0 means unbounded.")
+parser.add_argument("--ocs2_arm_speed", type=float, default=0.4)
+parser.add_argument("--ocs2_arm_acceleration", type=float, default=1.0)
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -157,6 +163,10 @@ from bipedal_locomotion.utils.wrappers.rsl_rl import RslRlPpoAlgorithmMlpCfg, ex
 def main():
     """Play with RSL-RL agent."""
     ocs2_control_enabled = args_cli.ocs2 or args_cli.ocs2_trajectory is not None
+    if (args_cli.ocs2_target_file or args_cli.ocs2_diagnostic_log or args_cli.ocs2_live_duration) and not args_cli.ocs2:
+        raise ValueError("Live target/diagnostic options require --ocs2.")
+    if not math.isfinite(args_cli.ocs2_live_duration) or args_cli.ocs2_live_duration < 0:
+        raise ValueError("Live duration must be finite and non-negative.")
     trajectory_only_option_used = (
         args_cli.ocs2_trajectory_zero_base_command
         or args_cli.ocs2_trajectory_zero_wrench
@@ -207,7 +217,7 @@ def main():
     if ocs2_control_enabled:
         if not args_cli.task or "WholeBody" not in args_cli.task:
             raise ValueError("OCS2 control requires a WholeBody PLAY task.")
-        # OCS2 owns the planar command. Prevent the random command generator
+        # The bridge owns the planar command. Prevent the random command generator
         # from resampling or applying heading control over the bridge output.
         env_cfg.commands.base_velocity.resampling_time_range = (1e9, 1e9)
         env_cfg.commands.base_velocity.heading_command = False
@@ -276,6 +286,8 @@ def main():
             args_cli.ocs2_update_period,
             args_cli.ocs2_target_offset_world,
             args_cli.ocs2_target_arrival_time,
+            args_cli.ocs2_arm_speed,
+            args_cli.ocs2_arm_acceleration,
         )
         print(
             f"[INFO] OCS2 asynchronous client configured for {args_cli.ocs2_host}:{args_cli.ocs2_port}; "
@@ -331,6 +343,45 @@ def main():
     obs_history = obs_dict.get("obsHistory")
     obs_history = obs_history.flatten(start_dim=1)
     commands = obs_dict.get("commands") 
+    live_target = live_log = None
+    live_steps = 0
+    live_episode = 0
+    if args_cli.ocs2:
+        from bipedal_locomotion.controllers.ocs2_live import LiveTargetFile, JsonlDiagnostics
+        live_target = LiveTargetFile(args_cli.ocs2_target_file) if args_cli.ocs2_target_file else None
+        live_log = JsonlDiagnostics(args_cli.ocs2_diagnostic_log) if args_cli.ocs2_diagnostic_log else None
+        robot = env.unwrapped.scene["robot"]
+        if live_log is not None:
+            live_log.write({"event": "session", "schema": "ocs2_live_diagnostic_v1",
+                "step_dt": float(env.unwrapped.step_dt), "checkpoint": resume_path,
+                "joint_names": list(robot.joint_names), "fixed_base_command": [-0.29, -0.08, 0.0],
+                "ocs2_wrench_semantics": "predicted_arm_on_base; base_Link_frame; base_Link_origin",
+                "external_wrench_semantics": "commanded_external_on_payload; zero_baseline; not_measured",
+                "response_semantics": "control[t,t+dt); auto_reset_next_state_invalid",
+                "wall_clock": "time.monotonic_seconds_on_client"})
+
+    def live_snapshot():
+        data = robot.data
+        def row(value):
+            return value[0].detach().cpu().numpy().copy()
+        result = {
+            "base_position_world": row(data.root_pos_w), "base_quaternion_world": row(data.root_quat_w),
+            "base_linear_velocity_body": row(data.root_lin_vel_b), "base_angular_velocity_body": row(data.root_ang_vel_b),
+            "joint_position_actual": row(data.joint_pos), "joint_velocity_actual": row(data.joint_vel),
+            "arm_position_actual": row(data.joint_pos[:, ocs2_bridge._arm_joint_ids]),
+            "arm_velocity_actual": row(data.joint_vel[:, ocs2_bridge._arm_joint_ids]),
+            "arm_tracking_error_rad": row(data.joint_pos[:, ocs2_bridge._arm_joint_ids]) - ocs2_bridge._smoother.position,
+            "end_effector_position_world": row(data.body_pos_w[:, ocs2_bridge._ee_body_id]),
+            "end_effector_quaternion_world": row(data.body_quat_w[:, ocs2_bridge._ee_body_id]),
+            "tilt_deg": math.degrees(math.acos(float((-data.projected_gravity_b[0, 2]).clamp(-1, 1).item()))),
+        }
+        sensor = env.unwrapped.scene.sensors.get("contact_forces")
+        if sensor is not None:
+            foot_ids, foot_names = sensor.find_bodies(["ankle_pitch_[RL]_Link"], preserve_order=True)
+            result["foot_body_names"] = list(foot_names)
+            result["foot_contact_force_world"] = row(sensor.data.net_forces_w[:, foot_ids])
+            result["foot_contact"] = (sensor.data.net_forces_w[0, foot_ids].norm(dim=-1) > 1.0).cpu().numpy()
+        return result
 
     if not args_cli.headless:
         from bipedal_locomotion.utils.keyboard import Keyboard
@@ -359,10 +410,25 @@ def main():
             keyboard.look_at()
         # run everything in inference mode
         with torch.inference_mode():
+            if live_target is not None:
+                try:
+                    target_update = live_target.poll()
+                    if target_update is not None:
+                        target_id, (position, quaternion, arrival) = target_update
+                        ocs2_bridge.set_target(position, quaternion, arrival, target_id)
+                        live_target.accept(target_id)
+                        if live_log is not None:
+                            live_log.write({"event": "target_accepted", "target_id": target_id,
+                                "target_revision": ocs2_bridge.target_revision,
+                                "sim_time": float(env.unwrapped.common_step_counter) * float(env.unwrapped.step_dt),
+                                "wall_time": time.monotonic(), "position_world": position,
+                                "quaternion_wxyz": quaternion, "arrival_s": arrival})
+                except (ValueError, OSError) as error:
+                    ocs2_bridge._warn(f"Rejected live target: {error}")
             ocs2_solution_ready = True
             if ocs2_bridge is not None:
                 ocs2_solution_ready = ocs2_bridge.update(obs, commands)
-            if not ocs2_solution_ready:
+            if not ocs2_solution_ready and not args_cli.ocs2:
                 # Pump the Omniverse event/render loop so WebRTC stays alive,
                 # but do not advance physics with a missing or stale MPC
                 # result. This also prevents episode resets from continually
@@ -399,8 +465,39 @@ def main():
             # agent stepping
             est = encoder(obs_history)
             actions = policy(torch.cat((est, obs, commands), dim=-1).detach())
+            if live_log is not None:
+                control_record = {
+                    "event": "control_response", "episode": live_episode, "step": live_steps,
+                    **ocs2_bridge.diagnostics, "state": live_snapshot(),
+                    "policy_observation": obs[0].cpu().numpy().copy(),
+                    "observation_history": obs_history[0].cpu().numpy().copy(),
+                    "command_observation": commands[0].cpu().numpy().copy(),
+                    "encoder_output": est[0].cpu().numpy().copy(), "leg_action": actions[0].cpu().numpy().copy(),
+                    "arm_position_applied": ocs2_bridge._smoother.position.copy(),
+                    "arm_velocity_applied": ocs2_bridge._smoother.velocity.copy(),
+                    "external_wrench_payload_at_body_com": [0.0] * 6,
+                    "external_wrench_enabled": False,
+                }
             # env stepping
             obs_dict, _, dones, infos = env.step(actions)
+            if args_cli.ocs2:
+                live_steps += 1
+                if live_log is not None:
+                    for event in ocs2_bridge._async_client.drain_events():
+                        live_log.write(event)
+                    timed_out = infos.get("time_outs") if isinstance(infos, dict) else None
+                    reason = None if not bool(dones[0]) else (
+                        "environment_timeout" if timed_out is not None and bool(timed_out[0]) else "environment_done")
+                    control_record.update({
+                        "response_sim_time": control_record["control_sim_time"] + float(env.unwrapped.step_dt),
+                        "response_wall_time": time.monotonic(), "next_state": live_snapshot(),
+                        "response_observation_valid": not bool(dones[0]), "reset_reason": reason,
+                    })
+                    live_log.write(control_record)
+                if bool(dones[0]):
+                    live_episode += 1
+                if args_cli.ocs2_live_duration and live_steps * float(env.unwrapped.step_dt) >= args_cli.ocs2_live_duration:
+                    break
             if diagnostic:
                 diagnostic_steps += 1
                 if diagnostic_steps % report_steps == 0:
@@ -456,6 +553,10 @@ def main():
     # close the simulator
     if ocs2_bridge is not None:
         ocs2_bridge.close()
+    if live_log is not None:
+        for event in ocs2_bridge._async_client.drain_events():
+            live_log.write(event)
+        live_log.close()
     env.close()
 
 

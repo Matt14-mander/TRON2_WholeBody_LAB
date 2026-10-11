@@ -104,20 +104,28 @@ orientation. An explicit `--ocs2_target_position` and optional
 arrival time must be within the configured MPC horizon; unlike the former
 zero-arrival live request, a positive value avoids an immediate reference step.
 
-OCS2 owns the six arm position/velocity/feed-forward-effort targets and the
-planar locomotion command. Its 5x6 base-wrench prediction replaces the zero
+Live PLAY now uses `config/task_arm_live.info`: the optimizer's planar inputs
+are constrained to `[-0.29, -0.08, 0]`, matching the continuing walk command.
+The arm position/velocity targets are rate limited and feed-forward effort is
+disabled for the first diagnostic stage. Its 5x6 base-wrench prediction replaces the zero
 PLAY command observed by the policy. It is not applied as an external force:
 the articulated arm already produces that reaction in simulation. Blocking
 TCP and DDP work runs on a background thread, and observations submitted while
-a solve is in flight are coalesced to the newest state. While no fresh result
-is available, PLAY pauses physics but continues pumping the render/WebRTC event
-loop. A timeout, invalid response, stale timestamp, or solver failure therefore
-cannot advance the robot with mismatched inputs; the arm is held and both the
-planar command and predicted wrench are zeroed.
+a solve is in flight are coalesced to the newest state. Physics continues while
+waiting. A timeout, invalid response, stale timestamp, or solver failure holds
+the last bounded arm position target, zeros velocity/effort/predicted wrench,
+and preserves the fixed walk command. Both simulation and wall-clock solution
+ages are checked. New targets invalidate old-target results.
 
 The bridge reports wall-clock solve duration. If solves are slower than the
 requested update period, the bridge is useful for functional validation but
 not real-time locomotion; use offline export/replay until MPC latency is reduced.
+
+The earlier runtime command above must use `config/task_arm_live.info` for the
+new arm-only live client; the unconstrained `task.info` remains for offline
+experiments. See [online development and validation](../../../../docs/ocs2_live_arm_development.md)
+for hot-update targets, aligned diagnostic recording, performance profiling,
+and the conditions for advancing to bulk collection.
 
 ## Offline trajectory export and replay
 

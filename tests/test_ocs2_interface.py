@@ -110,6 +110,32 @@ class _ControlledClient:
 
 
 class Ocs2AsyncClientTest(unittest.TestCase):
+    def test_target_invalidation_discards_inflight_result_and_records_it(self):
+        transport = _ControlledClient()
+        client = Ocs2AsyncClient(transport)
+        try:
+            client.submit(self._observation(0.25))
+            self.assertTrue(transport.started.wait(timeout=1.0))
+            client.invalidate()
+            transport.release.set()
+            deadline = time.monotonic() + 1.0
+            events = []
+            while time.monotonic() < deadline and not any(event["event"] == "solve_completed" for event in events):
+                events.extend(client.drain_events())
+                time.sleep(0.005)
+            self.assertIsNone(client.status().solution)
+            completed = [event for event in events if event["event"] == "solve_completed"]
+            self.assertEqual(len(completed), 1)
+            self.assertTrue(completed[0]["invalidated"])
+            self.assertEqual(completed[0]["solution"]["time"], 0.25)
+            client.submit(self._observation(0.5))
+            while client.status().solution is None and time.monotonic() < deadline:
+                time.sleep(0.005)
+            self.assertEqual(client.status().solution.time, 0.5)
+            self.assertIsNotNone(client.status().completed_wall_time)
+        finally:
+            client.close()
+
     @staticmethod
     def _observation(simulation_time):
         return Ocs2MpcObservation(

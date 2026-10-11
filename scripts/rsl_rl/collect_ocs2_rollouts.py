@@ -23,7 +23,14 @@ parser.add_argument(
     "--task", default="Isaac-Limx-SFYG-TRON2A-WholeBody-Flat-Play-v0"
 )
 parser.add_argument("--checkpoint_path", required=True)
-parser.add_argument("--trajectory_manifest", required=True)
+source_mode = parser.add_mutually_exclusive_group(required=True)
+source_mode.add_argument("--trajectory_manifest")
+source_mode.add_argument("--live", action="store_true", help="Collect one bounded online diagnostic run without trajectory CSVs.")
+parser.add_argument("--live_target_file", help="Hot-update end-effector JSON target file.")
+parser.add_argument("--live_duration", type=float, default=10.0)
+parser.add_argument("--ocs2_host", default="127.0.0.1")
+parser.add_argument("--ocs2_port", type=int, default=5555)
+parser.add_argument("--ocs2_timeout", type=float, default=120.0)
 parser.add_argument("--output_dir", required=True)
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--split_seed", type=int, default=42)
@@ -81,6 +88,30 @@ cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.num_envs = 1
+
+if args_cli.live:
+    # Use the same control/recording path as PLAY so command and response
+    # alignment cannot diverge between diagnostic entry points.
+    import runpy
+    if args_cli.external_wrench_validation or args_cli.external_wrench_paired:
+        raise ValueError("Live diagnostics currently record a zero external-wrench baseline only.")
+    if not math.isfinite(args_cli.live_duration) or args_cli.live_duration <= 0:
+        raise ValueError("--live_duration must be finite and positive.")
+    live_args = [
+        "--task", args_cli.task, "--checkpoint_path", args_cli.checkpoint_path,
+        "--ocs2", "--ocs2_deterministic_reset", "--ocs2_host", args_cli.ocs2_host,
+        "--ocs2_port", str(args_cli.ocs2_port), "--ocs2_timeout", str(args_cli.ocs2_timeout),
+        "--ocs2_live_duration", str(args_cli.live_duration),
+        "--ocs2_diagnostic_log", str(Path(args_cli.output_dir) / "live_diagnostics.jsonl"),
+        "--device", args_cli.device, "--seed", str(args_cli.seed),
+    ]
+    if args_cli.headless:
+        live_args.append("--headless")
+    if args_cli.live_target_file:
+        live_args.extend(["--ocs2_target_file", args_cli.live_target_file])
+    sys.argv = [str(Path(__file__).with_name("play.py")), *live_args]
+    runpy.run_path(sys.argv[0], run_name="__main__")
+    raise SystemExit(0)
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app

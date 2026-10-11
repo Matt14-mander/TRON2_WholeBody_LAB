@@ -6,11 +6,14 @@
 #include <iterator>
 #include <cmath>
 #include <utility>
+#include <chrono>
+#include <iostream>
 
 #include <boost/property_tree/info_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <ocs2_core/misc/LinearInterpolation.h>
 #include <ocs2_core/misc/LoadData.h>
+#include <ocs2_core/constraint/LinearStateInputConstraint.h>
 #include <ocs2_core/penalties/Penalties.h>
 #include <ocs2_core/soft_constraint/StateInputSoftBoxConstraint.h>
 #include <ocs2_core/soft_constraint/StateSoftConstraint.h>
@@ -134,6 +137,20 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
   ocs2::loadData::loadEigenMatrix(taskFile, "cost.inputWeights", inputWeights);
 
   referenceManager_ = std::make_shared<ocs2::ReferenceManager>();
+  if (pt.get<bool>("armOnly.activate", false)) {
+    Eigen::Vector3d command;
+    command << pt.get<double>("armOnly.vx", -0.29),
+        pt.get<double>("armOnly.vy", -0.08), pt.get<double>("armOnly.yawRate", 0.0);
+    if (!command.allFinite() || std::abs(command(0)) > kPolicyForwardVelocityLimit ||
+        std::abs(command(1)) > kPolicyLateralVelocityLimit || std::abs(command(2)) > kPolicyYawRateLimit) {
+      throw std::invalid_argument("Invalid armOnly fixed base command.");
+    }
+    ocs2::matrix_t inputJacobian = ocs2::matrix_t::Zero(3, kInputDim);
+    inputJacobian.leftCols(3).setIdentity();
+    problem_.equalityConstraintPtr->add("fixed_base_command",
+        std::make_unique<ocs2::LinearStateInputConstraint>(
+            -command, ocs2::matrix_t::Zero(3, kStateDim), inputJacobian));
+  }
   problem_.costPtr->add("nominal", std::make_unique<NominalCost>(
                                       nominalState_, stateWeights, inputWeights));
   problem_.softConstraintPtr->add("limits", makeBoxConstraints(nominalState_, taskFile));
@@ -426,9 +443,17 @@ Solution SolverCore::sampleSolution(double sampleTime, double outputTime,
 }
 
 Solution SolverCore::solve(const Observation& observation, const EndEffectorTarget& target) {
+  const auto started = std::chrono::steady_clock::now();
   const auto trajectory = runMpc(observation, target);
+  const auto optimized = std::chrono::steady_clock::now();
   validateTrajectory(observation.time, trajectory);
-  return sampleSolution(observation.time, observation.time, trajectory);
+  auto solution = sampleSolution(observation.time, observation.time, trajectory);
+  const auto finished = std::chrono::steady_clock::now();
+  std::clog << "[OCS2_PROFILE] sim_time=" << observation.time
+            << " mpc_ms=" << std::chrono::duration<double, std::milli>(optimized - started).count()
+            << " validate_sample_wrench_ms=" << std::chrono::duration<double, std::milli>(finished - optimized).count()
+            << " knots=" << trajectory.timeTrajectory_.size() << std::endl;
+  return solution;
 }
 
 std::vector<Solution> SolverCore::solveTrajectory(const Observation& observation,
