@@ -145,6 +145,40 @@ URDF 位置余量、最大臂速度/加速度以及输出固定底盘命令误�
 等式误差/代价用于对照解质量；这些统计不能证明自碰撞安全或实际末端跟踪。
 `latency_gate_passed` 只表示该次基准的完整热请求均在 100 ms 内，不能代替在线验收。
 
+### 网格碰撞距离的逐项计时与保守几何对照
+
+初步 iLQR 日志显示 Backward Pass 仅约 1–2 ms，初始化/LQ/线搜索占主要耗时。
+原 URDF 碰撞网格中 base_Link 有 142490 个三角面，相关臂部 link 约 2–4 万面；
+它们是距离查询的候选瓶颈，尚需逐项数据确认。
+`profiling.internal=true` 现在额外输出 `[OCS2_TERM_PROFILE]`，分别计时 self_collision 与
+end_effector 的 value/quadratic 调用。统计对 solver 克隆及线程共享，**每次求解重新计数、累加各线程工作时间**，
+不能当作不重叠的墙钟耗时相加，也不能与累计 DDP 平均计时直接相减。
+
+重编译后，用同一观测分别测试原网格与包围盒（各 3 次足够先定位数量级）：
+
+```bash
+BASE_OUT="logs/ocs2_benchmark/mesh_$(date +%Y%m%d_%H%M%S)"
+MPC_BENCH_OUTPUT="$BASE_OUT" MPC_BENCH_VARIANTS=analytic_ilqr MPC_BENCH_SAMPLES=3 \
+  bash scripts/ocs2/run_mpc_benchmarks.sh logs/ocs2_live/hold_single_gpu.jsonl
+
+BOX_OUT="logs/ocs2_benchmark/aabb_$(date +%Y%m%d_%H%M%S)"
+MPC_BENCH_OUTPUT="$BOX_OUT" MPC_BENCH_VARIANTS=analytic_ilqr MPC_BENCH_SAMPLES=3 \
+  MPC_BENCH_COLLISION_PROXY=aabb \
+  bash scripts/ocs2/run_mpc_benchmarks.sh logs/ocs2_live/hold_single_gpu.jsonl
+```
+
+包围盒候选由 `make_collision_proxy_urdf.py` 生成在独立结果目录中。每个碰撞 mesh 的全部三角形
+由局部 AABB 包含，每侧增加 5 mm；正确应用 mesh scale、旋转 origin 和中心偏移。
+保留关节/惯量、现有原始 primitive，视觉 mesh 路径转为绝对 URI。
+继续使用同一组自碰撞 link 对、0.04 m 安全距离及原惩罚参数；原 robot.urdf 和在线默认路径不改。
+独立 codegen 目录避免混用原网格的几何绑定。
+`collision_proxy.report.json` 记录各 link 的三角面数和盒尺寸。
+包围盒几何保守，可能产生原 mesh 没有的碰撞，因此它是计算对照及优化候选，
+不能仅凭速度就用于在线控制。仍需核对初始接触/间距、计划限位、可达性和实际跟踪。
+
+检查两组 summary 与 term profile：如果 mesh 的 self_collision 调用占主导且盒模型明显下降，
+下一步优化碰撞几何/距离查询；若不是，则继续按实际逐项计时定位其他热点。
+
 选定候选配置后还需在 `LIVESTREAM=0` 下重测 TCP 端到端延迟及连续行走，
 核查多个目标的新解实际被执行、状态时间/解年龄、末端误差、接触、倾角及重置。
 当前在线 TCP 仍返回单个提前 20 ms 的命令样本；完整轨迹按当前控制时间采样是后续执行接口工作，

@@ -14,6 +14,7 @@
 
 #include "tron2_ocs2/Types.h"
 #include "tron2_ocs2/WrenchEstimator.h"
+#include "tron2_ocs2/ProfiledStateCost.h"
 
 namespace tron2_ocs2 {
 
@@ -79,6 +80,8 @@ class SolverCore {
   double previousSolveTime_ = 0.0;
   bool coldStart_ = false;
   bool profileInternal_ = false;
+  std::shared_ptr<CostTimings> collisionTimings_ = std::make_shared<CostTimings>();
+  std::shared_ptr<CostTimings> endEffectorTimings_ = std::make_shared<CostTimings>();
 };
 
 }  // namespace tron2_ocs2

@@ -40,6 +40,17 @@ if [[ $# -eq 1 ]]; then
 fi
 python "$SCRIPT_DIR/prepare_mpc_benchmarks.py" "${PREPARE_ARGS[@]}"
 mkdir -p "$OUTPUT_DIR/codegen"
+ROBOT_URDF="$REPO_DIR/robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf"
+case "${MPC_BENCH_COLLISION_PROXY:-none}" in
+  none) ;;
+  aabb)
+    python "$SCRIPT_DIR/make_collision_proxy_urdf.py" --urdf "$ROBOT_URDF" \
+      --output "$OUTPUT_DIR/collision_proxy.urdf"
+    ROBOT_URDF="$OUTPUT_DIR/collision_proxy.urdf"
+    echo "Collision geometry: conservative enclosing boxes; benchmark candidate only."
+    ;;
+  *) echo "ERROR: MPC_BENCH_COLLISION_PROXY must be none or aabb." >&2; exit 2 ;;
+esac
 printf 'running\n' > "$OUTPUT_DIR/run.status"
 interrupt_run() {
   printf 'interrupted\n' > "$OUTPUT_DIR/run.status"
@@ -50,6 +61,7 @@ trap 'interrupt_run 130' INT
 trap 'interrupt_run 143' TERM
 echo "Results: $OUTPUT_DIR"
 echo "Executable: $BENCHMARK_BIN"
+echo "URDF: $ROBOT_URDF"
 RESULTS=()
 FAILED=0
 for variant in "${VARIANTS[@]}"; do
@@ -60,7 +72,7 @@ for variant in "${VARIANTS[@]}"; do
   # be mistaken for a JSON solve record. Keep both streams visible while logging.
   if "$BENCHMARK_BIN" \
       "$OUTPUT_DIR/$variant.info" \
-      "$REPO_DIR/robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf" \
+      "$ROBOT_URDF" \
       "$OUTPUT_DIR/codegen" "$SAMPLES" "$PERIOD" "${OBSERVATION_ARGS[@]}" \
       2> >(tee "$OUTPUT_DIR/$variant.profile.log" >&2) | tee "$OUTPUT_DIR/$variant.jsonl"; then
     printf 'complete\n' > "$OUTPUT_DIR/$variant.status"

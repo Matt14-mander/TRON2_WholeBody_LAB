@@ -101,6 +101,7 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
 
   boost::property_tree::ptree pt;
   boost::property_tree::read_info(taskFile, pt);
+  profileInternal_ = pt.get<bool>("profiling.internal", false);
   settings_.initialBaseHeight = pt.get<double>("model.initialBaseHeight", settings_.initialBaseHeight);
   settings_.desiredBaseHeight = pt.get<double>("model.desiredBaseHeight", settings_.desiredBaseHeight);
   settings_.heightResponseGain = pt.get<double>("model.heightResponseGain", settings_.heightResponseGain);
@@ -170,15 +171,19 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
   problem_.finalCostPtr->add(
       "state_regularization", std::make_unique<TerminalStateRegularizationCost>(
                                   nominalState_, terminalStateRegularization));
-  problem_.stateSoftConstraintPtr->add(
-      "end_effector", makeEndEffectorCost(*pinocchioInterface_, referenceManager_, settings_,
+  auto runningEeCost = makeEndEffectorCost(*pinocchioInterface_, referenceManager_, settings_,
                                            libraryFolder, "tron2_ee_running",
-                                           eePositionWeight, eeOrientationWeight));
-  problem_.finalSoftConstraintPtr->add(
-      "end_effector", makeEndEffectorCost(*pinocchioInterface_, referenceManager_, settings_,
+                                           eePositionWeight, eeOrientationWeight);
+  auto terminalEeCost = makeEndEffectorCost(*pinocchioInterface_, referenceManager_, settings_,
                                            libraryFolder, "tron2_ee_terminal",
                                            terminalScale * eePositionWeight,
-                                           terminalScale * eeOrientationWeight));
+                                           terminalScale * eeOrientationWeight);
+  if (profileInternal_) {
+    runningEeCost = std::make_unique<ProfiledStateCost>(std::move(runningEeCost), endEffectorTimings_);
+    terminalEeCost = std::make_unique<ProfiledStateCost>(std::move(terminalEeCost), endEffectorTimings_);
+  }
+  problem_.stateSoftConstraintPtr->add("end_effector", std::move(runningEeCost));
+  problem_.finalSoftConstraintPtr->add("end_effector", std::move(terminalEeCost));
   if (pt.get<bool>("selfCollision.activate", true)) {
     const std::vector<std::pair<std::string, std::string>> collisionPairs{
         {"base_Link", "arm3_Link"}, {"base_Link", "arm4_Link"},
@@ -186,6 +191,8 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
         {"arm1_Link", "arm4_Link"}, {"arm1_Link", "arm5_Link"},
         {"arm2_Link", "arm5_Link"}, {"arm2_Link", "gripper_base_Link"}};
     ocs2::PinocchioGeometryInterface geometry(*pinocchioInterface_, collisionPairs);
+    std::clog << "[OCS2_COLLISION_MODEL] link_pairs=" << collisionPairs.size()
+              << " object_pairs=" << geometry.getNumCollisionPairs() << std::endl;
     Tron2PinocchioMappingD mapping(settings_);
     auto constraint = std::make_unique<ocs2::SelfCollisionConstraintCppAd>(
         *pinocchioInterface_, mapping, std::move(geometry),
@@ -196,9 +203,12 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
         ocs2::RelaxedBarrierPenalty::Config{
             pt.get<double>("selfCollision.mu", 1e-2),
             pt.get<double>("selfCollision.delta", 1e-3)});
-    problem_.stateSoftConstraintPtr->add(
-        "self_collision", std::make_unique<ocs2::StateSoftConstraint>(
-                              std::move(constraint), std::move(penalty)));
+    std::unique_ptr<ocs2::StateCost> collisionCost = std::make_unique<ocs2::StateSoftConstraint>(
+        std::move(constraint), std::move(penalty));
+    if (profileInternal_) {
+      collisionCost = std::make_unique<ProfiledStateCost>(std::move(collisionCost), collisionTimings_);
+    }
+    problem_.stateSoftConstraintPtr->add("self_collision", std::move(collisionCost));
   }
 
   if (pt.get<bool>("model.analyticDynamics", false)) {
@@ -218,7 +228,6 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
   auto ddpSettings = ocs2::ddp::loadSettings(taskFile, "ddp", settings_.verbose);
   horizon_ = mpcSettings.timeHorizon_;
   coldStart_ = mpcSettings.coldStart_;
-  profileInternal_ = pt.get<bool>("profiling.internal", false);
   std::clog << "[OCS2_CONFIG] algorithm=" << pt.get<std::string>("ddp.algorithm", "SLQ")
             << " analytic_dynamics=" << pt.get<bool>("model.analyticDynamics", false)
             << " consistent_initializer=" << pt.get<bool>("model.consistentInitializer", false)
@@ -397,6 +406,8 @@ ocs2::PrimalSolution SolverCore::runMpc(const Observation& observation,
                                         const EndEffectorTarget& target) {
   const auto started = std::chrono::steady_clock::now();
   profile_ = SolveProfile{};
+  collisionTimings_->reset();
+  endEffectorTimings_->reset();
   profile_.cold = coldStart_ || !havePreviousSolve_ ||
       observation.time < previousSolveTime_ ||
       observation.time >= mpc_->getSolverPtr()->getFinalTime();
@@ -438,6 +449,15 @@ ocs2::PrimalSolution SolverCore::runMpc(const Observation& observation,
   previousSolveTime_ = observation.time;
   havePreviousSolve_ = true;
   if (profileInternal_) {
+    for (const auto& term : {std::make_pair("self_collision", collisionTimings_),
+                             std::make_pair("end_effector", endEffectorTimings_)}) {
+      std::clog << "[OCS2_TERM_PROFILE] sim_time=" << observation.time << " term=" << term.first
+                << " scope=this_solve_sum_across_workers"
+                << " value_calls=" << term.second->value.calls.load()
+                << " value_ms=" << term.second->value.milliseconds()
+                << " quadratic_calls=" << term.second->quadratic.calls.load()
+                << " quadratic_ms=" << term.second->quadratic.milliseconds() << std::endl;
+    }
     // OCS2 timers accumulate since the last reset; they are not per-request timers.
     std::clog << "[OCS2_DDP_PROFILE] sim_time=" << observation.time
               << " scope=since_last_solver_reset"
