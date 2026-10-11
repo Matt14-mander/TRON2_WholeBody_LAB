@@ -18,6 +18,7 @@
 !.vscode
 
 # Outputs
+/.test-temp/
 **/runs/*
 **/logs/*
 **/recordings/*

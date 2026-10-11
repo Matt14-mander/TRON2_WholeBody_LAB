@@ -126,7 +126,19 @@ bash scripts/ocs2/run_mpc_benchmarks.sh logs/ocs2_live/hold_single_gpu.jsonl
 iLQR 使用离散 Riccati 递推，是规避连续 Riccati 积分开销的候选方案；RK4 rollout 为 10 ms 固定网格。
 这些生成的 `.info` 仅供对照，尚未选为在线默认配置。
 
-输出在 `logs/ocs2_benchmark/`：`summary.txt`、各配置的 `.jsonl` 和 `.profile.log`。
+每轮输出在独立的 `logs/ocs2_benchmark/run_<UTC时间>_<PID>/`：`summary.txt`、各配置的 `.jsonl` 和 `.profile.log`。
+启动及结束时打印实际路径。可用 `MPC_BENCH_OUTPUT` 指定目录；脚本拒绝覆盖所选配置已有的结果。
+stdout JSON 与 stderr profile 同时显示到终端并分别记录；脚本直接运行 overlay 中解析出的二进制，
+避免将 `[ros2run]: Interrupt` 写入 JSONL。中断立即停止后续配置，`run.status` 标明整轮状态。
+只有 `run.status=complete` 才是完整运行；这不表示性能或安全验收通过。
+需要补取内部统计时先只跑 iLQR 一组，不必重跑六组或重新编译：
+
+```bash
+MPC_BENCH_OUTPUT="logs/ocs2_benchmark/ilqr_$(date +%Y%m%d_%H%M%S)" \
+MPC_BENCH_VARIANTS=analytic_ilqr MPC_BENCH_SAMPLES=3 \
+bash scripts/ocs2/run_mpc_benchmarks.sh logs/ocs2_live/hold_single_gpu.jsonl
+```
+
 汇总包含热 p50/p95/max、deadline miss、缺失/错误、冷启动数、代价、等式 SSE、全部 knot 的最小
 URDF 位置余量、最大臂速度/加速度以及输出固定底盘命令误差。
 负位置余量表示计划越界。速度/加速度应分别对照配置 5 rad/s、20 rad/s²，
