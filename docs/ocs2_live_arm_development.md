@@ -105,3 +105,18 @@ socket timeout 为墙钟通信截止，不能中断服务端正在执行的 MPC�
 
 本机验证：35 项纯 Python OCS2 单元测试通过；未具备 Isaac Lab/PyTorch 或可用 WSL，
 因此 C++ 编译、SLQ 固定输入约束收敛、求解性能和模拟器闭环仍待 Linux 主机验证。
+
+## 重置选项与 RTX 启动崩溃
+
+`--ocs2_deterministic_reset` 是可选的名义初始状态重置。开启后显式重置所有 robot 关节
+（含机械臂和夹爪），取消 root/joint 的随机偏移；不改变资产初始姿态、GPU、驱动、RTX、
+观测噪声或执行器延迟，也不保证跨驱动的数值一致性。
+在线采集器不再自动开启该选项；需要时显式传入同名参数。
+离线采集仍固定名义重置，所有 episode 均重置机械臂与夹爪；配对外力模式另行关闭噪声/随机延迟。
+
+若日志在约 3 s 出现 `librtx.scenedb.plugin.so`、`libcarb.scenerenderer-rtx.plugin.so`、
+`libomni.hydra.rtx.plugin.so` 的 Fatal backtrace，属于原生渲染路径崩溃。
+仅凭这些帧不能确定具体驱动版本或证明重置选项是原因。
+启动日志按顺序输出 `app_launcher_start`、`app_launcher_ready`、`environment_create_start`、
+`environment_create_ready`：若缺少 `app_launcher_ready`，名义重置配置尚未执行。
+保持同一驱动/环境/启动命令仅切换重置选项进行对照，并保存首次 Fatal 前的完整日志。

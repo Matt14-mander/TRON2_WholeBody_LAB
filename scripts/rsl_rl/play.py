@@ -90,8 +90,8 @@ parser.add_argument(
     "--ocs2_deterministic_reset",
     action="store_true",
     help=(
-        "OCS2 validation mode: reset the base pose/velocity and all joint "
-        "position/velocity offsets deterministically."
+        "Optional OCS2 validation: reset root and all joints (including arm/gripper) "
+        "to asset defaults with zero offsets; does not change noise, delay, or renderer."
     ),
 )
 parser.add_argument("--ocs2_host", type=str, default="127.0.0.1", help="OCS2 bridge IPv4 host.")
@@ -139,8 +139,14 @@ if args_cli.video:
     args_cli.enable_cameras = True
 
 # launch omniverse app
+print(
+    f"[BOOT] stage=app_launcher_start pid={os.getpid()} "
+    f"headless={args_cli.headless} livestream={os.environ.get('LIVESTREAM', 'unset')} "
+    f"ocs2_deterministic_reset={args_cli.ocs2_deterministic_reset}", flush=True,
+)
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
+print("[BOOT] stage=app_launcher_ready", flush=True)
 
 """Rest everything follows."""
 
@@ -152,6 +158,7 @@ import torch
 from rsl_rl.runner import OnPolicyRunner
 
 from isaaclab.envs import ManagerBasedRLEnvCfg,DirectMARLEnv, multi_agent_to_single_agent
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.dict import print_dict
 from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
@@ -224,22 +231,10 @@ def main():
         env_cfg.commands.base_velocity.rel_standing_envs = 0.0
         env_cfg.commands.base_velocity.rel_heading_envs = 0.0
         if args_cli.ocs2_deterministic_reset:
-            # Isolate controller/trajectory stability from the broad training
-            # reset distribution. In particular, prevent a random arm pose
-            # from being pulled abruptly to the first OCS2 trajectory sample.
-            reset_base = env_cfg.events.reset_robot_base
-            reset_joints = env_cfg.events.reset_robot_joints
-            if reset_base is None or reset_joints is None:
-                raise RuntimeError("The selected OCS2 PLAY task has no robot reset events.")
-            for reset_range in (
-                reset_base.params["pose_range"],
-                reset_base.params["velocity_range"],
-            ):
-                for axis in reset_range:
-                    reset_range[axis] = (0.0, 0.0)
-            reset_joints.params["position_range"] = (0.0, 0.0)
-            reset_joints.params["velocity_range"] = (0.0, 0.0)
-            print("[INFO] OCS2 deterministic reset enabled: base and joint reset offsets are zero.")
+            from bipedal_locomotion.controllers.ocs2_reset import configure_nominal_ocs2_reset
+            configure_nominal_ocs2_reset(env_cfg, SceneEntityCfg("robot"))
+            print("[INFO] OCS2 nominal reset configured: root + all joints, including arm/gripper; "
+                  "noise and actuator delay retain task settings.", flush=True)
 
     # specify directory for logging experiments
     if args_cli.checkpoint_path is None:
@@ -252,7 +247,9 @@ def main():
     log_dir = os.path.dirname(resume_path)
 
     # create isaac environment
+    print("[BOOT] stage=environment_create_start", flush=True)
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    print("[BOOT] stage=environment_create_ready", flush=True)
 
     if args_cli.video:
         video_kwargs = {

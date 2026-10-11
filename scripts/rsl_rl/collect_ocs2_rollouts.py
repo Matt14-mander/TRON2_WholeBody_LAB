@@ -31,6 +31,8 @@ parser.add_argument("--live_duration", type=float, default=10.0)
 parser.add_argument("--ocs2_host", default="127.0.0.1")
 parser.add_argument("--ocs2_port", type=int, default=5555)
 parser.add_argument("--ocs2_timeout", type=float, default=120.0)
+parser.add_argument("--ocs2_deterministic_reset", action="store_true",
+                    help="Opt into nominal root/all-joint reset for --live; offline collection always uses nominal reset.")
 parser.add_argument("--output_dir", required=True)
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--split_seed", type=int, default=42)
@@ -99,7 +101,7 @@ if args_cli.live:
         raise ValueError("--live_duration must be finite and positive.")
     live_args = [
         "--task", args_cli.task, "--checkpoint_path", args_cli.checkpoint_path,
-        "--ocs2", "--ocs2_deterministic_reset", "--ocs2_host", args_cli.ocs2_host,
+        "--ocs2", "--ocs2_host", args_cli.ocs2_host,
         "--ocs2_port", str(args_cli.ocs2_port), "--ocs2_timeout", str(args_cli.ocs2_timeout),
         "--ocs2_live_duration", str(args_cli.live_duration),
         "--ocs2_diagnostic_log", str(Path(args_cli.output_dir) / "live_diagnostics.jsonl"),
@@ -107,6 +109,8 @@ if args_cli.live:
     ]
     if args_cli.headless:
         live_args.append("--headless")
+    if args_cli.ocs2_deterministic_reset:
+        live_args.append("--ocs2_deterministic_reset")
     if args_cli.live_target_file:
         live_args.extend(["--ocs2_target_file", args_cli.live_target_file])
     sys.argv = [str(Path(__file__).with_name("play.py")), *live_args]
@@ -129,6 +133,7 @@ from rsl_rl.runner import OnPolicyRunner
 
 import bipedal_locomotion  # noqa: F401
 from bipedal_locomotion.controllers.ocs2_play_bridge import ARM_JOINT_NAMES
+from bipedal_locomotion.controllers.ocs2_reset import configure_nominal_ocs2_reset
 from bipedal_locomotion.controllers.ocs2_rollout_dataset import (
     append_manifest_row,
     completed_trajectory_ids,
@@ -169,21 +174,8 @@ def configure_collection_environment(
     env_cfg.commands.base_velocity.heading_command = False
     env_cfg.commands.base_velocity.rel_standing_envs = 0.0
     env_cfg.commands.base_velocity.rel_heading_envs = 0.0
-    reset_base = env_cfg.events.reset_robot_base
-    reset_joints = env_cfg.events.reset_robot_joints
-    if reset_base is None or reset_joints is None:
-        raise RuntimeError("The rollout task must define base and joint reset events.")
-    for reset_range in (reset_base.params["pose_range"], reset_base.params["velocity_range"]):
-        for axis in reset_range:
-            reset_range[axis] = (0.0, 0.0)
-    reset_joints.params["position_range"] = (0.0, 0.0)
-    reset_joints.params["velocity_range"] = (0.0, 0.0)
+    configure_nominal_ocs2_reset(env_cfg, SceneEntityCfg("robot"))
     if deterministic_pairing:
-        # The SFYG task normally restricts joint reset to the legs so training
-        # randomization cannot kick the arm.  Here the offset is exactly zero,
-        # so reset the complete articulation; otherwise each paired rollout
-        # inherits the previous rollout's terminal arm/gripper state.
-        reset_joints.params["asset_cfg"] = SceneEntityCfg("robot")
         # PLAY already disables policy corruption, but the history group feeds
         # the encoder independently and otherwise retains its training noise.
         env_cfg.observations.policy.enable_corruption = False
