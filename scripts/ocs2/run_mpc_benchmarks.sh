@@ -28,7 +28,7 @@ if [[ ! -x "$BENCHMARK_BIN" ]]; then
   echo "ERROR: benchmark executable not found: $BENCHMARK_BIN. Rebuild and source the overlay." >&2
   exit 2
 fi
-PREPARE_ARGS=(--output-dir "$OUTPUT_DIR")
+PREPARE_ARGS=(--output-dir "$OUTPUT_DIR" --target-mode "${MPC_BENCH_TARGET_MODE:-recorded}")
 OBSERVATION_ARGS=()
 if [[ $# -gt 1 ]]; then
   echo "usage: bash scripts/ocs2/run_mpc_benchmarks.sh [LIVE_DIAGNOSTIC_JSONL]" >&2

@@ -6,6 +6,42 @@ from pathlib import Path
 import numpy as np
 
 
+def joint_input_gate(rows, expected_samples):
+    """Check every solve, including cold; no collision/tracking claim is made.
+
+    Limits match task_arm_live.info. Missing metrics mean unknown, not passed.
+    """
+    failures = set()
+    missing = False
+    if len(rows) != expected_samples:
+        failures.add("record_count")
+    for row in rows:
+        if "error" in row:
+            failures.add("solve_error")
+        if not np.isfinite(row.get("solve_duration_s", float("nan"))) or row.get("solve_duration_s", -1) < 0:
+            failures.add("invalid_solve_duration")
+        for key, limit, lower in (("minimum_arm_position_margin", 0.0, True),
+                                  ("maximum_arm_speed", 5.0, False),
+                                  ("maximum_arm_acceleration", 20.0, False)):
+            if key not in row:
+                missing = True
+                continue
+            value = row[key]
+            if not np.isfinite(value) or (value < limit - 1e-6 if lower else value > limit + 1e-6):
+                failures.add(key)
+        command = row.get("base_velocity_command")
+        if command is None:
+            missing = True
+        elif (np.asarray(command).shape != (3,) or not np.all(np.isfinite(command)) or
+              np.max(np.abs(np.asarray(command) - [-0.29, -0.08, 0.0])) > 1e-4):
+            failures.add("fixed_base_command")
+    return {"joint_input_gate_passed": False if failures else (None if missing else True),
+            "joint_input_gate_failures": sorted(failures),
+            "joint_input_metrics_missing": missing,
+            "joint_input_limits": {"arm_speed": 5.0, "arm_acceleration": 20.0,
+                                   "position_tolerance_rad": 1e-6}}
+
+
 def summarize(rows, expected_samples=20, period=0.1):
     successful = [r for r in rows if "error" not in r and
                   np.isfinite(r.get("solve_duration_s", float("nan"))) and
@@ -18,6 +54,7 @@ def summarize(rows, expected_samples=20, period=0.1):
               "cold_records": sum(bool(r.get("cold")) for r in successful),
               "cold_durations_ms": [r["solve_duration_s"] * 1000 for r in successful if r.get("cold")],
               "warm_records": len(warm), "period_s": period}
+    result.update(joint_input_gate(rows, expected_samples))
     if not durations:
         result["latency_gate_passed"] = False
         return result
@@ -74,7 +111,8 @@ def main():
     for path in args.paths:
         rows = read_records(path)
         print(json.dumps({"file": str(path), **summarize(rows, args.expected_samples, args.period)}, ensure_ascii=False))
-    print("Latency gate is computational only. Review cost/constraints, then verify timed live tracking and stability.")
+    print("Latency and joint/input gates are separate. Joint/input limits match task_arm_live.info; "
+          "neither gate validates collision clearance or timed live tracking/stability.")
 
 
 if __name__ == "__main__":

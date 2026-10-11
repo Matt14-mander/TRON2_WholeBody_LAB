@@ -41,8 +41,10 @@ def configurations(source):
     }
 
 
-def observation_from_frame(frame):
+def observation_from_frame(frame, target_mode="recorded"):
     state = frame["state"]
+    if target_mode not in ("recorded", "current_ee"):
+        raise ValueError(f"Unknown target mode: {target_mode}")
     simulation_time = float(frame["control_sim_time"])
     deadline = frame.get("target_deadline_sim_time")
     observation = {
@@ -56,6 +58,12 @@ def observation_from_frame(frame):
         "end_effector_target_quaternion_world": frame["target_quaternion_wxyz"],
         "end_effector_arrival_time": 0.0 if deadline is None else max(0.0, float(deadline) - simulation_time),
     }
+    if target_mode == "current_ee":
+        # Keep measured q/dq unchanged; change only the reference for this
+        # comparison. This remains a frozen-state computational benchmark.
+        observation["end_effector_target_position_world"] = state["end_effector_position_world"]
+        observation["end_effector_target_quaternion_world"] = state["end_effector_quaternion_world"]
+        observation["end_effector_arrival_time"] = 1.0
     for key, value in observation.items():
         if not np.all(np.isfinite(np.asarray(value, dtype=float))):
             raise ValueError(f"Non-finite observation field: {key}")
@@ -70,7 +78,11 @@ def main():
     parser.add_argument("--task", type=Path, default=REPO / "ocs2_ws/src/tron2_ocs2/config/task_arm_live.info")
     parser.add_argument("--diagnostic", type=Path, help="Existing live JSONL; optional for nominal-state benchmark.")
     parser.add_argument("--step", type=int, default=100, help="First control_response with step >= this value.")
+    parser.add_argument("--target-mode", choices=("recorded", "current_ee"), default="recorded",
+                        help="Recorded reference, or measured EE pose with a new 1 s arrival.")
     args = parser.parse_args()
+    if args.target_mode == "current_ee" and not args.diagnostic:
+        parser.error("current_ee requires --diagnostic with a measured EE pose.")
     variants = configurations(args.task.read_text(encoding="utf-8"))
     observation = None
     if args.diagnostic:
@@ -80,7 +92,7 @@ def main():
                     continue
                 frame = json.loads(line)
                 if frame.get("event") == "control_response" and frame.get("step", -1) >= args.step:
-                    observation = observation_from_frame(frame)
+                    observation = observation_from_frame(frame, args.target_mode)
                     break
         if observation is None:
             parser.error(f"No control_response at or after step {args.step}.")
@@ -90,6 +102,17 @@ def main():
         (output / f"{name}.info").write_text(config, encoding="utf-8")
     if observation is not None:
         (output / "observation.json").write_text(json.dumps(observation, indent=2) + "\n", encoding="utf-8")
+        metadata = {"target_mode": args.target_mode, "diagnostic": str(args.diagnostic),
+                    "episode": frame.get("episode"), "step": frame.get("step"),
+                    "simulation_time": observation["time"],
+                    "arrival_s": observation["end_effector_arrival_time"]}
+        measured = frame["state"].get("end_effector_position_world")
+        if measured is not None:
+            metadata["recorded_target_distance_m"] = float(np.linalg.norm(
+                np.asarray(frame["target_position_world"]) - np.asarray(measured)))
+            metadata["benchmark_target_distance_m"] = float(np.linalg.norm(
+                np.asarray(observation["end_effector_target_position_world"]) - np.asarray(measured)))
+        (output / "observation_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     print(f"Prepared {len(variants)} configurations in {output.resolve()}")
     print("Use identical observation.json, sample count and period for every variant.")
 

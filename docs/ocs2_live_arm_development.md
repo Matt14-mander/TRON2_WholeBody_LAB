@@ -179,6 +179,30 @@ MPC_BENCH_OUTPUT="$BOX_OUT" MPC_BENCH_VARIANTS=analytic_ilqr MPC_BENCH_SAMPLES=3
 检查两组 summary 与 term profile：如果 mesh 的 self_collision 调用占主导且盒模型明显下降，
 下一步优化碰撞几何/距离查询；若不是，则继续按实际逐项计时定位其他热点。
 
+2026-10-11 Linux 对照：原网格 ILQR 两次热求解约 7.4–7.8 s，AABB 候选约
+26.7–26.9 ms。碰撞项线程累计计时也大幅下降，确认网格距离查询是主要热点。
+但候选计划仍出现约 0.69 rad 越界，最大速度 5.44 rad/s、加速度 31.03 rad/s²，
+超过当前 5/20 限制。短样本时延通过不能作为下发依据。
+
+summary 独立输出 `joint_input_gate_passed`，检查含冷启动的每次计划的关节位置余量、
+最大速度、最大加速度及固定底盘指令；缺失指标为 null，不表示通过。
+该检查限值对应 `task_arm_live.info`，位置容差为 1e-6 rad；它不验证碰撞间距或实际跟踪。
+为了区分旧世界坐标目标与模型/约束问题，可保持测量 q/dq 不变，改用该帧实测末端姿态
+作为新目标并给出 1 s 到达时间：
+
+```bash
+CHECK_OUT="logs/ocs2_benchmark/current_ee_$(date +%Y%m%d_%H%M%S)"
+MPC_BENCH_OUTPUT="$CHECK_OUT" MPC_BENCH_VARIANTS=analytic_ilqr MPC_BENCH_SAMPLES=20 \
+  MPC_BENCH_COLLISION_PROXY=aabb MPC_BENCH_TARGET_MODE=current_ee \
+  bash scripts/ocs2/run_mpc_benchmarks.sh logs/ocs2_live/hold_single_gpu.jsonl
+cat "$CHECK_OUT/observation_metadata.json"
+cat "$CHECK_OUT/summary.txt"
+```
+
+`observation_metadata.json` 记录原目标/新目标距实测末端的位置距离、选中帧与到达时间。
+默认 `MPC_BENCH_TARGET_MODE=recorded` 保持原对照行为。当前末端目标仍是固定世界坐标目标，
+预测期间需要补偿底盘运动；该冻结观测测试不能证明走动时的实时跟踪。
+
 选定候选配置后还需在 `LIVESTREAM=0` 下重测 TCP 端到端延迟及连续行走，
 核查多个目标的新解实际被执行、状态时间/解年龄、末端误差、接触、倾角及重置。
 当前在线 TCP 仍返回单个提前 20 ms 的命令样本；完整轨迹按当前控制时间采样是后续执行接口工作，

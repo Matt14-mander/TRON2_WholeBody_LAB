@@ -50,6 +50,42 @@ class MpcBenchmarksTest(unittest.TestCase):
         self.assertEqual(result["warm_p95_ms"], 70)
         self.assertEqual(result["cold_durations_ms"], [15000])
         self.assertTrue(result["latency_gate_passed"])
+        self.assertIsNone(result["joint_input_gate_passed"])
+
+    def test_current_ee_reference_preserves_measured_state(self):
+        frame = {"control_sim_time": 2.0, "target_deadline_sim_time": 0.0,
+                 "target_position_world": [9, 8, 7], "target_quaternion_wxyz": [0, 1, 0, 0],
+                 "state": {"base_position_world": [0, 0, 0.74], "base_quaternion_world": [1, 0, 0, 0],
+                           "base_linear_velocity_body": [-0.2, 0, 0], "base_angular_velocity_body": [0, 0, 0],
+                           "arm_position_actual": [0.1] * 6, "arm_velocity_actual": [0.2] * 6,
+                           "end_effector_position_world": [0.2, 0.3, 1.2],
+                           "end_effector_quaternion_world": [1, 0, 0, 0]}}
+        recorded = prepare.observation_from_frame(frame)
+        current = prepare.observation_from_frame(frame, "current_ee")
+        self.assertEqual(current["end_effector_target_position_world"], [0.2, 0.3, 1.2])
+        self.assertEqual(current["end_effector_target_quaternion_world"], [1, 0, 0, 0])
+        self.assertEqual(current["end_effector_arrival_time"], 1.0)
+        self.assertEqual(recorded["end_effector_arrival_time"], 0.0)
+        for key in ("arm_position", "arm_velocity", "base_twist_body", "time"):
+            self.assertEqual(current[key], recorded[key])
+        del frame["state"]["end_effector_quaternion_world"]
+        with self.assertRaises(KeyError):
+            prepare.observation_from_frame(frame, "current_ee")
+
+    def test_fast_unsafe_plan_fails_separate_gate_including_cold(self):
+        safe = {"solve_duration_s": 0.027, "minimum_arm_position_margin": 0.1,
+                "maximum_arm_speed": 4.0, "maximum_arm_acceleration": 18.0,
+                "base_velocity_command": [-0.29, -0.08, 0.0]}
+        rows = [dict(safe, cold=True), dict(safe, cold=False)]
+        self.assertTrue(report.summarize(rows, 2)["joint_input_gate_passed"])
+        for key, value in (("minimum_arm_position_margin", -0.69),
+                           ("maximum_arm_speed", 5.44), ("maximum_arm_acceleration", 31.03),
+                           ("maximum_arm_acceleration", float("nan"))):
+            rows[0] = dict(safe, cold=True, **{key: value})
+            result = report.summarize(rows, 2)
+            self.assertTrue(result["latency_gate_passed"])
+            self.assertFalse(result["joint_input_gate_passed"])
+            self.assertIn(key, result["joint_input_gate_failures"])
 
     def test_failures_missing_and_resets_cannot_pass_gate(self):
         for rows in ([{"cold": True, "solve_duration_s": 0.01}],
