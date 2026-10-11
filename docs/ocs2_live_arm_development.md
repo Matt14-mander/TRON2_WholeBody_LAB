@@ -81,6 +81,63 @@ python scripts/rsl_rl/collect_ocs2_rollouts.py \
 
 ## 性能测量与进入下一阶段的条件
 
+### 第一轮 10 Hz 优化与 Linux 对照测试
+
+目标是连续重规划 10 Hz，热求解 P95 优先争取 50–80 ms，且持续匹配 100 ms 截止。
+`mpcDesiredFrequency=10` 只是 OCS2 配置元数据；TCP 服务由请求驱动，真正提交周期仍由客户端控制，
+它不会自动把 15 s 求解变成 100 ms。控制执行仍沿用 policy 的频率。
+
+本轮增加两项可回退优化：`model.analyticDynamics` 使用同一模型的解析流映射/精确 Jacobian；
+`model.consistentInitializer` 用固定底盘输入、实测臂速度和模型精确积分初始化冷启动及延展窗口，
+避免原来的零底盘输入违反 arm-only 等式约束。在线 SLQ 配置开启这两项；原 AD/默认初始化仍可选择。
+碰撞、关节/输入限制、数值检查、1 s horizon、2 次最大迭代及旧解执行截止均保留。
+
+`[OCS2_PROFILE]` 新增 reference/optimization/extraction 耗时、冷/热标记、迭代次数、代价和等式 SSE。
+`profiling.internal=true` 打印 Initialization/LQ Approximation/Backward Pass/Compute Controller/Search Strategy 等
+OCS2 内部统计。内部计时是**自最近一次 solver reset 起的累计统计**；外层耗时是单次请求。
+尤其检查原来约 15 s 是否主要落在 SLQ 的 Backward Pass。取得日志后，再决定是否采用 iLQR。
+
+同步代码后，在 `tron2_ocs2` 环境重编译并测试解析模型：
+
+```bash
+cd ~/workspace/isaaclab_tron2/TRON2_WholeBody_LAB
+conda activate tron2_ocs2
+export OCS2_CODEGEN_COMPILER="$(command -v x86_64-conda-linux-gnu-gcc)"
+bash ocs2_ws/scripts/build_tron2_ocs2.sh
+source ocs2_ws/install/setup.bash
+colcon test --build-base ocs2_ws/build --install-base ocs2_ws/install --packages-select tron2_ocs2 --event-handlers console_direct+
+colcon test-result --test-result-base ocs2_ws/build/tron2_ocs2 --verbose
+
+# 先少量检查编译、模型和两次热求解；3 次结果不能当作可靠 P95。
+MPC_BENCH_SAMPLES=3 bash scripts/ocs2/run_mpc_benchmarks.sh logs/ocs2_live/hold_single_gpu.jsonl
+
+# 再运行每个配置 20 次，获取初步统计；慢的 SLQ 基线可能耗时数分钟。
+bash scripts/ocs2/run_mpc_benchmarks.sh logs/ocs2_live/hold_single_gpu.jsonl
+```
+
+基准不需要启动 Isaac Lab 或 TCP bridge；参数 JSONL 取既有日志中 step>=100 的第一条实际状态与目标。
+可用 `MPC_BENCH_STEP=0` 选初始状态。不传日志则使用名义状态和当前末端保持目标。
+每个配置复用同一个 solver，冻结同一测量状态，只让 MPC 时间按 0.1 s 递增。
+这是计算/热启动对照，**不是闭环仿真或实时回放**，既不会驱动机器人，也不会证明跟踪成功。
+`solve_duration_s` 不含模型构造及首次代码生成，第一条 MPC 冷启动独立报告。
+
+依次比较六个配置：原 AD+SLQ+默认初始化、解析 SLQ+默认初始化、解析 SLQ+一致初始化、
+解析 iLQR、iLQR+固定 RK4 rollout、再改为单线程。各步只改相应因素，保留其他安全条件。
+iLQR 使用离散 Riccati 递推，是规避连续 Riccati 积分开销的候选方案；RK4 rollout 为 10 ms 固定网格。
+这些生成的 `.info` 仅供对照，尚未选为在线默认配置。
+
+输出在 `logs/ocs2_benchmark/`：`summary.txt`、各配置的 `.jsonl` 和 `.profile.log`。
+汇总包含热 p50/p95/max、deadline miss、缺失/错误、冷启动数、代价、等式 SSE、全部 knot 的最小
+URDF 位置余量、最大臂速度/加速度以及输出固定底盘命令误差。
+负位置余量表示计划越界。速度/加速度应分别对照配置 5 rad/s、20 rad/s²，
+等式误差/代价用于对照解质量；这些统计不能证明自碰撞安全或实际末端跟踪。
+`latency_gate_passed` 只表示该次基准的完整热请求均在 100 ms 内，不能代替在线验收。
+
+选定候选配置后还需在 `LIVESTREAM=0` 下重测 TCP 端到端延迟及连续行走，
+核查多个目标的新解实际被执行、状态时间/解年龄、末端误差、接触、倾角及重置。
+当前在线 TCP 仍返回单个提前 20 ms 的命令样本；完整轨迹按当前控制时间采样是后续执行接口工作，
+不能将该单样本接口视作论文中的完整轨迹执行。
+
 `scripts/ocs2/benchmark_live_bridge.py` 使用符合 `Ocs2MpcObservation` 字段名的测量状态 JSON，
 连续请求同一状态并递增仿真时间；输出冷/热求解耗时及 deadline miss。
 它仅测试接口延迟，不能证明动态跟踪或行走稳定。
@@ -103,7 +160,8 @@ socket timeout 为墙钟通信截止，不能中断服务端正在执行的 MPC�
 4. 每个控制间隔和下一帧响应按时间戳可对齐；自动重置响应被剔除。
 5. 数据契约明确区分优化计划、实际响应和外力命令/测量，随后再扩展外力及训练格式。
 
-本机验证：35 项纯 Python OCS2 单元测试通过；未具备 Isaac Lab/PyTorch 或可用 WSL，
+本机验证：42 项纯 Python OCS2/基准单元测试通过；新增解析 Jacobian 对 AD/有限差分、
+一致初始化对独立 RK4 积分的 C++ 测试，待 Linux 编译执行。未具备 Isaac Lab/PyTorch 或可用 WSL，
 因此 C++ 编译、SLQ 固定输入约束收敛、求解性能和模拟器闭环仍待 Linux 主机验证。
 
 ## 重置选项与 RTX 启动崩溃

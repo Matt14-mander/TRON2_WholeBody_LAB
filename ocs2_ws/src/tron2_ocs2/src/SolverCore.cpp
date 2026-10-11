@@ -8,6 +8,7 @@
 #include <utility>
 #include <chrono>
 #include <iostream>
+#include <limits>
 
 #include <boost/property_tree/info_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -31,6 +32,7 @@
 #include "tron2_ocs2/NominalCost.h"
 #include "tron2_ocs2/TerminalStateRegularizationCost.h"
 #include "tron2_ocs2/Tron2Dynamics.h"
+#include "tron2_ocs2/Tron2Initializer.h"
 #include "tron2_ocs2/Tron2PinocchioMapping.h"
 
 namespace tron2_ocs2 {
@@ -137,6 +139,7 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
   ocs2::loadData::loadEigenMatrix(taskFile, "cost.inputWeights", inputWeights);
 
   referenceManager_ = std::make_shared<ocs2::ReferenceManager>();
+  Eigen::Vector3d initialBaseCommand = Eigen::Vector3d::Zero();
   if (pt.get<bool>("armOnly.activate", false)) {
     Eigen::Vector3d command;
     command << pt.get<double>("armOnly.vx", -0.29),
@@ -145,6 +148,7 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
         std::abs(command(1)) > kPolicyLateralVelocityLimit || std::abs(command(2)) > kPolicyYawRateLimit) {
       throw std::invalid_argument("Invalid armOnly fixed base command.");
     }
+    initialBaseCommand = command;
     ocs2::matrix_t inputJacobian = ocs2::matrix_t::Zero(3, kInputDim);
     inputJacobian.leftCols(3).setIdentity();
     problem_.equalityConstraintPtr->add("fixed_base_command",
@@ -197,14 +201,29 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
                               std::move(constraint), std::move(penalty)));
   }
 
-  problem_.dynamicsPtr = std::make_unique<Tron2Dynamics>(
-      settings_, libraryFolder, settings_.recompileLibraries, settings_.verbose);
+  if (pt.get<bool>("model.analyticDynamics", false)) {
+    problem_.dynamicsPtr = std::make_unique<AnalyticTron2Dynamics>(settings_);
+  } else {
+    problem_.dynamicsPtr = std::make_unique<Tron2Dynamics>(
+        settings_, libraryFolder, settings_.recompileLibraries, settings_.verbose);
+  }
   const auto rolloutSettings = ocs2::rollout::loadSettings(taskFile, "rollout", settings_.verbose);
   rollout_ = std::make_unique<ocs2::TimeTriggeredRollout>(*problem_.dynamicsPtr, rolloutSettings);
-  initializer_ = std::make_unique<ocs2::DefaultInitializer>(kInputDim);
+  if (pt.get<bool>("model.consistentInitializer", false)) {
+    initializer_ = std::make_unique<Tron2Initializer>(settings_, initialBaseCommand);
+  } else {
+    initializer_ = std::make_unique<ocs2::DefaultInitializer>(kInputDim);
+  }
   auto mpcSettings = ocs2::mpc::loadSettings(taskFile, "mpc", settings_.verbose);
   auto ddpSettings = ocs2::ddp::loadSettings(taskFile, "ddp", settings_.verbose);
   horizon_ = mpcSettings.timeHorizon_;
+  coldStart_ = mpcSettings.coldStart_;
+  profileInternal_ = pt.get<bool>("profiling.internal", false);
+  std::clog << "[OCS2_CONFIG] algorithm=" << pt.get<std::string>("ddp.algorithm", "SLQ")
+            << " analytic_dynamics=" << pt.get<bool>("model.analyticDynamics", false)
+            << " consistent_initializer=" << pt.get<bool>("model.consistentInitializer", false)
+            << " threads=" << ddpSettings.nThreads_
+            << " horizon=" << horizon_ << " cold_start=" << coldStart_ << std::endl;
   if (horizon_ + 1e-9 < kWrenchPredictionTimes.back()) {
     throw std::invalid_argument("MPC horizon must be at least 0.8 s for wrench prediction.");
   }
@@ -376,13 +395,55 @@ EndEffectorTarget SolverCore::currentEndEffectorTarget(
 
 ocs2::PrimalSolution SolverCore::runMpc(const Observation& observation,
                                         const EndEffectorTarget& target) {
+  const auto started = std::chrono::steady_clock::now();
+  profile_ = SolveProfile{};
+  profile_.cold = coldStart_ || !havePreviousSolve_ ||
+      observation.time < previousSolveTime_ ||
+      observation.time >= mpc_->getSolverPtr()->getFinalTime();
   const ocs2::vector_t initialState = observationToState(observation);
   referenceManager_->setTargetTrajectories(
       makeTarget(observation.time, initialState, target));
+  const auto prepared = std::chrono::steady_clock::now();
   if (!mpc_->run(observation.time, initialState)) {
     throw std::runtime_error("OCS2 MPC did not produce a new policy.");
   }
-  return mpc_->getSolverPtr()->primalSolution(observation.time + horizon_);
+  const auto optimized = std::chrono::steady_clock::now();
+  auto trajectory = mpc_->getSolverPtr()->primalSolution(observation.time + horizon_);
+  const auto extracted = std::chrono::steady_clock::now();
+  profile_.referenceMs = std::chrono::duration<double, std::milli>(prepared - started).count();
+  profile_.optimizationMs = std::chrono::duration<double, std::milli>(optimized - prepared).count();
+  profile_.extractionMs = std::chrono::duration<double, std::milli>(extracted - optimized).count();
+  const auto& iterationLog = mpc_->getSolverPtr()->getIterationsLog();
+  profile_.iterations = iterationLog.empty() ? 0 : iterationLog.size() - 1;
+  profile_.knots = trajectory.timeTrajectory_.size();
+  profile_.minimumArmPositionMargin = std::numeric_limits<double>::infinity();
+  const auto lower = pinocchioInterface_->getModel().lowerPositionLimit.tail(kArmDof);
+  const auto upper = pinocchioInterface_->getModel().upperPositionLimit.tail(kArmDof);
+  for (const auto& state : trajectory.stateTrajectory_) {
+    requireSize(state, kStateDim, "profile state");
+    const auto q = state.segment(kArmPositionIndex, kArmDof);
+    profile_.minimumArmPositionMargin = std::min(profile_.minimumArmPositionMargin,
+        std::min((q - lower).minCoeff(), (upper - q).minCoeff()));
+    profile_.maximumArmSpeed = std::max(profile_.maximumArmSpeed,
+        state.segment(kArmVelocityIndex, kArmDof).cwiseAbs().maxCoeff());
+  }
+  for (const auto& input : trajectory.inputTrajectory_) {
+    requireSize(input, kInputDim, "profile input");
+    profile_.maximumArmAcceleration = std::max(profile_.maximumArmAcceleration,
+        input.tail(kArmDof).cwiseAbs().maxCoeff());
+  }
+  const auto& performance = mpc_->getSolverPtr()->getPerformanceIndeces();
+  profile_.cost = performance.cost;
+  profile_.equalitySSE = performance.equalityConstraintsSSE;
+  previousSolveTime_ = observation.time;
+  havePreviousSolve_ = true;
+  if (profileInternal_) {
+    // OCS2 timers accumulate since the last reset; they are not per-request timers.
+    std::clog << "[OCS2_DDP_PROFILE] sim_time=" << observation.time
+              << " scope=since_last_solver_reset"
+              << mpc_->getSolverPtr()->getBenchmarkingInfo() << std::endl;
+  }
+  return trajectory;
 }
 
 void SolverCore::validateTrajectory(double initialTime,
@@ -449,10 +510,16 @@ Solution SolverCore::solve(const Observation& observation, const EndEffectorTarg
   validateTrajectory(observation.time, trajectory);
   auto solution = sampleSolution(observation.time, observation.time, trajectory);
   const auto finished = std::chrono::steady_clock::now();
+  profile_.validationSampleMs = std::chrono::duration<double, std::milli>(finished - optimized).count();
   std::clog << "[OCS2_PROFILE] sim_time=" << observation.time
             << " mpc_ms=" << std::chrono::duration<double, std::milli>(optimized - started).count()
             << " validate_sample_wrench_ms=" << std::chrono::duration<double, std::milli>(finished - optimized).count()
-            << " knots=" << trajectory.timeTrajectory_.size() << std::endl;
+            << " knots=" << trajectory.timeTrajectory_.size()
+            << " reference_ms=" << profile_.referenceMs
+            << " optimization_ms=" << profile_.optimizationMs
+            << " extraction_ms=" << profile_.extractionMs
+            << " cold=" << profile_.cold << " iterations=" << profile_.iterations
+            << " cost=" << profile_.cost << " equality_sse=" << profile_.equalitySSE << std::endl;
   return solution;
 }
 
@@ -599,6 +666,9 @@ bool SolverCore::trySolve(const Observation& observation, const EndEffectorTarge
   }
 }
 
-void SolverCore::reset() { mpc_->reset(); }
+void SolverCore::reset() {
+  mpc_->reset();
+  havePreviousSolve_ = false;
+}
 
 }  // namespace tron2_ocs2

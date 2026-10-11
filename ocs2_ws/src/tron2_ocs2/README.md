@@ -127,6 +127,14 @@ experiments. See [online development and validation](../../../../docs/ocs2_live_
 for hot-update targets, aligned diagnostic recording, performance profiling,
 and the conditions for advancing to bulk collection.
 
+The first performance pass keeps SLQ available, adds exact analytic dynamics and
+a model-consistent initializer, and provides `tron2_ocs2_benchmark` for repeated
+cold/warm solves without Isaac Lab or TCP. Run `scripts/ocs2/run_mpc_benchmarks.sh`
+from the repository root after rebuilding to compare AD/analytic SLQ and iLQR
+variants. The live-development guide contains commands and interpretation of
+latency, cost, constraint and internal DDP statistics. Candidate configurations
+require live tracking validation before adoption.
+
 ## Offline trajectory export and replay
 
 The offline exporter initializes the base root height from

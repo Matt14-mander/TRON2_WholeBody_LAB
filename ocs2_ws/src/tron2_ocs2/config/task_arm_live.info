@@ -8,6 +8,8 @@ model
   commandLeadTime    0.02
   recompileLibraries false
   verbose            false
+  analyticDynamics   true
+  consistentInitializer true
 }
 
 ddp
@@ -58,7 +60,7 @@ mpc
   solutionTimeWindow   0.2
   coldStart            false
   debugPrint           false
-  mpcDesiredFrequency  50
+  mpcDesiredFrequency  10
   mrtDesiredFrequency  200
 }
 
@@ -138,5 +140,11 @@ armOnly
   vx -0.29
   vy -0.08
   yawRate 0.0
+}
+
+; Detailed DDP timers are cumulative since the last solver reset.
+profiling
+{
+  internal true
 }
 

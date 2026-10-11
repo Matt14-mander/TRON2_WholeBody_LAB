@@ -17,6 +17,21 @@
 
 namespace tron2_ocs2 {
 
+struct SolveProfile {
+  double referenceMs = 0.0;
+  double optimizationMs = 0.0;
+  double extractionMs = 0.0;
+  double validationSampleMs = 0.0;
+  double cost = 0.0;
+  double equalitySSE = 0.0;
+  double minimumArmPositionMargin = 0.0;
+  double maximumArmSpeed = 0.0;
+  double maximumArmAcceleration = 0.0;
+  std::size_t iterations = 0;
+  std::size_t knots = 0;
+  bool cold = true;
+};
+
 class SolverCore {
  public:
   SolverCore(const std::string& taskFile, const std::string& urdfFile,
@@ -33,6 +48,7 @@ class SolverCore {
 
   const ocs2::OptimalControlProblem& problem() const { return problem_; }
   double initialBaseHeight() const { return settings_.initialBaseHeight; }
+  const SolveProfile& lastSolveProfile() const { return profile_; }
 
  private:
   ocs2::vector_t observationToState(const Observation& observation) const;
@@ -53,11 +69,16 @@ class SolverCore {
   ocs2::OptimalControlProblem problem_;
   std::shared_ptr<ocs2::ReferenceManager> referenceManager_;
   std::unique_ptr<ocs2::TimeTriggeredRollout> rollout_;
-  std::unique_ptr<ocs2::DefaultInitializer> initializer_;
+  std::unique_ptr<ocs2::Initializer> initializer_;
   std::unique_ptr<ocs2::GaussNewtonDDP_MPC> mpc_;
   std::unique_ptr<WrenchEstimator> wrenchEstimator_;
   ocs2::vector_t nominalState_;
   double horizon_ = 1.0;
+  SolveProfile profile_;
+  bool havePreviousSolve_ = false;
+  double previousSolveTime_ = 0.0;
+  bool coldStart_ = false;
+  bool profileInternal_ = false;
 };
 
 }  // namespace tron2_ocs2
