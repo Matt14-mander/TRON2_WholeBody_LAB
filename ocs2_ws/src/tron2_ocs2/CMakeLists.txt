@@ -74,6 +74,8 @@ if(BUILD_TESTING)
   target_link_libraries(test_dynamics ${PROJECT_NAME})
   ament_add_gtest(test_profiled_cost test/test_profiled_cost.cpp)
   target_link_libraries(test_profiled_cost ${PROJECT_NAME})
+  ament_add_gtest(test_arm_state_limits test/test_arm_state_limits.cpp)
+  target_link_libraries(test_arm_state_limits ${PROJECT_NAME})
 endif()
 
 ament_package()

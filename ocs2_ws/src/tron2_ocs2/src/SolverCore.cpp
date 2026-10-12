@@ -30,6 +30,7 @@
 #include <pinocchio/algorithm/kinematics.hpp>
 
 #include "tron2_ocs2/NominalCost.h"
+#include "tron2_ocs2/ArmStateLimitCost.h"
 #include "tron2_ocs2/TerminalStateRegularizationCost.h"
 #include "tron2_ocs2/Tron2Dynamics.h"
 #include "tron2_ocs2/Tron2Initializer.h"
@@ -159,6 +160,12 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
   problem_.costPtr->add("nominal", std::make_unique<NominalCost>(
                                       nominalState_, stateWeights, inputWeights));
   problem_.softConstraintPtr->add("limits", makeBoxConstraints(nominalState_, taskFile));
+  const auto& armModel = pinocchioInterface_->getModel();
+  problem_.finalSoftConstraintPtr->add("arm_limits", makeArmStateLimitCost(
+      armModel.lowerPositionLimit.tail(kArmDof), armModel.upperPositionLimit.tail(kArmDof),
+      pt.get<double>("limits.armVelocity", 5.0), pt.get<double>("limits.boxConstraintMu", 1e-3),
+      pt.get<double>("limits.boxConstraintDelta", 1e-3)));
+  std::clog << "[OCS2_LIMITS] terminal_arm_position_velocity=enabled" << std::endl;
   const double eePositionWeight = pt.get<double>("cost.eePositionWeight", 100.0);
   const double eeOrientationWeight = pt.get<double>("cost.eeOrientationWeight", 20.0);
   const double terminalScale = pt.get<double>("cost.terminalScale", 5.0);

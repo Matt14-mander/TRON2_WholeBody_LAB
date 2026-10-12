@@ -224,6 +224,17 @@ native benchmark 新增 `initial_arm_position_margin`、`worst_arm_position_inde
 summary 分别报告冷/热求解最低位置余量、越界记录数及对应原始指标；旧 JSONL 仍可汇总，
 但没有具体关节信息。这些诊断检查轨迹 knot，不能证明 knot 之间无越界。
 再次编译后仅重跑 mu10/mu100 两个候选即可，物理限位和验收容差保持不变。
+具体诊断发现两组最大越界均为六维 arm state 索引 4，且均在预测终点 t+1 s；
+mu10 热求解该关节约 -1.692 rad，mu100 约 -1.830 rad，下限为 -1.553343 rad。
+代码原先只把 limits 放在运行阶段 `softConstraintPtr`，终点末端 cost 有权重但没有
+对应关节限位项。补充 `finalSoftConstraintPtr/arm_limits`，使用与运行阶段相同的
+URDF 位置边界、速度限值及 mu/delta；终点没有输入，不添加加速度项。
+启动打印 `[OCS2_LIMITS] terminal_arm_position_velocity=enabled`。
+新增 `test_arm_state_limits` 检查全部关节上下边界、速度边界、梯度方向/有限差分及 clone。
+需要在 Linux 编译并执行原生测试，之后保持同目标/几何/8 轮迭代重新比较 mu10/mu100。
+这项修复补齐了目标函数的终点约束，但软惩罚仍不能保证严格可行；不能提前判定通过。
+捕获初始状态另有约 2.2e-5 rad 的位置越界，与 0.1–0.3 rad 的终点越界不同，
+诊断保留原测量值，不静默裁剪，也不改变 1e-6 rad 验收容差。
 默认 `MPC_BENCH_TARGET_MODE=recorded` 保持原对照行为。当前末端目标仍是固定世界坐标目标，
 预测期间需要补偿底盘运动；该冻结观测测试不能证明走动时的实时跟踪。
 
