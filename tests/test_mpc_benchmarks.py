@@ -18,6 +18,22 @@ report = module("summarize_mpc_benchmarks")
 
 
 class MpcBenchmarksTest(unittest.TestCase):
+    def test_collision_gate_requires_all_checks_and_initial_clearance(self):
+        rows = [{"cold": True, "solve_duration_s": 0.03, "collision_checked": True,
+                 "initial_collision_margin": -0.01, "minimum_collision_margin": -0.01},
+                {"cold": False, "solve_duration_s": 0.03, "collision_checked": True,
+                 "initial_collision_margin": 0.02, "minimum_collision_margin": 0.01}]
+        result = report.summarize(rows, 2)
+        self.assertTrue(result["latency_gate_passed"])
+        self.assertFalse(result["collision_gate_passed"])
+        self.assertTrue(result["worst_collision"]["cold"])
+        rows[0]["minimum_collision_margin"] = 0.0
+        rows[0]["initial_collision_margin"] = 0.0
+        self.assertTrue(report.summarize(rows, 2)["collision_gate_passed"])
+        rows[0]["collision_checked"] = False
+        self.assertIsNone(report.summarize(rows, 2)["collision_gate_passed"])
+        self.assertIsNone(report.summarize(rows[1:], 2)["collision_gate_passed"])
+
     def test_variants_preserve_constraints_and_horizon(self):
         source = (REPO / "ocs2_ws/src/tron2_ocs2/config/task_arm_live.info").read_text()
         variants = prepare.configurations(source)

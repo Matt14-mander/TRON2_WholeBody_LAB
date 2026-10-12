@@ -55,6 +55,21 @@ def summarize(rows, expected_samples=20, period=0.1):
               "cold_durations_ms": [r["solve_duration_s"] * 1000 for r in successful if r.get("cold")],
               "warm_records": len(warm), "period_s": period}
     result.update(joint_input_gate(rows, expected_samples))
+    collision_rows = [r for r in successful if r.get("collision_checked") is True and
+                      np.isfinite(r.get("minimum_collision_margin", float("nan")))]
+    # Exact knot distances for configured pairs/geometry, not a whole-robot or
+    # continuous-trajectory certificate. Missing/disabled checks never pass.
+    result["collision_gate_passed"] = (None if len(collision_rows) != expected_samples or
+                                      len(rows) != expected_samples else
+                                      all(r["minimum_collision_margin"] >= 0.0 for r in collision_rows))
+    if collision_rows:
+        worst = min(collision_rows, key=lambda r: r["minimum_collision_margin"])
+        result["minimum_collision_margin"] = worst["minimum_collision_margin"]
+        result["collision_violation_records"] = sum(r["minimum_collision_margin"] < 0 for r in collision_rows)
+        result["worst_collision"] = {key: worst[key] for key in (
+            "sample", "cold", "observation_sim_time", "initial_collision_margin",
+            "minimum_collision_margin", "worst_collision_time", "worst_collision_pair_index") if key in worst}
+        result["collision_validation_ms_max"] = max(r.get("collision_validation_ms", 0.0) for r in collision_rows)
     if not durations:
         result["latency_gate_passed"] = False
         return result
@@ -122,8 +137,8 @@ def main():
     for path in args.paths:
         rows = read_records(path)
         print(json.dumps({"file": str(path), **summarize(rows, args.expected_samples, args.period)}, ensure_ascii=False))
-    print("Latency and joint/input gates are separate. Joint/input limits match task_arm_live.info; "
-          "neither gate validates collision clearance or timed live tracking/stability.")
+    print("Latency, joint/input and collision gates are separate. Joint/input limits match task_arm_live.info; "
+          "collision checks cover configured pairs at trajectory knots only. Timed live tracking/stability remain unverified.")
 
 
 if __name__ == "__main__":

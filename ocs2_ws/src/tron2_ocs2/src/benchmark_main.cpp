@@ -99,6 +99,12 @@ int main(int argc, char** argv) {
                 << ",\"worst_arm_position_value\":" << profile.worstArmPositionValue
                 << ",\"maximum_arm_speed\":" << profile.maximumArmSpeed
                 << ",\"maximum_arm_acceleration\":" << profile.maximumArmAcceleration
+                << ",\"collision_checked\":" << (profile.collisionChecked ? "true" : "false")
+                << ",\"collision_validation_ms\":" << profile.collisionValidationMs
+                << ",\"initial_collision_margin\":" << profile.initialCollisionMargin
+                << ",\"minimum_collision_margin\":" << profile.minimumCollisionMargin
+                << ",\"worst_collision_time\":" << profile.worstCollisionTime
+                << ",\"worst_collision_pair_index\":" << profile.worstCollisionPairIndex
                 << ",\"arm_position\":";
       printVector(solution.armPosition);
       std::cout << ",\"arm_lower_position_limits\":"; printVector(profile.armLowerPositionLimits);

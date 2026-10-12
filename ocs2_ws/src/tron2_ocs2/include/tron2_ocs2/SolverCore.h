@@ -34,6 +34,12 @@ struct SolveProfile {
   ocs2::vector_t armUpperPositionLimits = ocs2::vector_t::Zero(kArmDof);
   double maximumArmSpeed = 0.0;
   double maximumArmAcceleration = 0.0;
+  bool collisionChecked = false;
+  double collisionValidationMs = 0.0;
+  double initialCollisionMargin = 0.0;
+  double minimumCollisionMargin = 0.0;  // Distance minus configured minimum distance.
+  double worstCollisionTime = 0.0;
+  std::size_t worstCollisionPairIndex = 0;
   std::size_t iterations = 0;
   std::size_t knots = 0;
   bool cold = true;
@@ -79,6 +85,7 @@ class SolverCore {
   std::unique_ptr<ocs2::Initializer> initializer_;
   std::unique_ptr<ocs2::GaussNewtonDDP_MPC> mpc_;
   std::unique_ptr<WrenchEstimator> wrenchEstimator_;
+  std::unique_ptr<ocs2::StateConstraint> collisionDiagnosticConstraint_;
   ocs2::vector_t nominalState_;
   double horizon_ = 1.0;
   SolveProfile profile_;

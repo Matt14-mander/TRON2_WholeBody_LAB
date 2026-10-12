@@ -244,6 +244,17 @@ URDF 位置边界、速度限值及 mu/delta；终点没有输入，不添加加
 新增 `analytic_ilqr_8iter_mu100_acc19` 仅把优化内部加速度上限从 20 收紧为 19 rad/s²，
 留出软约束余量；summary 仍按原物理验收上限 20 rad/s² 判断。这两个限值含义不同。
 用同一选定有效帧比较 mu100 与 acc19，其他目标/几何/迭代设置保持一致。
+Linux acc19 在 step=116 的限位内测量帧（余量约 7.84e-6 rad）上首次同时通过
+时延及关节/输入门槛：20 次成功，热求解 P95 25.95 ms、最大 25.97 ms，最大速度
+3.65 rad/s、加速度 19.19 rad/s²。这仍是冻结状态计算对照，不是在线闭环或碰撞验收。
+下一步在 `profiling.internal=true` 且自碰撞开启时，独立 clone 碰撞距离约束，
+求解结束后检查原始初始状态和所有预测 knot（含终点）。不依赖碰撞 penalty 的总 cost。
+记录 `minimum_collision_margin`（距离减去配置最小距离，本配置为 0.04 m）、
+`initial_collision_margin`、最差时刻/对象对索引、`collision_validation_ms`；检查耗时
+计入 native benchmark 的整体 solve_duration_s。不开启诊断/自碰撞时不声明通过。
+summary 增加独立 `collision_gate_passed`，缺失完整有效距离检查为 null。
+这个门槛只检查当前几何和配置碰撞对的离散 knot，不能证明 knot 之间或其他 link 对无碰撞，
+也不能代替实际全身姿态/接触与模型一致性验证。原生改动需在 Linux 编译执行。
 默认 `MPC_BENCH_TARGET_MODE=recorded` 保持原对照行为。当前末端目标仍是固定世界坐标目标，
 预测期间需要补偿底盘运动；该冻结观测测试不能证明走动时的实时跟踪。
 

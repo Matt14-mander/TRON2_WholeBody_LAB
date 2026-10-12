@@ -210,6 +210,9 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
         ocs2::RelaxedBarrierPenalty::Config{
             pt.get<double>("selfCollision.mu", 1e-2),
             pt.get<double>("selfCollision.delta", 1e-3)});
+    if (profileInternal_) {
+      collisionDiagnosticConstraint_.reset(constraint->clone());
+    }
     std::unique_ptr<ocs2::StateCost> collisionCost = std::make_unique<ocs2::StateSoftConstraint>(
         std::move(constraint), std::move(penalty));
     if (profileInternal_) {
@@ -474,6 +477,32 @@ ocs2::PrimalSolution SolverCore::runMpc(const Observation& observation,
     requireSize(input, kInputDim, "profile input");
     profile_.maximumArmAcceleration = std::max(profile_.maximumArmAcceleration,
         input.tail(kArmDof).cwiseAbs().maxCoeff());
+  }
+  if (collisionDiagnosticConstraint_) {
+    const auto validationStarted = std::chrono::steady_clock::now();
+    ocs2::PreComputation preComp;
+    profile_.minimumCollisionMargin = std::numeric_limits<double>::infinity();
+    auto checkCollision = [&](double time, const ocs2::vector_t& state) {
+      const auto margins = collisionDiagnosticConstraint_->getValue(time, state, preComp);
+      if (margins.size() == 0 || !margins.allFinite()) {
+        throw std::runtime_error("Invalid collision diagnostic distances.");
+      }
+      Eigen::Index pair = 0;
+      const double margin = margins.minCoeff(&pair);
+      if (margin < profile_.minimumCollisionMargin) {
+        profile_.minimumCollisionMargin = margin;
+        profile_.worstCollisionTime = time;
+        profile_.worstCollisionPairIndex = pair;
+      }
+      return margin;
+    };
+    profile_.initialCollisionMargin = checkCollision(observation.time, initialState);
+    for (std::size_t knot = 0; knot < trajectory.stateTrajectory_.size(); ++knot) {
+      checkCollision(trajectory.timeTrajectory_[knot], trajectory.stateTrajectory_[knot]);
+    }
+    profile_.collisionChecked = true;
+    profile_.collisionValidationMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - validationStarted).count();
   }
   const auto& performance = mpc_->getSolverPtr()->getPerformanceIndeces();
   profile_.cost = performance.cost;
