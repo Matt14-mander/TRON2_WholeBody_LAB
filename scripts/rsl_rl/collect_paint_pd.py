@@ -57,7 +57,7 @@ from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 from rsl_rl.runner import OnPolicyRunner
 import bipedal_locomotion  # noqa: F401
 from bipedal_locomotion.controllers.paint_intent import ARM_JOINT_NAMES, SCHEMA, InteractionProtocol, IntentHistory, collection_conditions
-from bipedal_locomotion.controllers.paint_payload import create_payload_asset
+from bipedal_locomotion.controllers.paint_payload import create_payload_asset, create_unloaded_robot_asset
 from bipedal_locomotion.controllers.ocs2_reset import configure_nominal_ocs2_reset
 from bipedal_locomotion.controllers.ocs2_rollout_dataset import save_episode_npz
 from bipedal_locomotion.controllers.paint_run_status import PaintRunStatus
@@ -103,13 +103,21 @@ def main():
             actuator.min_delay = actuator.max_delay = 0
     arm_cfg = cfg.scene.robot.actuators["arm_mpc"]
     arm_cfg.stiffness, arm_cfg.damping = args.arm_kp, args.arm_kd
+    run_status.mark("prepare_robot_asset")
     if args.payload_mode == "attached":
         cfg.scene.robot.spawn.usd_path = create_payload_asset(
             cfg.scene.robot.spawn.usd_path, output / "robot_payload.usdc", args.payload_mass,
             args.payload_dimensions, args.payload_offset)
+    else:
+        cfg.scene.robot.spawn.usd_path = create_unloaded_robot_asset(
+            cfg.scene.robot.spawn.usd_path, output / "robot_unloaded.usdc")
     run_status.mark("environment_create")
     print("[BOOT] stage=environment_create_start", flush=True)
-    env = RslRlVecEnvWrapper(gym.make(args.task, cfg=cfg))
+    faulthandler.dump_traceback_later(60, repeat=True)
+    try:
+        env = RslRlVecEnvWrapper(gym.make(args.task, cfg=cfg))
+    finally:
+        faulthandler.cancel_dump_traceback_later()
     print("[BOOT] stage=environment_create_ready", flush=True)
     try:
         run_status.mark("check_payload_and_load_policy")

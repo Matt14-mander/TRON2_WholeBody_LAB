@@ -146,6 +146,26 @@ class PaintIntentTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     @unittest.skipUnless(importlib.util.find_spec("pxr"), "OpenUSD unavailable")
+    def test_unloaded_asset_preserves_robot_physics_and_topology(self):
+        from paint_payload import create_unloaded_robot_asset
+        from pxr import Usd, UsdPhysics
+        source = ROOT / "robot_description/tron2/SFYG_TRON2A/usd/robot.usd"
+
+        def physics(stage):
+            result = {}
+            for prim in stage.Traverse():
+                if prim.HasAPI(UsdPhysics.RigidBodyAPI) or prim.IsA(UsdPhysics.Joint):
+                    result[str(prim.GetPath())] = {attr.GetName(): str(attr.Get()) for attr in prim.GetAttributes()
+                        if attr.GetName().startswith(("physics:", "physx", "xformOp"))}
+            return result
+
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP) as directory:
+            output = create_unloaded_robot_asset(source, Path(directory) / "unloaded.usdc")
+            prepared = Usd.Stage.Open(output)
+            self.assertEqual(physics(Usd.Stage.Open(str(source))), physics(prepared))
+            self.assertFalse(any(p.GetName() == "paint_payload_Link" for p in prepared.Traverse()))
+
+    @unittest.skipUnless(importlib.util.find_spec("pxr"), "OpenUSD unavailable")
     def test_original_usd_payload_attachment(self):
         from paint_payload import create_payload_asset
         from pxr import Usd, UsdGeom, UsdPhysics

@@ -8,18 +8,43 @@ import json
 import numpy as np
 
 
+def _open_flattened_robot(source):
+    from pxr import Usd
+    source = Path(source).resolve()
+    print(f"[ASSET] open_start source={source}", flush=True)
+    stage = Usd.Stage.Open(str(source))
+    if stage is None:
+        raise RuntimeError(f"Cannot open source USD: {source}")
+    print("[ASSET] flatten_start", flush=True)
+    stage = Usd.Stage.Open(stage.Flatten())
+    print("[ASSET] flatten_complete", flush=True)
+    return stage
+
+
+def create_unloaded_robot_asset(source, output):
+    """Use the same flattened composition as payload mode, with no physics edits."""
+    stage = _open_flattened_robot(source)
+    output = Path(output).resolve()
+    if output == Path(source).resolve():
+        raise ValueError("Prepared asset must not overwrite the source robot.")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[ASSET] export_start output={output}", flush=True)
+    if not stage.GetRootLayer().Export(str(output)):
+        raise RuntimeError("Failed to export unloaded robot asset.")
+    print("[ASSET] export_complete payload=none", flush=True)
+    output.with_suffix(".json").write_text(json.dumps({"source": str(Path(source).resolve()), "output": str(output),
+        "payload_mode": "none", "composition": "flattened", "added_mass_kg": 0.0, "added_joints": 0}, indent=2) + "\n", encoding="utf-8")
+    return str(output)
+
+
 def create_payload_asset(source, output, mass, dimensions, offset):
     from pxr import Gf, Usd, UsdGeom, UsdPhysics
     values = np.array([mass, *dimensions, *offset], dtype=float)
     if not np.isfinite(values).all() or mass <= 0 or len(dimensions) != 3 or len(offset) != 3 or np.any(np.array(dimensions) <= 0):
         raise ValueError("Payload requires positive mass/dimensions and a finite three-vector offset.")
-    stage = Usd.Stage.Open(str(Path(source).resolve()))
-    if stage is None:
-        raise RuntimeError(f"Cannot open source USD: {source}")
+    stage = _open_flattened_robot(source)
     if not np.isclose(UsdGeom.GetStageMetersPerUnit(stage), 1.0):
         raise ValueError("Payload dimensions assume a robot USD authored in meters.")
-    # Flatten references into a self-contained composition while resolving asset paths.
-    stage = Usd.Stage.Open(stage.Flatten())
     matches = [p for p in stage.Traverse() if p.GetName() == "gripper_base_Link" and p.HasAPI(UsdPhysics.RigidBodyAPI)]
     if len(matches) != 1:
         raise RuntimeError(f"Expected one rigid gripper_base_Link, found {len(matches)}.")
@@ -61,9 +86,13 @@ def create_payload_asset(source, output, mass, dimensions, offset):
         if p.GetName() in ("gripper_base_Link", "gripper1_Link", "gripper2_Link")
     ])
     output = Path(output).resolve()
+    if output == Path(source).resolve():
+        raise ValueError("Prepared asset must not overwrite the source robot.")
     output.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[ASSET] export_start output={output}", flush=True)
     if not stage.GetRootLayer().Export(str(output)):
         raise RuntimeError("Failed to export payload asset.")
+    print("[ASSET] export_complete payload=attached", flush=True)
     report = {"source": str(Path(source).resolve()), "output": str(output), "payload_body": "paint_payload_Link",
               "attachment": str(attachment.GetPath()), "mass_kg": mass, "dimensions_m": list(dimensions),
               "offset_in_gripper_m": list(offset), "coupling": "fixed_joint"}

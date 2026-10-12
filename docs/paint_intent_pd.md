@@ -152,7 +152,7 @@ cat "$PAINT_DIAG/run_status.json"
 ### 首回合退出时的诊断
 
 如果所有条件都在 2 s 外力开始前触发 tilt_limit，应先验证基础支撑，不扩大全部七条件采集。
-`--payload_mode none --conditions zero` 使用原始 USD，不增加负载，仅记录零外力支撑；
+`--payload_mode none --conditions zero` 使用原始机器人的展平副本，不增加负载，仅记录零外力支撑；
 这些单条件数据不满足训练器的完整配对要求，不能作为正式意图训练组。
 统一设置 `--pose_jitter 0`，依次比较无负载零指令、无负载原项目行走指令、加负载同一行走指令。
 保持 PD、初始姿态、倾角限制和 checkpoint 相同。
@@ -176,6 +176,11 @@ done
 无负载也失败时先检查支撑策略与初始状态；同一指令无负载通过、加负载失败时，再定位负载惯量和接触。
 新增 NPZ 记录实际腿部动作、底座位置/姿态；manifest 记录时长、倾角和关节余量。
 不得提高 max_tilt_deg 或把 rejected 改成 accepted 来消除失败。
+
+无负载/有负载现在都先展平原始 USD 再加载，避免把引用解析路径的变化混入负载对照。
+展平无负载资产保留原机器人的物理属性和关节拓扑；输出 `robot_unloaded.usdc`，不改子模块文件。
+`[ASSET]` 记录打开、展平和导出阶段；环境创建超过 60 秒自动打印堆栈。
+这消除了已识别的加载方式差异，仍需 Linux 验证是否消除启动停顿。
 
 2026-10-12 已修复回合重置报错 `Inplace update to inference tensor outside InferenceMode`：
 仿真步和策略执行使用 `torch.no_grad()`，不再在 inference_mode 中生成需要跨回合原地更新的步态状态。
