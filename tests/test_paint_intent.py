@@ -17,6 +17,19 @@ from paint_run_status import PaintRunStatus
 
 
 class PaintIntentTests(unittest.TestCase):
+    def test_online_error_summary_includes_bias_and_separates_active_axes(self):
+        spec = importlib.util.spec_from_file_location("paint_online_evaluator", ROOT / "scripts/paint/evaluate_intent_rollouts.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        truth = np.array([[0., 0., 0.], [5., 0., 0.], [0., -5., 0.]])
+        prediction = truth + [1., -2., .1]
+        report = module.error_metrics(prediction, truth)
+        np.testing.assert_allclose(report["mae_N_N_Nm"], [1., 2., .1])
+        np.testing.assert_allclose(report["signed_bias_N_N_Nm"], [1., -2., .1])
+        self.assertEqual(report["zero_samples"], 1)
+        self.assertEqual(report["active_samples"], 2)
+        self.assertIsNone(report["per_excited_axis_mae"]["mz"])
+
     def test_support_baselines_do_not_apply_force_without_payload(self):
         self.assertEqual(collection_conditions("none", ["zero"]), ("zero",))
         self.assertEqual(collection_conditions("attached"), CONDITIONS)

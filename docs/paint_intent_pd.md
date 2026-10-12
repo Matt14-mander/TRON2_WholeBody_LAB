@@ -259,6 +259,17 @@ python scripts/paint/analyze_pd_pairs.py "$PAINT_SHADOW" > "$PAINT_SHADOW/analys
 
 ## MuJoCo：训练模型迁移和行走策略接入
 
+2026-10-12 初步结果：Isaac 行走在线观测 21/21 完成，外力回合全时段 MAE 约
+0.066 N/0.065 N/0.0079 Nm；同一模型转到固定底座 MuJoCo 后仍有 21/21 回合完成，
+但 MAE 升至 2.49 N/0.81 N/0.079 Nm。这是估计迁移未通过，不能用 accepted 回合数代替精度验收。
+固定底座同时改变了运动分布；后续应先验证 MuJoCo 行走零外力基线，再讨论模型适配。
+不要覆盖已有 Isaac 模型。
+
+`evaluate_intent_rollouts.py` 汇总全部有效估计，包括 zero 回合、施力前偏置、激励轴误差；
+接受/拒绝回合分别报告，可用于单独的 zero 条件，不要求完整七条件配对：
+
+完整报告保存为 `intent_evaluation.json`，终端仅打印 summary。
+
 先将 Isaac 训练的估计器放到固定底座 MuJoCo 中检查估计误差：
 
 ```bash
@@ -266,6 +277,7 @@ export PAINT_MJ_FIXED="logs/paint/mujoco_fixed_$PAINT_RUN"
 python scripts/paint/run_mujoco.py --model_dir "$PAINT_MODEL" \
   --output_dir "$PAINT_MJ_FIXED" --seed 142
 python scripts/paint/analyze_pd_pairs.py "$PAINT_MJ_FIXED" > "$PAINT_MJ_FIXED/analysis_stdout.txt"
+python scripts/paint/evaluate_intent_rollouts.py "$PAINT_MJ_FIXED"
 ```
 
 导出你给出的行走 checkpoint，再开启自由底座的行走验证：
@@ -278,9 +290,15 @@ LIVESTREAM=0 python scripts/rsl_rl/collect_paint_pd.py \
 export PAINT_MJ_WALK="logs/paint/mujoco_walk_$PAINT_RUN"
 python scripts/paint/run_mujoco.py \
   --model_dir "$PAINT_MODEL" --locomotion_dir "$PAINT_LOCO" \
-  --base_command -0.10 0 0 --output_dir "$PAINT_MJ_WALK" --seed 142
-python scripts/paint/analyze_pd_pairs.py "$PAINT_MJ_WALK" > "$PAINT_MJ_WALK/analysis_stdout.txt"
+  --base_command -0.25 0 0 --output_dir "$PAINT_MJ_WALK" --seed 142 --conditions zero
+cat "$PAINT_MJ_WALK/run_status.json"
+cat "$PAINT_MJ_WALK/manifest.json"
+python scripts/paint/evaluate_intent_rollouts.py "$PAINT_MJ_WALK"
 ```
+
+此处先做 zero 单条件诊断：检查 max_tilt_deg、实际底座平均速度和位移，再检查零力误报。
+只有行走稳定且零力偏置可接受，才去掉 --conditions zero 运行七条件估计对照。
+单条件不要运行 analyze_pd_pairs，它会按设计报告没有完整配对组。
 
 MuJoCo adapter 对齐名义关节顺序、左右 yaw 零点、50 Hz 控制、10 帧腿部历史、
 观测缩放、ELU 导出的 actor/encoder、足式 PD 参数及零 wrench 预测输入。

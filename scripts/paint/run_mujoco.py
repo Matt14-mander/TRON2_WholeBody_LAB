@@ -19,7 +19,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "exts/bipedal_locomotion/bipedal_locomotion/controllers"))
-from paint_intent import ARM_JOINT_NAMES, CONDITIONS, SCHEMA, IntentHistory, InteractionProtocol
+from paint_intent import ARM_JOINT_NAMES, CONDITIONS, SCHEMA, IntentHistory, InteractionProtocol, collection_conditions
 from ocs2_rollout_dataset import save_episode_npz
 
 LEG_NAMES = tuple(f"{part}_{side}_Joint" for side in ("L", "R") for part in ("proximal_pitch", "proximal_roll", "proximal_yaw", "knee", "ankle_pitch"))
@@ -57,6 +57,7 @@ def main():
     parser.add_argument("--locomotion_dir", help="Exported policy.pt + encoder.pt; enables floating-base mode.")
     parser.add_argument("--base_command", nargs=3, type=float, default=(0., 0., 0.))
     parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument("--conditions", nargs="+", choices=CONDITIONS, help="Diagnostic subset, e.g. zero; default runs all seven conditions.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--pose_jitter", type=float, default=0.02)
     parser.add_argument("--payload_mass", type=float, default=0.5)
@@ -72,6 +73,7 @@ def main():
     parser.add_argument("--profile", choices=("trapezoid", "sine"), default="trapezoid")
     parser.add_argument("--viewer", action="store_true")
     args = parser.parse_args()
+    conditions = collection_conditions("attached", args.conditions)
     values = np.array([args.payload_mass, *args.payload_dimensions, *args.payload_offset, args.arm_kp, args.arm_kd, args.pose_jitter, *args.base_command])
     if not np.isfinite(values).all() or args.payload_mass <= 0 or min(args.payload_dimensions) <= 0 or args.arm_kp <= 0 or args.arm_kd < 0 or not 0 <= args.pose_jitter <= .1 or args.repeats < 1:
         raise ValueError("Invalid diagnostic settings.")
@@ -141,7 +143,7 @@ def main():
                 raise ValueError("Expected WholeBody 420-input/3-output encoder and 78-input/10-output actor.")
     contract = {"schema": SCHEMA, "joint_names": list(ARM_JOINT_NAMES), "step_dt": dt, "label_frame": "payload_local", "label_point": "payload_COM",
                 "backend": "mujoco", "runtime": {"mujoco": mujoco.__version__, "torch": torch.__version__, "numpy": np.__version__},
-                "base_mode": "floating_policy" if actor else "fixed", "args": vars(args), "protocol": vars(protocol)}
+                "base_mode": "floating_policy" if actor else "fixed", "conditions": list(conditions), "args": vars(args), "protocol": vars(protocol)}
     (output / "contract.json").write_text(json.dumps(contract, indent=2) + "\n")
     viewer = None
     if args.viewer:
@@ -154,7 +156,7 @@ def main():
             limits = model.jnt_range[arm_ids]
             if np.any(target <= limits[:, 0]) or np.any(target >= limits[:, 1]):
                 raise ValueError("Arm target violates MuJoCo joint limits.")
-            for condition in CONDITIONS:
+            for condition in conditions:
                 mujoco.mj_resetData(model, data)
                 data.qpos[arm_q] = home
                 data.qpos[leg_q] = leg_home
@@ -164,6 +166,7 @@ def main():
                     data.qpos[:3] = [0., 0., .85]
                     data.qpos[3:7] = [1., 0., 0., 0.]
                 mujoco.mj_forward(model, data)
+                initial_base_position = data.xpos[base_id].copy()
                 history = np.zeros((10, 42), dtype=np.float32)
                 last_action = np.zeros(10)
                 leg_target = leg_home.copy()
@@ -212,6 +215,8 @@ def main():
                         mujoco.mj_step(model, data)
                     mujoco.mj_forward(model, data)
                     q, dq = data.qpos[arm_q].copy(), data.qvel[arm_v].copy()
+                    measured_base_velocity = np.zeros(6)
+                    mujoco.mj_objectVelocity(model, data, mujoco.mjtObj.mjOBJ_BODY, base_id, measured_base_velocity, 1)
                     tilt = math.degrees(math.acos(float(np.clip(data.xmat[base_id].reshape(3, 3)[2, 2], -1, 1))))
                     margin = float(np.minimum(q-limits[:, 0], limits[:, 1]-q).min())
                     prediction, prediction_valid = np.zeros(3), False
@@ -224,6 +229,10 @@ def main():
                     frames.append({"time": (index+1)*dt, "interval_start": index*dt, "arm_position": q, "arm_velocity": dq,
                                    "applied_position": target.copy(), "interaction_wrench": wrench[[0, 1, 5]], "response_valid": True,
                                    "tilt_deg": tilt, "joint_margin": margin, "arm_applied_torque": torque_used.copy(),
+                                   "base_position_world": data.xpos[base_id].copy(),
+                                   "base_velocity": measured_base_velocity[3:].copy(),
+                                   "base_angular_velocity": measured_base_velocity[:3].copy(),
+                                   "locomotion_action": last_action.copy(),
                                    "intent_estimate": prediction.copy(), "intent_estimate_valid": prediction_valid})
                     if viewer:
                         if not viewer.is_running():
@@ -241,12 +250,17 @@ def main():
                 save_episode_npz(output / filename, frames, {"schema": SCHEMA, "group_id": f"seed_{args.seed+repeat}", "condition": condition,
                                  "accepted": accepted, "termination_reason": reason, "step_dt": dt})
                 manifest.append({"episode_id": episode_id, "group_id": f"seed_{args.seed+repeat}", "condition": condition,
-                                 "accepted": accepted, "reason": reason, "file": str(filename), "frames": len(frames)})
+                                 "accepted": accepted, "reason": reason, "file": str(filename), "frames": len(frames),
+                                 "duration_s": len(frames)*dt, "max_tilt_deg": max(f["tilt_deg"] for f in frames),
+                                 "min_joint_margin_rad": min(f["joint_margin"] for f in frames),
+                                 "base_displacement_world_m": (data.xpos[base_id]-initial_base_position).tolist(),
+                                 "mean_base_velocity_body_m_s": np.mean([f["base_velocity"] for f in frames], axis=0).tolist()})
                 (output / "manifest.json").write_text(json.dumps(manifest, indent=2))
-                print(f"[MUJOCO] {episode_id} {reason}", flush=True)
+                print(f"[MUJOCO] {episode_id} {reason} max_tilt_deg={manifest[-1]['max_tilt_deg']:.2f}", flush=True)
                 if reason == "interrupted":
                     return
-        (output / "run_status.json").write_text(json.dumps({"complete": True, "accepted": sum(r["accepted"] for r in manifest), "total": len(manifest)}))
+        (output / "run_status.json").write_text(json.dumps({"complete": True, "accepted": sum(r["accepted"] for r in manifest), "total": len(manifest),
+                                                           "expected": args.repeats*len(conditions), "base_mode": "floating_policy" if actor else "fixed"}))
     finally:
         if viewer:
             viewer.close()
