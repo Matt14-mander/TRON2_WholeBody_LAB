@@ -43,6 +43,25 @@ class MpcBenchmarksTest(unittest.TestCase):
             self.assertIn(f"boxConstraintMu {strength}", candidate)
             self.assertEqual(prepare.replace_setting(candidate, "boxConstraintMu", "1e-3"),
                              variants["analytic_ilqr_8iter"])
+        self.assertEqual(prepare.replace_setting(variants["analytic_ilqr_8iter_mu100_acc19"],
+                                                "armAcceleration", "20.0"),
+                         variants["analytic_ilqr_8iter_mu100"])
+
+    def test_selects_actual_in_bound_state_without_clipping(self):
+        lower, upper = prepare.arm_position_bounds()
+        outside = {"event": "control_response", "step": 100,
+                   "state": {"arm_position_actual": [0.0, 0.04, 0.000022, 0.0, 0.0, 0.0]}}
+        inside = {"event": "control_response", "step": 101,
+                  "state": {"arm_position_actual": [0.0, 0.04, -0.001, 0.0, 0.0, 0.0]}}
+        selected, margin, skipped = prepare.select_frame([outside, inside], 100, lower, upper, 1e-6)
+        self.assertIs(selected, inside)
+        self.assertAlmostEqual(margin, 0.001)
+        self.assertEqual(skipped, 1)
+        self.assertEqual(outside["state"]["arm_position_actual"][2], 0.000022)
+        with self.assertRaises(ValueError):
+            prepare.select_frame([outside], 100, lower, upper, 1e-6)
+        selected, margin, skipped = prepare.select_frame([outside, inside], 100, lower, upper)
+        self.assertIs(selected, outside)  # Default retains the original comparison.
 
     def test_ambiguous_setting_refused(self):
         with self.assertRaises(ValueError):
