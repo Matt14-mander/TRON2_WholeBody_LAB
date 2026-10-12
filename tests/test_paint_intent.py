@@ -17,6 +17,45 @@ from paint_run_status import PaintRunStatus
 
 
 class PaintIntentTests(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec("torch"), "PyTorch unavailable")
+    def test_gait_buffer_can_be_reset_after_collection_step(self):
+        import ast
+        import torch
+
+        class GaitBuffer:
+            def __init__(self):
+                self.indices = torch.zeros(1)
+
+            def step(self):
+                self.indices[torch.tensor([], dtype=torch.long)] = 0
+                self.indices = torch.remainder(self.indices + .016, 1.)
+
+            def reset(self):
+                self.indices[:] = 0
+
+        # Reproduce the actual tensor lifetime across a rollout and forced reset.
+        broken = GaitBuffer()
+        with torch.inference_mode():
+            broken.step()
+        with self.assertRaises(RuntimeError):
+            broken.reset()
+        working = GaitBuffer()
+        with torch.no_grad():
+            working.step()
+        working.reset()
+        self.assertFalse(torch.is_inference(working.indices))
+        self.assertEqual(float(working.indices[0]), 0.)
+
+        # Ensure the real collection entrypoint does not regress by wrapping
+        # mutable simulator steps in InferenceMode again. Pure export may use it.
+        tree = ast.parse((ROOT / "scripts/rsl_rl/collect_paint_pd.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.With) and any(isinstance(item.context_expr, ast.Call) and
+               isinstance(item.context_expr.func, ast.Attribute) and item.context_expr.func.attr == "inference_mode" for item in node.items):
+                self.assertFalse(any(isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) and
+                                     isinstance(child.func.value, ast.Name) and child.func.value.id == "env" and child.func.attr == "step"
+                                     for child in ast.walk(node)))
+
     def test_simulator_failure_status_persists_before_cleanup(self):
         from contextlib import redirect_stderr, redirect_stdout
         from io import StringIO

@@ -151,6 +151,11 @@ cat "$PAINT_DIAG/run_status.json"
 
 ### 首回合退出时的诊断
 
+2026-10-12 已修复回合重置报错 `Inplace update to inference tensor outside InferenceMode`：
+仿真步和策略执行使用 `torch.no_grad()`，不再在 inference_mode 中生成需要跨回合原地更新的步态状态。
+这不改变策略权重、PD 参数或物理限制。纯模型导出仍可使用 inference_mode。
+重置报错修复后仍需核查 manifest 中首回合的 termination reason；回合提前结束不等于完成。
+
 采集器在进入环境构造前写入 `run_status.json`，默认 complete=false。
 首 3 步及之后每 50 步记录 `[PAINT_STAGE]`，区分准备观测、推理、physics_step、
 read_response、保存回合。Python 异常在环境清理前打印完整堆栈，并将状态设为 failed。

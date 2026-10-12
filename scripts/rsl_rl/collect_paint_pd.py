@@ -198,7 +198,8 @@ def main():
                 np.random.seed(pair_seed)
                 robot.set_external_force_and_torque(torch.zeros((1, 1, 3), device=raw.device), torch.zeros((1, 1, 3), device=raw.device), body_ids=body_ids)
                 raw.episode_length_buf[:] = raw.max_episode_length
-                obs_dict, _, dones, _ = env.step(template)
+                with torch.no_grad():
+                    obs_dict, _, dones, _ = env.step(template)
                 if not bool(dones[0]):
                     raise RuntimeError("Forced timeout did not reset environment.")
                 frames = []
@@ -217,7 +218,10 @@ def main():
                     trace_step = index < 3 or index % 50 == 0
                     if trace_step:
                         run_status.mark("prepare_policy_inputs", step=index)
-                    with torch.inference_mode():
+                    # Simulator command buffers survive this scope and are
+                    # updated in-place during later resets. InferenceMode
+                    # creates restricted tensors that cannot be mutated there.
+                    with torch.no_grad():
                         obs = obs_dict["policy"]
                         history = obs_dict["obsHistory"].flatten(start_dim=1)
                         commands = obs_dict["commands"]
