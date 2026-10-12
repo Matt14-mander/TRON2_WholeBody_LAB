@@ -36,6 +36,8 @@ def configurations(source):
         "analytic_slq_default_init": analytic_default,
         "analytic_slq": analytic,
         "analytic_ilqr": ilqr,
+        "analytic_ilqr_4iter": replace_setting(ilqr, "maxNumIterations", 4),
+        "analytic_ilqr_8iter": replace_setting(ilqr, "maxNumIterations", 8),
         "analytic_ilqr_rk4": rk4,
         "analytic_ilqr_rk4_1thread": replace_setting(rk4, "nThreads", 1),
     }

@@ -200,6 +200,13 @@ cat "$CHECK_OUT/summary.txt"
 ```
 
 `observation_metadata.json` 记录原目标/新目标距实测末端的位置距离、选中帧与到达时间。
+20 次 current_ee 对照中，热求解 P95 为 17.38 ms，最大 18.89 ms；但全计划
+最低关节余量仍为 -0.917 rad、最大加速度 32.97 rad/s²。目标替换未消除约束问题。
+关节/输入限位是 RelaxedBarrierPenalty 软盒约束，`equality_sse` 只反映等式约束，
+不能据此认定关节限位满足。新增 `analytic_ilqr_4iter` / `analytic_ilqr_8iter`
+仅提高最大迭代数，保持目标、碰撞、限位和惩罚不变，用来测量收敛与耗时的关系。
+这两个候选不加入默认全套测试；显式设置
+`MPC_BENCH_VARIANTS="analytic_ilqr analytic_ilqr_4iter analytic_ilqr_8iter"` 进行对照。
 默认 `MPC_BENCH_TARGET_MODE=recorded` 保持原对照行为。当前末端目标仍是固定世界坐标目标，
 预测期间需要补偿底盘运动；该冻结观测测试不能证明走动时的实时跟踪。
 

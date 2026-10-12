@@ -24,10 +24,15 @@ class MpcBenchmarksTest(unittest.TestCase):
         for name, value in variants.items():
             self.assertIn("activate        true", value)  # self collision
             self.assertIn("timeHorizon          1.0", value)
-            self.assertIn("maxNumIterations              2", value)
+            iterations = 4 if name == "analytic_ilqr_4iter" else 8 if name == "analytic_ilqr_8iter" else 2
+            self.assertIn(f"maxNumIterations              {iterations}", value)
             self.assertIn("checkNumericalStability       true", value)
             self.assertIn("vx -0.29", value)
         self.assertIn("algorithm                     ILQR", variants["analytic_ilqr"])
+        for count in (4, 8):
+            self.assertEqual(
+                prepare.replace_setting(variants[f"analytic_ilqr_{count}iter"], "maxNumIterations", 2),
+                variants["analytic_ilqr"])
         self.assertIn("integratorType           RK4", variants["analytic_ilqr_rk4"])
 
     def test_ambiguous_setting_refused(self):
