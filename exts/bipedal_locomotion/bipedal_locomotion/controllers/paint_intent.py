@@ -13,6 +13,15 @@ CONDITIONS = ("zero", "fx_pos", "fx_neg", "fy_pos", "fy_neg", "mz_pos", "mz_neg"
 SCHEMA = "paint_pd_response_v1"
 
 
+def collection_conditions(payload_mode, selected=None):
+    conditions = tuple(CONDITIONS if selected is None else selected)
+    if payload_mode not in ("attached", "none") or not conditions or len(set(conditions)) != len(conditions) or any(c not in CONDITIONS for c in conditions):
+        raise ValueError("Choose attached/none and unique valid collection conditions.")
+    if payload_mode == "none" and conditions != ("zero",):
+        raise ValueError("No-payload mode is a zero-force support diagnostic; use --conditions zero.")
+    return conditions
+
+
 @dataclass(frozen=True)
 class InteractionProtocol:
     warmup: float = 2.0

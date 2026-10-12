@@ -23,6 +23,8 @@ parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--repeats", type=int, default=3)
 parser.add_argument("--base_command", nargs=3, type=float, default=(0., 0., 0.))
 parser.add_argument("--payload_mass", type=float, default=0.5)
+parser.add_argument("--payload_mode", choices=("attached", "none"), default="attached", help="none: original robot asset, only zero-force support diagnostics.")
+parser.add_argument("--conditions", nargs="+", choices=("zero", "fx_pos", "fx_neg", "fy_pos", "fy_neg", "mz_pos", "mz_neg"), help="Optional diagnostic subset; training still requires complete seven-condition groups.")
 parser.add_argument("--payload_dimensions", nargs=3, type=float, default=(0.20, 0.12, 0.08))
 parser.add_argument("--payload_offset", nargs=3, type=float, default=(0.15, 0., 0.))
 parser.add_argument("--arm_kp", type=float, default=60.)
@@ -54,7 +56,7 @@ from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 from rsl_rl.runner import OnPolicyRunner
 import bipedal_locomotion  # noqa: F401
-from bipedal_locomotion.controllers.paint_intent import ARM_JOINT_NAMES, CONDITIONS, SCHEMA, InteractionProtocol, IntentHistory
+from bipedal_locomotion.controllers.paint_intent import ARM_JOINT_NAMES, SCHEMA, InteractionProtocol, IntentHistory, collection_conditions
 from bipedal_locomotion.controllers.paint_payload import create_payload_asset
 from bipedal_locomotion.controllers.ocs2_reset import configure_nominal_ocs2_reset
 from bipedal_locomotion.controllers.ocs2_rollout_dataset import save_episode_npz
@@ -69,6 +71,7 @@ def row(value):
 
 def main():
     global run_status
+    conditions = collection_conditions(args.payload_mode, args.conditions)
     protocol = InteractionProtocol(args.warmup, args.duration, args.recovery, args.force_amplitude, args.torque_amplitude, args.profile)
     if "WholeBody" not in args.task or "Play" not in args.task:
         raise ValueError("Use a WholeBody PLAY task and its matching locomotion checkpoint.")
@@ -81,7 +84,7 @@ def main():
         raise FileExistsError(f"Use a new empty output directory: {output}")
     output.mkdir(parents=True, exist_ok=True)
     run_status = PaintRunStatus(output)
-    run_status.mark("configure_environment", expected=args.repeats * 7)
+    run_status.mark("configure_environment", expected=args.repeats * len(conditions), payload_mode=args.payload_mode)
     cfg = parse_env_cfg(args.task, device=args.device, num_envs=1)
     cfg.seed = args.seed
     cfg.episode_length_s = protocol.total_time + 2.0
@@ -100,9 +103,10 @@ def main():
             actuator.min_delay = actuator.max_delay = 0
     arm_cfg = cfg.scene.robot.actuators["arm_mpc"]
     arm_cfg.stiffness, arm_cfg.damping = args.arm_kp, args.arm_kd
-    cfg.scene.robot.spawn.usd_path = create_payload_asset(
-        cfg.scene.robot.spawn.usd_path, output / "robot_payload.usdc", args.payload_mass,
-        args.payload_dimensions, args.payload_offset)
+    if args.payload_mode == "attached":
+        cfg.scene.robot.spawn.usd_path = create_payload_asset(
+            cfg.scene.robot.spawn.usd_path, output / "robot_payload.usdc", args.payload_mass,
+            args.payload_dimensions, args.payload_offset)
     run_status.mark("environment_create")
     print("[BOOT] stage=environment_create_start", flush=True)
     env = RslRlVecEnvWrapper(gym.make(args.task, cfg=cfg))
@@ -112,13 +116,14 @@ def main():
         raw = env.unwrapped
         robot = raw.scene["robot"]
         joint_ids, names = robot.find_joints(list(ARM_JOINT_NAMES), preserve_order=True)
-        body_ids, body_names = robot.find_bodies(["paint_payload_Link"], preserve_order=True)
-        if tuple(names) != ARM_JOINT_NAMES or tuple(body_names) != ("paint_payload_Link",):
+        interaction_body = "paint_payload_Link" if args.payload_mode == "attached" else "gripper_base_Link"
+        body_ids, body_names = robot.find_bodies([interaction_body], preserve_order=True)
+        if tuple(names) != ARM_JOINT_NAMES or tuple(body_names) != (interaction_body,):
             raise RuntimeError(f"Payload/arm topology mismatch: joints={names}, bodies={body_names}. Check fixed-joint import.")
         # Verify that the payload became an articulation link, not an unattached visual.
         body_id = body_ids[0]
-        sim_mass = float(robot.root_physx_view.get_masses()[0, body_id])
-        if not math.isclose(sim_mass, args.payload_mass, rel_tol=0.05):
+        sim_mass = float(robot.root_physx_view.get_masses()[0, body_id]) if args.payload_mode == "attached" else None
+        if sim_mass is not None and not math.isclose(sim_mass, args.payload_mass, rel_tol=0.05):
             raise RuntimeError(f"Payload mass mismatch: expected {args.payload_mass}, imported {sim_mass}.")
         agent_cfg = cli_args.parse_rsl_rl_cfg(args.task, args)
         runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
@@ -167,7 +172,8 @@ def main():
         contract = {"schema": SCHEMA, "joint_names": list(names), "feature_row": ["q_rad(6)", "dq_rad_s(6)", "previous_applied_position_rad(6)"],
                     "label": ["Fx_N", "Fy_N", "Mz_Nm"], "label_frame": "payload_local", "label_point": "payload_COM",
                     "label_semantics": "external_on_payload; wrench applied during preceding control interval",
-                    "step_dt": dt, "protocol": vars(protocol), "args": vars(args), "payload_imported_mass_kg": sim_mass,
+                    "step_dt": dt, "protocol": vars(protocol), "args": vars(args), "payload_mode": args.payload_mode,
+                    "conditions": list(conditions), "interaction_body": interaction_body, "payload_imported_mass_kg": sim_mass,
                     "control": "PD position hold; velocity target=0; feedforward=0; locomotion wrench observation=0"}
         (output / "contract.json").write_text(json.dumps(contract, indent=2, default=str) + "\n", encoding="utf-8")
         obs_dict = env.get_observations()
@@ -187,7 +193,7 @@ def main():
             if np.any(target < bounds[:, 0]) or np.any(target > bounds[:, 1]):
                 raise ValueError("Jittered target violates arm bounds; reduce --pose_jitter.")
             target_tensor = torch.tensor(target[None], dtype=torch.float32, device=raw.device)
-            for condition in CONDITIONS:
+            for condition in conditions:
                 if not app.is_running():
                     interrupted = True
                     break
@@ -261,6 +267,9 @@ def main():
                                        "intent_estimate": intent_estimate, "intent_estimate_valid": intent_valid,
                                        "base_velocity": row(robot.data.root_lin_vel_b),
                                        "base_angular_velocity": row(robot.data.root_ang_vel_b),
+                                       "base_position_world": row(robot.data.root_pos_w),
+                                       "base_quaternion_world": row(robot.data.root_quat_w),
+                                       "locomotion_action": row(actions),
                                        "payload_position_world": row(robot.data.body_pos_w[:, body_ids]),
                                        "payload_quaternion_world": row(robot.data.body_quat_w[:, body_ids])})
                         if trace_step:
@@ -272,19 +281,23 @@ def main():
                 accepted = reason == "completed"
                 if frames:
                     relative = Path("episodes" if accepted else "rejected") / f"{episode_id}.npz"
-                    run_status.mark("save_episode", frames=len(frames), termination_reason=reason)
+                    run_status.mark("save_episode", step=len(frames)-1, frames=len(frames), termination_reason=reason,
+                                    final_time_s=len(frames)*dt, final_tilt_deg=frames[-1]["tilt_deg"])
                     save_episode_npz(output / relative, frames, {"schema": SCHEMA, "group_id": f"seed_{pair_seed}", "condition": condition,
                                      "accepted": accepted, "termination_reason": reason, "step_dt": dt})
                     summary.append({"episode_id": episode_id, "group_id": f"seed_{pair_seed}", "condition": condition,
-                                    "accepted": accepted, "reason": reason, "file": str(relative), "frames": len(frames)})
+                                    "accepted": accepted, "reason": reason, "file": str(relative), "frames": len(frames),
+                                    "duration_s": len(frames)*dt, "max_tilt_deg": max(f["tilt_deg"] for f in frames),
+                                    "min_joint_margin_rad": min(f["joint_margin"] for f in frames)})
                     (output / "manifest.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
                     run_status.mark("episode_saved", accepted=sum(r["accepted"] for r in summary), total=len(summary))
+                    print(f"[EPISODE] {episode_id} accepted={accepted} reason={reason} duration_s={len(frames)*dt:.3f} final_tilt_deg={frames[-1]['tilt_deg']:.2f}", flush=True)
                 if interrupted:
                     break
             if interrupted:
                 break
         run_status.mark("collection_finished", complete=not interrupted, state="interrupted" if interrupted else "completed",
-                        accepted=sum(r["accepted"] for r in summary), total=len(summary), expected=args.repeats * 7)
+                        accepted=sum(r["accepted"] for r in summary), total=len(summary), expected=args.repeats * len(conditions))
         print(f"[RESULT] {output}: {sum(r['accepted'] for r in summary)}/{len(summary)} completed episodes", flush=True)
     except BaseException as error:
         run_status.fail(error)

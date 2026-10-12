@@ -151,6 +151,32 @@ cat "$PAINT_DIAG/run_status.json"
 
 ### 首回合退出时的诊断
 
+如果所有条件都在 2 s 外力开始前触发 tilt_limit，应先验证基础支撑，不扩大全部七条件采集。
+`--payload_mode none --conditions zero` 使用原始 USD，不增加负载，仅记录零外力支撑；
+这些单条件数据不满足训练器的完整配对要求，不能作为正式意图训练组。
+统一设置 `--pose_jitter 0`，依次比较无负载零指令、无负载原项目行走指令、加负载同一行走指令。
+保持 PD、初始姿态、倾角限制和 checkpoint 相同。
+
+```bash
+PAINT_BASELINE_STAMP="$(date +%Y%m%d_%H%M%S)"
+for CASE in no_load_zero no_load_walk load_walk; do
+  MODE=none
+  BASE_CMD=(0 0 0)
+  if [ "$CASE" != no_load_zero ]; then BASE_CMD=(-0.29 -0.08 0); fi
+  if [ "$CASE" = load_walk ]; then MODE=attached; fi
+  DIR="logs/paint/${CASE}_$PAINT_BASELINE_STAMP"
+  LIVESTREAM=0 python -u scripts/rsl_rl/collect_paint_pd.py \
+    --checkpoint_path "$PAINT_CHECKPOINT" --output_dir "$DIR" --headless --repeats 1 \
+    --payload_mode "$MODE" --conditions zero --pose_jitter 0 --base_command "${BASE_CMD[@]}"
+  cat "$DIR/run_status.json"
+  cat "$DIR/manifest.json"
+done
+```
+
+无负载也失败时先检查支撑策略与初始状态；同一指令无负载通过、加负载失败时，再定位负载惯量和接触。
+新增 NPZ 记录实际腿部动作、底座位置/姿态；manifest 记录时长、倾角和关节余量。
+不得提高 max_tilt_deg 或把 rejected 改成 accepted 来消除失败。
+
 2026-10-12 已修复回合重置报错 `Inplace update to inference tensor outside InferenceMode`：
 仿真步和策略执行使用 `torch.no_grad()`，不再在 inference_mode 中生成需要跨回合原地更新的步态状态。
 这不改变策略权重、PD 参数或物理限制。纯模型导出仍可使用 inference_mode。

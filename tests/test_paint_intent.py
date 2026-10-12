@@ -12,11 +12,21 @@ ROOT = Path(__file__).resolve().parents[1]
 TEST_TEMP = ROOT / ".test-temp"
 TEST_TEMP.mkdir(exist_ok=True)
 sys.path.insert(0, str(ROOT / "exts/bipedal_locomotion/bipedal_locomotion/controllers"))
-from paint_intent import ARM_JOINT_NAMES, CONDITIONS, SCHEMA, IntentHistory, InteractionProtocol, make_history_samples
+from paint_intent import ARM_JOINT_NAMES, CONDITIONS, SCHEMA, IntentHistory, InteractionProtocol, make_history_samples, collection_conditions
 from paint_run_status import PaintRunStatus
 
 
 class PaintIntentTests(unittest.TestCase):
+    def test_support_baselines_do_not_apply_force_without_payload(self):
+        self.assertEqual(collection_conditions("none", ["zero"]), ("zero",))
+        self.assertEqual(collection_conditions("attached"), CONDITIONS)
+        with self.assertRaises(ValueError):
+            collection_conditions("none")
+        with self.assertRaises(ValueError):
+            collection_conditions("none", ["fx_pos"])
+        with self.assertRaises(ValueError):
+            collection_conditions("attached", ["zero", "zero"])
+
     @unittest.skipUnless(importlib.util.find_spec("torch"), "PyTorch unavailable")
     def test_gait_buffer_can_be_reset_after_collection_step(self):
         import ast
