@@ -14,7 +14,7 @@ if [[ ${#VARIANTS[@]} -eq 0 ]]; then
 fi
 for variant in "${VARIANTS[@]}"; do
   case "$variant" in
-    ad_slq|analytic_slq_default_init|analytic_slq|analytic_ilqr|analytic_ilqr_4iter|analytic_ilqr_8iter|analytic_ilqr_rk4|analytic_ilqr_rk4_1thread) ;;
+    ad_slq|analytic_slq_default_init|analytic_slq|analytic_ilqr|analytic_ilqr_4iter|analytic_ilqr_8iter|analytic_ilqr_8iter_mu10|analytic_ilqr_8iter_mu100|analytic_ilqr_rk4|analytic_ilqr_rk4_1thread) ;;
     *) echo "ERROR: unknown benchmark variant: $variant" >&2; exit 2 ;;
   esac
   if [[ -e "$OUTPUT_DIR/$variant.jsonl" || -e "$OUTPUT_DIR/$variant.profile.log" ]]; then

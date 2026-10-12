@@ -256,6 +256,12 @@ std::unique_ptr<ocs2::StateInputCost> SolverCore::makeBoxConstraints(
   boost::property_tree::read_info(taskFile, pt);
   const double armVelocityLimit = pt.get<double>("limits.armVelocity", 5.0);
   const double armAccelerationLimit = pt.get<double>("limits.armAcceleration", 20.0);
+  const double boxConstraintMu = pt.get<double>("limits.boxConstraintMu", 1e-3);
+  const double boxConstraintDelta = pt.get<double>("limits.boxConstraintDelta", 1e-3);
+  if (!std::isfinite(boxConstraintMu) || boxConstraintMu <= 0.0 ||
+      !std::isfinite(boxConstraintDelta) || boxConstraintDelta <= 0.0) {
+    throw std::invalid_argument("Box constraint mu and delta must be finite and positive.");
+  }
   const double forwardVelocityLimit =
       pt.get<double>("limits.forwardVelocity", kPolicyForwardVelocityLimit);
   const double lateralVelocityLimit =
@@ -275,13 +281,17 @@ std::unique_ptr<ocs2::StateInputCost> SolverCore::makeBoxConstraints(
     throw std::invalid_argument(
         "OCS2 planar command limits exceed the locomotion-policy training range.");
   }
-  auto addBox = [](std::vector<Box>& boxes, std::size_t index, double lower, double upper) {
+  std::cerr << "[OCS2_LIMITS] box_mu=" << boxConstraintMu
+            << " box_delta=" << boxConstraintDelta << " arm_velocity=" << armVelocityLimit
+            << " arm_acceleration=" << armAccelerationLimit << '\n';
+  auto addBox = [boxConstraintMu, boxConstraintDelta](
+                    std::vector<Box>& boxes, std::size_t index, double lower, double upper) {
     Box box;
     box.index = index;
     box.lowerBound = lower;
     box.upperBound = upper;
     box.penaltyPtr = std::make_unique<ocs2::RelaxedBarrierPenalty>(
-        ocs2::RelaxedBarrierPenalty::Config{1e-3, 1e-3});
+        ocs2::RelaxedBarrierPenalty::Config{boxConstraintMu, boxConstraintDelta});
     boxes.emplace_back(std::move(box));
   };
   for (std::size_t i = 0; i < kArmDof; ++i) {

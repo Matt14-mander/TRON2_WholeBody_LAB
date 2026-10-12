@@ -24,7 +24,7 @@ class MpcBenchmarksTest(unittest.TestCase):
         for name, value in variants.items():
             self.assertIn("activate        true", value)  # self collision
             self.assertIn("timeHorizon          1.0", value)
-            iterations = 4 if name == "analytic_ilqr_4iter" else 8 if name == "analytic_ilqr_8iter" else 2
+            iterations = 4 if name == "analytic_ilqr_4iter" else 8 if name.startswith("analytic_ilqr_8iter") else 2
             self.assertIn(f"maxNumIterations              {iterations}", value)
             self.assertIn("checkNumericalStability       true", value)
             self.assertIn("vx -0.29", value)
@@ -34,6 +34,15 @@ class MpcBenchmarksTest(unittest.TestCase):
                 prepare.replace_setting(variants[f"analytic_ilqr_{count}iter"], "maxNumIterations", 2),
                 variants["analytic_ilqr"])
         self.assertIn("integratorType           RK4", variants["analytic_ilqr_rk4"])
+
+    def test_penalty_comparison_changes_only_strength(self):
+        source = (REPO / "ocs2_ws/src/tron2_ocs2/config/task_arm_live.info").read_text()
+        variants = prepare.configurations(source)
+        for suffix, strength in (("mu10", "1e-2"), ("mu100", "1e-1")):
+            candidate = variants[f"analytic_ilqr_8iter_{suffix}"]
+            self.assertIn(f"boxConstraintMu {strength}", candidate)
+            self.assertEqual(prepare.replace_setting(candidate, "boxConstraintMu", "1e-3"),
+                             variants["analytic_ilqr_8iter"])
 
     def test_ambiguous_setting_refused(self):
         with self.assertRaises(ValueError):

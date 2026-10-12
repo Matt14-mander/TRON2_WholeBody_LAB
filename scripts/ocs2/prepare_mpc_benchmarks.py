@@ -28,6 +28,7 @@ def configurations(source):
     analytic = replace_setting(source, "analyticDynamics", "true")
     analytic_default = replace_setting(analytic, "consistentInitializer", "false")
     ilqr = replace_setting(analytic, "algorithm", "ILQR")
+    eight_iterations = replace_setting(ilqr, "maxNumIterations", 8)
     # Compare the algorithm alone first. RK4 rollout then limits the number
     # of trajectory knots to a fixed grid, at a separately measurable change.
     rk4 = replace_setting(ilqr, "integratorType", "RK4")
@@ -37,7 +38,9 @@ def configurations(source):
         "analytic_slq": analytic,
         "analytic_ilqr": ilqr,
         "analytic_ilqr_4iter": replace_setting(ilqr, "maxNumIterations", 4),
-        "analytic_ilqr_8iter": replace_setting(ilqr, "maxNumIterations", 8),
+        "analytic_ilqr_8iter": eight_iterations,
+        "analytic_ilqr_8iter_mu10": replace_setting(eight_iterations, "boxConstraintMu", "1e-2"),
+        "analytic_ilqr_8iter_mu100": replace_setting(eight_iterations, "boxConstraintMu", "1e-1"),
         "analytic_ilqr_rk4": rk4,
         "analytic_ilqr_rk4_1thread": replace_setting(rk4, "nThreads", 1),
     }

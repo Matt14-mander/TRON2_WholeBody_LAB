@@ -71,6 +71,9 @@ limits
   yawRate          1.5
   armVelocity      5.0
   armAcceleration 20.0
+  ; Soft box penalty settings; defaults preserve the previous behavior.
+  boxConstraintMu 1e-3
+  boxConstraintDelta 1e-3
 }
 
 nominalArmPosition

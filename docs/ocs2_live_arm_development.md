@@ -207,6 +207,15 @@ cat "$CHECK_OUT/summary.txt"
 仅提高最大迭代数，保持目标、碰撞、限位和惩罚不变，用来测量收敛与耗时的关系。
 这两个候选不加入默认全套测试；显式设置
 `MPC_BENCH_VARIANTS="analytic_ilqr analytic_ilqr_4iter analytic_ilqr_8iter"` 进行对照。
+Linux 迭代对照中，2/4/8 轮的最大越界约 0.917/0.760/0.522 rad，最大加速度
+32.97/28.45/26.30 rad/s²，均未通过关节/输入验收。接下来固定 8 轮，只比较
+`limits.boxConstraintMu`：原值 1e-3、10 倍 1e-2、100 倍 1e-1。
+`boxConstraintDelta` 保持 1e-3，所有物理限位、碰撞、目标与固定底盘指令不变。
+新增候选 `analytic_ilqr_8iter_mu10` / `analytic_ilqr_8iter_mu100`，不加入默认全套测试。
+SolverCore 从配置读取并检查这两个正有限惩罚参数，缺省保持旧行为，启动时打印
+`[OCS2_LIMITS] box_mu=... box_delta=...`。必须重新编译 tron2_ocs2；旧二进制会忽略新配置。
+提高软惩罚不能保证严格可行，若仍越界需进一步定位具体关节/时刻及几何/模型问题。
+不同 mu 下总 cost 口径改变，不据此横向判断跟踪优劣，应比较实际约束指标和时延。
 默认 `MPC_BENCH_TARGET_MODE=recorded` 保持原对照行为。当前末端目标仍是固定世界坐标目标，
 预测期间需要补偿底盘运动；该冻结观测测试不能证明走动时的实时跟踪。
 
