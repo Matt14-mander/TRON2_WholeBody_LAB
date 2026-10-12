@@ -18,6 +18,21 @@ from paint_run_status import PaintRunStatus
 
 class PaintIntentTests(unittest.TestCase):
     @unittest.skipUnless(importlib.util.find_spec("mujoco") and importlib.util.find_spec("torch"), "MuJoCo/PyTorch unavailable")
+    def test_unloaded_native_pd_holds_arm_for_complete_episode(self):
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP) as temporary:
+            output = Path(temporary) / "rollout"
+            subprocess.run([sys.executable, str(ROOT / "scripts/paint/run_mujoco.py"),
+                            "--payload_mode", "none", "--conditions", "zero", "--seed", "142",
+                            "--output_dir", str(output)], check=True, capture_output=True, text=True)
+            episode = json.loads((output / "manifest.json").read_text())[0]
+            self.assertTrue(episode["accepted"])
+            self.assertEqual(episode["frames"], 300)
+            self.assertGreater(episode["min_joint_margin_rad"], 1.)
+            with np.load(output / episode["file"]) as data:
+                self.assertLess(float(np.abs(data["arm_velocity"]).max()), 5.)
+                self.assertLessEqual(float(np.abs(data["arm_applied_torque"]).max()), 100.)
+
+    @unittest.skipUnless(importlib.util.find_spec("mujoco") and importlib.util.find_spec("torch"), "MuJoCo/PyTorch unavailable")
     def test_mujoco_no_load_preserves_floating_base_and_removes_payload(self):
         import xml.etree.ElementTree as ET
         spec = importlib.util.spec_from_file_location("paint_mujoco", ROOT / "scripts/paint/run_mujoco.py")

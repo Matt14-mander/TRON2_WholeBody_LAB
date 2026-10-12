@@ -26,6 +26,18 @@ LEG_NAMES = tuple(f"{part}_{side}_Joint" for side in ("L", "R") for part in ("pr
 LEG_HOME = np.array([0., 0., -3.14159, 0., 0., 0., 0., 3.14159, 0., 0.])
 
 
+def configure_native_pd(model, motor, kp, kd, effort):
+    """Expose velocity feedback to implicitfast; ctrl is position in radians/metres."""
+    model.actuator_gainprm[motor, :] = 0.
+    model.actuator_gainprm[motor, 0] = kp
+    model.actuator_biastype[motor] = mujoco.mjtBias.mjBIAS_AFFINE
+    model.actuator_biasprm[motor, :] = 0.
+    model.actuator_biasprm[motor, 1:3] = [-kp, -kd]
+    model.actuator_ctrllimited[motor] = False
+    model.actuator_forcelimited[motor] = True
+    model.actuator_forcerange[motor] = [-effort, effort]
+
+
 def payload_xml(source, mass, dimensions, offset, floating, payload_mode="attached"):
     source = Path(source).resolve()
     tree = ET.parse(source)
@@ -70,6 +82,7 @@ def main():
     parser.add_argument("--torque_amplitude", type=float, default=0.5)
     parser.add_argument("--arm_kp", type=float, default=60.)
     parser.add_argument("--arm_kd", type=float, default=6.)
+    parser.add_argument("--arm_pd_backend", choices=("native", "explicit"), default="native", help="Native PD exposes damping to implicitfast; explicit retains the legacy demo dynamics.")
     parser.add_argument("--warmup", type=float, default=2.)
     parser.add_argument("--duration", type=float, default=2.)
     parser.add_argument("--recovery", type=float, default=2.)
@@ -116,6 +129,14 @@ def main():
     motor_by_joint = {int(joint): i for i, joint in enumerate(model.actuator_trnid[:, 0])}
     arm_motor = np.array([motor_by_joint[i] for i in arm_ids])
     leg_motor = np.array([motor_by_joint[i] for i in leg_ids])
+    if args.arm_pd_backend == "native":
+        model.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+        for motor in arm_motor:
+            configure_native_pd(model, motor, args.arm_kp, args.arm_kd, 100.)
+        for name in ("gripper1_Joint", "gripper2_Joint"):
+            joint = model.joint(name).id
+            model.dof_damping[model.jnt_dofadr[joint]] = 0.
+            configure_native_pd(model, motor_by_joint[joint], 100., 5., 10.)
     kp = np.array([53.22 if "yaw" in n or "ankle" in n else 159.67 for n in LEG_NAMES])
     kd = np.array([3.39 if "yaw" in n or "ankle" in n else 10.16 for n in LEG_NAMES])
     effort = np.array([40. if "yaw" in n or "ankle" in n else 140. for n in LEG_NAMES])
@@ -214,12 +235,14 @@ def main():
                         data.xfrc_applied[payload_id, :3] = payload_rotation @ wrench[:3]
                         data.xfrc_applied[payload_id, 3:] = payload_rotation @ wrench[3:]
                         torque_used = np.clip(args.arm_kp * (target-data.qpos[arm_q]) - args.arm_kd*data.qvel[arm_v], -100., 100.)
-                        data.ctrl[arm_motor] = torque_used
+                        data.ctrl[arm_motor] = target if args.arm_pd_backend == "native" else torque_used
                         data.ctrl[leg_motor] = np.clip(kp*(leg_target-data.qpos[leg_q])-kd*data.qvel[leg_v], -effort, effort)
                         for name, position in (("gripper1_Joint", .05), ("gripper2_Joint", -.05)):
                             joint = model.joint(name).id
-                            data.ctrl[motor_by_joint[joint]] = np.clip(100*(position-data.qpos[model.jnt_qposadr[joint]])-5*data.qvel[model.jnt_dofadr[joint]], -10, 10)
+                            data.ctrl[motor_by_joint[joint]] = position if args.arm_pd_backend == "native" else np.clip(100*(position-data.qpos[model.jnt_qposadr[joint]])-5*data.qvel[model.jnt_dofadr[joint]], -10, 10)
                         mujoco.mj_step(model, data)
+                        if args.arm_pd_backend == "native":
+                            torque_used = data.actuator_force[arm_motor].copy()
                     mujoco.mj_forward(model, data)
                     q, dq = data.qpos[arm_q].copy(), data.qvel[arm_v].copy()
                     measured_base_velocity = np.zeros(6)
@@ -259,10 +282,15 @@ def main():
                 filename = Path("episodes" if accepted else "rejected") / (episode_id + ".npz")
                 save_episode_npz(output / filename, frames, {"schema": SCHEMA, "group_id": f"seed_{args.seed+repeat}", "condition": condition,
                                  "accepted": accepted, "termination_reason": reason, "step_dt": dt})
+                joint_margins = np.minimum(q-limits[:, 0], limits[:, 1]-q)
+                worst_joint = int(np.argmin(joint_margins))
                 manifest.append({"episode_id": episode_id, "group_id": f"seed_{args.seed+repeat}", "condition": condition,
                                  "accepted": accepted, "reason": reason, "file": str(filename), "frames": len(frames),
                                  "duration_s": len(frames)*dt, "max_tilt_deg": max(f["tilt_deg"] for f in frames),
                                  "min_joint_margin_rad": min(f["joint_margin"] for f in frames),
+                                 "final_worst_arm_joint": ARM_JOINT_NAMES[worst_joint],
+                                 "final_arm_position_rad": q.tolist(), "final_arm_velocity_rad_s": dq.tolist(),
+                                 "final_arm_joint_margins_rad": joint_margins.tolist(),
                                  "base_displacement_world_m": (data.xpos[base_id]-initial_base_position).tolist(),
                                  "mean_base_velocity_body_m_s": np.mean([f["base_velocity"] for f in frames], axis=0).tolist()})
                 (output / "manifest.json").write_text(json.dumps(manifest, indent=2))

@@ -311,6 +311,12 @@ cat "$PAINT_MJ_NOLOAD/manifest.json"
 不添加负载质量或碰撞体。估计器省略后仍摔倒，说明该失败无需估计器即可发生；
 无负载通过而带负载失败，才进一步检查负载和机械臂对行走的影响。
 不要提高倾角阈值来把失败轨迹改为 accepted。
+无负载测试曾触发腕部越限：固定底座也能复现，说明外部显式 PD 在低惯量腕部存在
+数值不稳定。现在默认 `--arm_pd_backend native`，机械臂/夹爪使用原生位置反馈和
+速度反馈，配合 implicitfast 积分，保持 kp/kd、力矩上限和关节限位。
+腿部仍使用原来的外部 PD。`--arm_pd_backend explicit` 可重现旧运行方式。
+这会改变机械臂响应，旧 fixed_base_demo 模型若要重现原指标必须选 explicit；
+native 方式的估计误差需要重新测量，不能沿用旧指标。每次运行的 backend 存在 contract.args。
 MuJoCo NPZ 同时保存 policy_input（78）、policy_history（420）、leg_position、
 leg_velocity、leg_applied_position，供后续与 Isaac 策略输入和动作逐项比较。
 
