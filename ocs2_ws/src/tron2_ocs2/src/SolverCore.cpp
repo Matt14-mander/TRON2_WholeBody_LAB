@@ -200,25 +200,37 @@ SolverCore::SolverCore(const std::string& taskFile, const std::string& urdfFile,
     ocs2::PinocchioGeometryInterface geometry(*pinocchioInterface_, collisionPairs);
     std::clog << "[OCS2_COLLISION_MODEL] link_pairs=" << collisionPairs.size()
               << " object_pairs=" << geometry.getNumCollisionPairs() << std::endl;
+    const auto& geometryModel = geometry.getGeometryModel();
+    for (std::size_t i = 0; i < geometryModel.collisionPairs.size(); ++i) {
+      const auto& pair = geometryModel.collisionPairs[i];
+      std::clog << "[OCS2_COLLISION_PAIR] index=" << i
+                << " first=" << geometryModel.geometryObjects[pair.first].name
+                << " second=" << geometryModel.geometryObjects[pair.second].name << std::endl;
+    }
+    collisionMinimumDistance_ = pt.get<double>("selfCollision.minimumDistance", 0.04);
+    if (!std::isfinite(collisionMinimumDistance_) || collisionMinimumDistance_ <= 0.0) {
+      throw std::invalid_argument("Self collision minimum distance must be finite and positive.");
+    }
     Tron2PinocchioMappingD mapping(settings_);
     auto constraint = std::make_unique<ocs2::SelfCollisionConstraintCppAd>(
         *pinocchioInterface_, mapping, std::move(geometry),
-        pt.get<double>("selfCollision.minimumDistance", 0.04),
+        collisionMinimumDistance_,
         "tron2_self_collision", libraryFolder, settings_.recompileLibraries,
         settings_.verbose);
     auto penalty = std::make_unique<ocs2::RelaxedBarrierPenalty>(
         ocs2::RelaxedBarrierPenalty::Config{
             pt.get<double>("selfCollision.mu", 1e-2),
             pt.get<double>("selfCollision.delta", 1e-3)});
-    if (profileInternal_) {
-      collisionDiagnosticConstraint_.reset(constraint->clone());
-    }
+    collisionDiagnosticConstraint_.reset(constraint->clone());
     std::unique_ptr<ocs2::StateCost> collisionCost = std::make_unique<ocs2::StateSoftConstraint>(
         std::move(constraint), std::move(penalty));
     if (profileInternal_) {
       collisionCost = std::make_unique<ProfiledStateCost>(std::move(collisionCost), collisionTimings_);
     }
+    problem_.finalSoftConstraintPtr->add("self_collision",
+        std::unique_ptr<ocs2::StateCost>(collisionCost->clone()));
     problem_.stateSoftConstraintPtr->add("self_collision", std::move(collisionCost));
+    std::clog << "[OCS2_COLLISION_MODEL] terminal_collision=enabled" << std::endl;
   }
 
   if (pt.get<bool>("model.analyticDynamics", false)) {
@@ -422,6 +434,19 @@ EndEffectorTarget SolverCore::currentEndEffectorTarget(
   return target;
 }
 
+ocs2::vector_t SolverCore::collisionMargins(const Observation& observation) const {
+  if (!collisionDiagnosticConstraint_) {
+    throw std::runtime_error("Collision inspection requires selfCollision.activate=true.");
+  }
+  ocs2::PreComputation preComp;
+  const auto margins = collisionDiagnosticConstraint_->getValue(
+      observation.time, observationToState(observation), preComp);
+  if (margins.size() == 0 || !margins.allFinite()) {
+    throw std::runtime_error("Invalid collision inspection distances.");
+  }
+  return margins;
+}
+
 ocs2::PrimalSolution SolverCore::runMpc(const Observation& observation,
                                         const EndEffectorTarget& target) {
   const auto started = std::chrono::steady_clock::now();
@@ -478,7 +503,7 @@ ocs2::PrimalSolution SolverCore::runMpc(const Observation& observation,
     profile_.maximumArmAcceleration = std::max(profile_.maximumArmAcceleration,
         input.tail(kArmDof).cwiseAbs().maxCoeff());
   }
-  if (collisionDiagnosticConstraint_) {
+  if (profileInternal_ && collisionDiagnosticConstraint_) {
     const auto validationStarted = std::chrono::steady_clock::now();
     ocs2::PreComputation preComp;
     profile_.minimumCollisionMargin = std::numeric_limits<double>::infinity();

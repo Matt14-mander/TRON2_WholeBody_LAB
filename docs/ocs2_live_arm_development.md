@@ -255,6 +255,15 @@ Linux acc19 在 step=116 的限位内测量帧（余量约 7.84e-6 rad）上首�
 summary 增加独立 `collision_gate_passed`，缺失完整有效距离检查为 null。
 这个门槛只检查当前几何和配置碰撞对的离散 knot，不能证明 knot 之间或其他 link 对无碰撞，
 也不能代替实际全身姿态/接触与模型一致性验证。原生改动需在 Linux 编译执行。
+20 次碰撞诊断中，初始 AABB 距离约 1.61 cm、最差预测距离约 1.05 cm，均不足
+配置的 4 cm；正距离不足安全间距不能据此宣称实体相撞。终点碰撞项原先也缺失，
+现补上与运行阶段相同的自碰撞软约束。初始不满足条件无法靠优化终点修复。
+新入口 `TRON2_OCS2_COLLISION_ONLY=1` 对输入状态只计算原始碰撞距离，不运行 MPC。
+`probe_collision_geometry.sh BENCH_RESULT_DIR` 用相同 observation/config 比较原网格与
+该结果目录已有的 AABB，独立 codegen 和日志，不覆盖原结果。
+启动输出 `[OCS2_COLLISION_PAIR] index=... first=... second=...`，可将对象对索引映射
+到几何名称。探测 JSON 提供每对 margin、最差对象对及最小距离；先查原网格与盒模型
+是否都不满足间距，再判断需处理初始姿态还是改进保守碰撞几何。不能只降低安全距离让 gate 通过。
 默认 `MPC_BENCH_TARGET_MODE=recorded` 保持原对照行为。当前末端目标仍是固定世界坐标目标，
 预测期间需要补偿底盘运动；该冻结观测测试不能证明走动时的实时跟踪。
 

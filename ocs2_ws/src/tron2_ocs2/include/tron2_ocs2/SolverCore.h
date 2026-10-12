@@ -50,6 +50,8 @@ class SolverCore {
   SolverCore(const std::string& taskFile, const std::string& urdfFile,
              const std::string& libraryFolder);
   EndEffectorTarget currentEndEffectorTarget(const Observation& observation) const;
+  ocs2::vector_t collisionMargins(const Observation& observation) const;
+  double collisionMinimumDistance() const { return collisionMinimumDistance_; }
   Solution solve(const Observation& observation, const EndEffectorTarget& target);
   std::vector<Solution> solveTrajectory(const Observation& observation,
                                         const EndEffectorTarget& target,
@@ -86,6 +88,7 @@ class SolverCore {
   std::unique_ptr<ocs2::GaussNewtonDDP_MPC> mpc_;
   std::unique_ptr<WrenchEstimator> wrenchEstimator_;
   std::unique_ptr<ocs2::StateConstraint> collisionDiagnosticConstraint_;
+  double collisionMinimumDistance_ = 0.04;
   ocs2::vector_t nominalState_;
   double horizon_ = 1.0;
   SolveProfile profile_;

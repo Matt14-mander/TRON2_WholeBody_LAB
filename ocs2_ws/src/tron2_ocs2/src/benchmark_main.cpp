@@ -2,6 +2,8 @@
 // No Isaac, socket, robot actuation or simulator clock is involved.
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <string>
 #include <iomanip>
 #include <iostream>
 #include <stdexcept>
@@ -67,6 +69,27 @@ int main(int argc, char** argv) {
       readVector(tree, "end_effector_target_quaternion_world", quaternion);
       target.orientationWorld = Eigen::Quaterniond(quaternion(0), quaternion(1), quaternion(2), quaternion(3));
       target.arrivalTime = tree.get<double>("end_effector_arrival_time", 0.0);
+    }
+    const char* collisionOnly = std::getenv("TRON2_OCS2_COLLISION_ONLY");
+    if (collisionOnly && std::string(collisionOnly) == "1") {
+      // Inspect one measured state with either mesh or proxy geometry. No MPC
+      // optimization is run, so mesh comparison does not repeat slow solves.
+      const auto started = std::chrono::steady_clock::now();
+      const auto margins = solver.collisionMargins(observation);
+      Eigen::Index pair = 0;
+      const double minimumMargin = margins.minCoeff(&pair);
+      std::cout << std::setprecision(17)
+                << "{\"event\":\"collision_inspection\",\"observation_sim_time\":" << observation.time
+                << ",\"required_distance_m\":" << solver.collisionMinimumDistance()
+                << ",\"minimum_collision_margin\":" << minimumMargin
+                << ",\"minimum_distance_m\":" << minimumMargin + solver.collisionMinimumDistance()
+                << ",\"worst_collision_pair_index\":" << pair
+                << ",\"inspection_ms\":" << std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - started).count()
+                << ",\"collision_margins\":";
+      printVector(margins);
+      std::cout << "}" << std::endl;
+      return 0;
     }
     const double initialTime = observation.time;
     // Preserve one solver instance: the first request is cold, subsequent ones
