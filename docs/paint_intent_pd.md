@@ -29,21 +29,38 @@ Isaac 入口在输出目录生成独立 `robot_payload.usdc`；MuJoCo 入口生�
 
 ## Linux 同步
 
+本次使用本地 Git bundle，不推送 GitHub。包包含本分支的 Git 历史、代码和初步模型；
+不包含 logs 下的仿真数据、Conda 环境或 robot_description 子模块实体文件。
+本机交付包路径为 `logs/paint/sync/paint-intent-pd.bundle`。
+
+先在 **Windows PowerShell** 上传（若服务器名称不能解析，将目标替换成实际 IP）：
+
+```powershell
+Set-Location 'E:\Robot\Sustech-多人形协作\TRON2_WholeBody_LAB'
+scp '.\logs\paint\sync\paint-intent-pd.bundle' matt14@server-Super-Server:~/paint-intent-pd.bundle
+```
+
 先确认 Linux 工作区干净。若有未提交代码，先自行保存，不要用 reset 覆盖。
 
 ```bash
 cd ~/workspace/isaaclab_tron2/TRON2_WholeBody_LAB
 git status --short
-git fetch origin
+git bundle verify "$HOME/paint-intent-pd.bundle"
+git fetch "$HOME/paint-intent-pd.bundle" \
+  refs/heads/codex/paint-intent-pd:refs/remotes/paint-bundle/paint-intent-pd
 if git show-ref --verify --quiet refs/heads/codex/paint-intent-pd; then
   git switch codex/paint-intent-pd
 else
-  git switch --track -c codex/paint-intent-pd origin/codex/paint-intent-pd
+  git switch -c codex/paint-intent-pd refs/remotes/paint-bundle/paint-intent-pd
 fi
-git pull --ff-only origin codex/paint-intent-pd
+git merge --ff-only refs/remotes/paint-bundle/paint-intent-pd
 git submodule update --init --recursive robot_description
 git branch --show-current
+git log -1 --oneline
 ```
+
+导入、合并时若有本地不同提交，ff-only 会停止；保留现有代码再检查差异。
+如果 robot_description 已完整且对应提交一致，子模块命令无需额外下载。
 
 激活你原来能运行 WholeBody PLAY 的 Isaac Lab 环境；当前未提供该环境名，因此交互输入。
 这里不是 OCS2 的 Conda 环境。
