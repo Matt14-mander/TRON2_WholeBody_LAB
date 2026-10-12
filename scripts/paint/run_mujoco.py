@@ -26,7 +26,7 @@ LEG_NAMES = tuple(f"{part}_{side}_Joint" for side in ("L", "R") for part in ("pr
 LEG_HOME = np.array([0., 0., -3.14159, 0., 0., 0., 0., 3.14159, 0., 0.])
 
 
-def payload_xml(source, mass, dimensions, offset, floating):
+def payload_xml(source, mass, dimensions, offset, floating, payload_mode="attached"):
     source = Path(source).resolve()
     tree = ET.parse(source)
     root = tree.getroot()
@@ -41,6 +41,8 @@ def payload_xml(source, mass, dimensions, offset, floating):
     attachment = root.find(".//body[@name='gripper_base_Link']")
     if attachment is None:
         raise ValueError("No gripper_base_Link in MJCF.")
+    if payload_mode == "none":
+        return ET.tostring(root, encoding="unicode")
     body = ET.SubElement(attachment, "body", name="paint_payload_Link", pos=" ".join(map(str, offset)))
     x, y, z = dimensions
     inertia = (mass*(y*y+z*z)/12, mass*(x*x+z*z)/12, mass*(x*x+y*y)/12)
@@ -60,6 +62,7 @@ def main():
     parser.add_argument("--conditions", nargs="+", choices=CONDITIONS, help="Diagnostic subset, e.g. zero; default runs all seven conditions.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--pose_jitter", type=float, default=0.02)
+    parser.add_argument("--payload_mode", choices=("attached", "none"), default="attached", help="Use none with --conditions zero to isolate locomotion transfer.")
     parser.add_argument("--payload_mass", type=float, default=0.5)
     parser.add_argument("--payload_dimensions", nargs=3, type=float, default=(0.20, 0.12, 0.08))
     parser.add_argument("--payload_offset", nargs=3, type=float, default=(0.15, 0., 0.))
@@ -73,7 +76,7 @@ def main():
     parser.add_argument("--profile", choices=("trapezoid", "sine"), default="trapezoid")
     parser.add_argument("--viewer", action="store_true")
     args = parser.parse_args()
-    conditions = collection_conditions("attached", args.conditions)
+    conditions = collection_conditions(args.payload_mode, args.conditions)
     values = np.array([args.payload_mass, *args.payload_dimensions, *args.payload_offset, args.arm_kp, args.arm_kd, args.pose_jitter, *args.base_command])
     if not np.isfinite(values).all() or args.payload_mass <= 0 or min(args.payload_dimensions) <= 0 or args.arm_kp <= 0 or args.arm_kd < 0 or not 0 <= args.pose_jitter <= .1 or args.repeats < 1:
         raise ValueError("Invalid diagnostic settings.")
@@ -84,7 +87,7 @@ def main():
     if output.exists() and any(output.iterdir()):
         raise FileExistsError("Use a fresh output directory.")
     output.mkdir(parents=True, exist_ok=True)
-    xml = payload_xml(args.xml, args.payload_mass, args.payload_dimensions, args.payload_offset, bool(args.locomotion_dir))
+    xml = payload_xml(args.xml, args.payload_mass, args.payload_dimensions, args.payload_offset, bool(args.locomotion_dir), args.payload_mode)
     (output / "robot_payload.xml").write_text(xml, encoding="utf-8")
     # Read mesh bytes with Python to support Windows workspaces with Unicode paths.
     compile_root = ET.fromstring(xml)
@@ -109,7 +112,7 @@ def main():
     model.dof_damping[arm_v] = 0.  # explicit PD derivative term, not double damping
     model.dof_damping[leg_v] = 0.
     base_id = model.body("base_Link").id
-    payload_id = model.body("paint_payload_Link").id
+    payload_id = model.body("paint_payload_Link" if args.payload_mode == "attached" else "gripper_base_Link").id
     motor_by_joint = {int(joint): i for i, joint in enumerate(model.actuator_trnid[:, 0])}
     arm_motor = np.array([motor_by_joint[i] for i in arm_ids])
     leg_motor = np.array([motor_by_joint[i] for i in leg_ids])
@@ -143,7 +146,9 @@ def main():
                 raise ValueError("Expected WholeBody 420-input/3-output encoder and 78-input/10-output actor.")
     contract = {"schema": SCHEMA, "joint_names": list(ARM_JOINT_NAMES), "step_dt": dt, "label_frame": "payload_local", "label_point": "payload_COM",
                 "backend": "mujoco", "runtime": {"mujoco": mujoco.__version__, "torch": torch.__version__, "numpy": np.__version__},
-                "base_mode": "floating_policy" if actor else "fixed", "conditions": list(conditions), "args": vars(args), "protocol": vars(protocol)}
+                "base_mode": "floating_policy" if actor else "fixed", "payload_mode": args.payload_mode,
+                "interaction_body": "paint_payload_Link" if args.payload_mode == "attached" else "gripper_base_Link",
+                "conditions": list(conditions), "args": vars(args), "protocol": vars(protocol)}
     (output / "contract.json").write_text(json.dumps(contract, indent=2) + "\n")
     viewer = None
     if args.viewer:
@@ -168,6 +173,7 @@ def main():
                 mujoco.mj_forward(model, data)
                 initial_base_position = data.xpos[base_id].copy()
                 history = np.zeros((10, 42), dtype=np.float32)
+                policy_input = np.zeros(78, dtype=np.float32)
                 last_action = np.zeros(10)
                 leg_target = leg_home.copy()
                 if intent_history:
@@ -194,6 +200,7 @@ def main():
                         with torch.inference_mode():
                             latent = encoder(torch.from_numpy(history.reshape(1, -1)))
                             actor_input = torch.cat([latent, torch.from_numpy(np.concatenate([obs, np.zeros(30), args.base_command]).astype(np.float32)[None])], dim=1)
+                            policy_input = actor_input.numpy()[0].copy()
                             last_action = actor(actor_input).numpy()[0]
                         if not np.isfinite(last_action).all():
                             raise RuntimeError("Nonfinite locomotion action.")
@@ -233,6 +240,9 @@ def main():
                                    "base_velocity": measured_base_velocity[3:].copy(),
                                    "base_angular_velocity": measured_base_velocity[:3].copy(),
                                    "locomotion_action": last_action.copy(),
+                                   "leg_position": data.qpos[leg_q].copy(), "leg_velocity": data.qvel[leg_v].copy(),
+                                   "leg_applied_position": leg_target.copy(), "policy_input": policy_input.copy(),
+                                   "policy_history": history.reshape(-1).copy(),
                                    "intent_estimate": prediction.copy(), "intent_estimate_valid": prediction_valid})
                     if viewer:
                         if not viewer.is_running():

@@ -297,6 +297,23 @@ python scripts/paint/evaluate_intent_rollouts.py "$PAINT_MJ_WALK"
 ```
 
 此处先做 zero 单条件诊断：检查 max_tilt_deg、实际底座平均速度和位移，再检查零力误报。
+如果带负载的零外力行走触发 tilt_limit，先运行无负载的行走对照（省略估计器）：
+
+```bash
+PAINT_MJ_NOLOAD="logs/paint/mujoco_no_load_$(date +%Y%m%d_%H%M%S)"
+paint327 scripts/paint/run_mujoco.py \
+  --locomotion_dir "$PAINT_LOCO" --payload_mode none --conditions zero \
+  --base_command -0.25 0 0 --seed 142 --repeats 1 --output_dir "$PAINT_MJ_NOLOAD"
+cat "$PAINT_MJ_NOLOAD/manifest.json"
+```
+
+`paint327` 是前文指向 MuJoCo 3.2.7 的环境函数。无负载模式只允许 zero 条件，
+不添加负载质量或碰撞体。估计器省略后仍摔倒，说明该失败无需估计器即可发生；
+无负载通过而带负载失败，才进一步检查负载和机械臂对行走的影响。
+不要提高倾角阈值来把失败轨迹改为 accepted。
+MuJoCo NPZ 同时保存 policy_input（78）、policy_history（420）、leg_position、
+leg_velocity、leg_applied_position，供后续与 Isaac 策略输入和动作逐项比较。
+
 只有行走稳定且零力偏置可接受，才去掉 --conditions zero 运行七条件估计对照。
 单条件不要运行 analyze_pd_pairs，它会按设计报告没有完整配对组。
 

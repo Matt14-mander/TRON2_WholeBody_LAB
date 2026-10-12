@@ -17,6 +17,20 @@ from paint_run_status import PaintRunStatus
 
 
 class PaintIntentTests(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec("mujoco") and importlib.util.find_spec("torch"), "MuJoCo/PyTorch unavailable")
+    def test_mujoco_no_load_preserves_floating_base_and_removes_payload(self):
+        import xml.etree.ElementTree as ET
+        spec = importlib.util.spec_from_file_location("paint_mujoco", ROOT / "scripts/paint/run_mujoco.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        source = ROOT / "robot_description/tron2/SFYG_TRON2A/xml/robot.xml"
+        unloaded = ET.fromstring(module.payload_xml(source, .5, (.2, .12, .08), (.15, 0, 0), True, "none"))
+        loaded = ET.fromstring(module.payload_xml(source, .5, (.2, .12, .08), (.15, 0, 0), True))
+        self.assertIsNone(unloaded.find(".//body[@name='paint_payload_Link']"))
+        self.assertIsNotNone(unloaded.find(".//body[@name='base_Link']/joint[@type='free']"))
+        self.assertEqual(len(loaded.findall(".//body")), len(unloaded.findall(".//body")) + 1)
+        self.assertEqual(loaded.find(".//body[@name='paint_payload_Link']/inertial").get("mass"), "0.5")
+
     def test_online_error_summary_includes_bias_and_separates_active_axes(self):
         spec = importlib.util.spec_from_file_location("paint_online_evaluator", ROOT / "scripts/paint/evaluate_intent_rollouts.py")
         module = importlib.util.module_from_spec(spec)
