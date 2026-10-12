@@ -216,6 +216,14 @@ SolverCore 从配置读取并检查这两个正有限惩罚参数，缺省保持
 `[OCS2_LIMITS] box_mu=... box_delta=...`。必须重新编译 tron2_ocs2；旧二进制会忽略新配置。
 提高软惩罚不能保证严格可行，若仍越界需进一步定位具体关节/时刻及几何/模型问题。
 不同 mu 下总 cost 口径改变，不据此横向判断跟踪优劣，应比较实际约束指标和时延。
+惩罚对照的 mu=0.01/0.1 候选最大位置越界分别约 0.138/0.277 rad，最大加速度
+23.63/20.23 rad/s²。加速度改善但位置非单调，暂停继续增大参数，先定位越界。
+native benchmark 新增 `initial_arm_position_margin`、`worst_arm_position_index`
+（六维 arm state 的零基索引）、`worst_arm_position_time`（绝对仿真时刻）、
+`worst_arm_position_value`、`arm_lower_position_limits` / `arm_upper_position_limits`。
+summary 分别报告冷/热求解最低位置余量、越界记录数及对应原始指标；旧 JSONL 仍可汇总，
+但没有具体关节信息。这些诊断检查轨迹 knot，不能证明 knot 之间无越界。
+再次编译后仅重跑 mu10/mu100 两个候选即可，物理限位和验收容差保持不变。
 默认 `MPC_BENCH_TARGET_MODE=recorded` 保持原对照行为。当前末端目标仍是固定世界坐标目标，
 预测期间需要补偿底盘运动；该冻结观测测试不能证明走动时的实时跟踪。
 

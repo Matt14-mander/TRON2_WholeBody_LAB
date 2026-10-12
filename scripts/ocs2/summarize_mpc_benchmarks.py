@@ -76,6 +76,17 @@ def summarize(rows, expected_samples=20, period=0.1):
     margins = [r["minimum_arm_position_margin"] for r in successful if "minimum_arm_position_margin" in r]
     if margins:
         result["minimum_arm_position_margin"] = float(min(margins))
+    for name, group in (("cold", [r for r in successful if r.get("cold") is True]), ("warm", warm)):
+        available = [r for r in group if "minimum_arm_position_margin" in r]
+        if available:
+            worst = min(available, key=lambda r: r["minimum_arm_position_margin"])
+            result[name + "_minimum_arm_position_margin"] = worst["minimum_arm_position_margin"]
+            result[name + "_position_violation_records"] = sum(
+                r["minimum_arm_position_margin"] < -1e-6 for r in available)
+            result[name + "_worst_position"] = {key: worst[key] for key in (
+                "sample", "observation_sim_time", "minimum_arm_position_margin", "initial_arm_position_margin",
+                "worst_arm_position_index", "worst_arm_position_time", "worst_arm_position_value",
+                "arm_lower_position_limits", "arm_upper_position_limits") if key in worst}
     commands = [r["base_velocity_command"] for r in successful if "base_velocity_command" in r]
     if commands:
         result["max_fixed_base_command_error"] = float(np.max(np.abs(

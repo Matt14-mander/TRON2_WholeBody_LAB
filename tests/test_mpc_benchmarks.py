@@ -66,6 +66,21 @@ class MpcBenchmarksTest(unittest.TestCase):
         self.assertTrue(result["latency_gate_passed"])
         self.assertIsNone(result["joint_input_gate_passed"])
 
+    def test_worst_position_keeps_cold_and_warm_provenance(self):
+        rows = [{"sample": 0, "cold": True, "solve_duration_s": 0.02,
+                 "minimum_arm_position_margin": -0.27, "worst_arm_position_index": 3,
+                 "initial_arm_position_margin": -0.00002, "worst_arm_position_time": 2.8},
+                {"sample": 1, "cold": False, "solve_duration_s": 0.02,
+                 "minimum_arm_position_margin": 0.02},
+                {"sample": 2, "cold": False, "solve_duration_s": 0.02,
+                 "minimum_arm_position_margin": -0.1, "worst_arm_position_index": 2}]
+        result = report.summarize(rows, 3)
+        self.assertEqual(result["cold_worst_position"]["sample"], 0)
+        self.assertEqual(result["warm_worst_position"]["sample"], 2)
+        self.assertEqual(result["warm_position_violation_records"], 1)
+        self.assertEqual(result["cold_worst_position"]["worst_arm_position_time"], 2.8)
+        self.assertAlmostEqual(result["warm_minimum_arm_position_margin"], -0.1)
+
     def test_current_ee_reference_preserves_measured_state(self):
         frame = {"control_sim_time": 2.0, "target_deadline_sim_time": 0.0,
                  "target_position_world": [9, 8, 7], "target_quaternion_wxyz": [0, 1, 0, 0],

@@ -440,11 +440,26 @@ ocs2::PrimalSolution SolverCore::runMpc(const Observation& observation,
   profile_.minimumArmPositionMargin = std::numeric_limits<double>::infinity();
   const auto lower = pinocchioInterface_->getModel().lowerPositionLimit.tail(kArmDof);
   const auto upper = pinocchioInterface_->getModel().upperPositionLimit.tail(kArmDof);
-  for (const auto& state : trajectory.stateTrajectory_) {
+  profile_.armLowerPositionLimits = lower;
+  profile_.armUpperPositionLimits = upper;
+  const auto initialQ = initialState.segment(kArmPositionIndex, kArmDof);
+  profile_.initialArmPositionMargin = std::min((initialQ - lower).minCoeff(), (upper - initialQ).minCoeff());
+  if (trajectory.stateTrajectory_.size() != trajectory.timeTrajectory_.size()) {
+    throw std::runtime_error("Profile trajectory state/time counts differ.");
+  }
+  for (std::size_t knot = 0; knot < trajectory.stateTrajectory_.size(); ++knot) {
+    const auto& state = trajectory.stateTrajectory_[knot];
     requireSize(state, kStateDim, "profile state");
     const auto q = state.segment(kArmPositionIndex, kArmDof);
-    profile_.minimumArmPositionMargin = std::min(profile_.minimumArmPositionMargin,
-        std::min((q - lower).minCoeff(), (upper - q).minCoeff()));
+    for (std::size_t joint = 0; joint < kArmDof; ++joint) {
+      const double margin = std::min(q(joint) - lower(joint), upper(joint) - q(joint));
+      if (margin < profile_.minimumArmPositionMargin) {
+        profile_.minimumArmPositionMargin = margin;
+        profile_.worstArmPositionIndex = joint;
+        profile_.worstArmPositionTime = trajectory.timeTrajectory_[knot];
+        profile_.worstArmPositionValue = q(joint);
+      }
+    }
     profile_.maximumArmSpeed = std::max(profile_.maximumArmSpeed,
         state.segment(kArmVelocityIndex, kArmDof).cwiseAbs().maxCoeff());
   }

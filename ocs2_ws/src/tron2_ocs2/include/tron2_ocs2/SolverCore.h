@@ -26,6 +26,12 @@ struct SolveProfile {
   double cost = 0.0;
   double equalitySSE = 0.0;
   double minimumArmPositionMargin = 0.0;
+  double initialArmPositionMargin = 0.0;
+  std::size_t worstArmPositionIndex = 0;  // Zero-based index in the six-arm state.
+  double worstArmPositionTime = 0.0;  // Absolute simulation time at a trajectory knot.
+  double worstArmPositionValue = 0.0;
+  ocs2::vector_t armLowerPositionLimits = ocs2::vector_t::Zero(kArmDof);
+  ocs2::vector_t armUpperPositionLimits = ocs2::vector_t::Zero(kArmDof);
   double maximumArmSpeed = 0.0;
   double maximumArmAcceleration = 0.0;
   std::size_t iterations = 0;

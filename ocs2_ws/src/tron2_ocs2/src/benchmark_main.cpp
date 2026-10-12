@@ -93,10 +93,16 @@ int main(int argc, char** argv) {
                 << ",\"iterations\":" << profile.iterations << ",\"knots\":" << profile.knots
                 << ",\"cost\":" << profile.cost << ",\"equality_sse\":" << profile.equalitySSE
                 << ",\"minimum_arm_position_margin\":" << profile.minimumArmPositionMargin
+                << ",\"initial_arm_position_margin\":" << profile.initialArmPositionMargin
+                << ",\"worst_arm_position_index\":" << profile.worstArmPositionIndex
+                << ",\"worst_arm_position_time\":" << profile.worstArmPositionTime
+                << ",\"worst_arm_position_value\":" << profile.worstArmPositionValue
                 << ",\"maximum_arm_speed\":" << profile.maximumArmSpeed
                 << ",\"maximum_arm_acceleration\":" << profile.maximumArmAcceleration
                 << ",\"arm_position\":";
       printVector(solution.armPosition);
+      std::cout << ",\"arm_lower_position_limits\":"; printVector(profile.armLowerPositionLimits);
+      std::cout << ",\"arm_upper_position_limits\":"; printVector(profile.armUpperPositionLimits);
       std::cout << ",\"arm_velocity\":"; printVector(solution.armVelocity);
       std::cout << ",\"base_velocity_command\":"; printVector(solution.baseVelocityCommand);
       std::cout << "}" << std::endl;
