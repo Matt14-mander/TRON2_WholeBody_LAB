@@ -70,7 +70,7 @@ conda env list
 read -r -p 'Isaac Lab Conda 环境名: ' PAINT_ENV
 conda activate "$PAINT_ENV"
 python -m pip install -e exts/bipedal_locomotion -e rsl_rl
-python -m pip install 'mujoco>=3.2,<4'
+python -m pip install 'mujoco==3.2.7'
 export PAINT_CHECKPOINT="$PWD/logs/rsl_rl/sfyg_tron_2a_wholebody_flat/2026-09-10_22-16-15/model_20000.pt"
 test -f "$PAINT_CHECKPOINT"
 export PAINT_RUN="$(date +%Y%m%d_%H%M%S)"
@@ -102,6 +102,32 @@ cat "logs/paint/mujoco_demo_$PAINT_RUN/pair_analysis.json"
 姿态目标仅 ±0.02 rad 变化，时序为 0.5 s/1 s/0.5 s。
 按姿态组留出的测试 MAE 为 Fx=0.287 N、Fy=0.100 N、Mz=0.00547 Nm。
 这是一组很窄的验证，不能代表跨负载、行走或真机泛化；示例模型不是可闭环控制的正式模型。
+
+### 已复现的版本差异
+
+2026-10-12 Linux MuJoCo 3.13.0 的 seed=142 零外力估计均值为
+[-0.787 N, -4.911 N, 0.650 Nm]。本机保持脚本、模型、种子和配置不变，仅切换至 3.13.0，
+复现了相同结果：第一关节响应变化即可引发明显偏置。3.2.7 下对应均值为
+[-0.186 N, -0.050 N, 0.012 Nm]。这是跨运行版本泛化失败，不是模型文件损坏。
+模型 SHA256 保持 adb89e4d705470a233fd310c62f1f0f757adf0c22407f5bddc3119f125b0a736。
+
+不改动现有 limx 环境中的 MuJoCo，可将 3.2.7 安装到独立目录做对照：
+
+```bash
+python -m pip install --target logs/paint/runtime/mujoco327 --no-deps 'mujoco==3.2.7'
+paint327() {
+  PYTHONPATH="$PWD/logs/paint/runtime/mujoco327${PYTHONPATH:+:$PYTHONPATH}" python "$@"
+}
+paint327 -c 'import mujoco; print(mujoco.__version__, mujoco.__file__)'
+PAINT_DEMO327="logs/paint/demo327_$(date +%Y%m%d_%H%M%S)"
+paint327 scripts/paint/run_mujoco.py --model_dir examples/paint/fixed_base_demo \
+  --output_dir "$PAINT_DEMO327" --seed 142 --warmup 0.5 --duration 1 --recovery 0.5
+paint327 scripts/paint/analyze_pd_pairs.py "$PAINT_DEMO327"
+```
+
+此独立目录方案使用现有环境的 NumPy/Torch/GLFW 等依赖，仅覆盖 MuJoCo。
+新采集记录版本信息，训练模型保留来源版本，运行不匹配时打印警告。
+版本一致只用于复现初步基线，不能代替更大范围泛化验证。
 
 ## Isaac Lab：采集初始行走/受力数据
 

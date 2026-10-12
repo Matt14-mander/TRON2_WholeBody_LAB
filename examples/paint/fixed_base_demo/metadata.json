@@ -23,6 +23,16 @@
   "output_semantics": "external_on_payload during preceding control interval",
   "deployment": "observation only; no robot command output",
   "normalization": "tracking error preprocessing and normalization embedded in TorchScript",
+  "training_backends": [
+    {
+      "backend": "mujoco",
+      "runtime": {
+        "mujoco": "3.2.7",
+        "torch": "2.7.0+cu128",
+        "numpy": "1.26.4"
+      }
+    }
+  ],
   "training_args": {
     "datasets": [
       "logs/paint/local_fixed_pd_v2"

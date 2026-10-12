@@ -166,7 +166,8 @@ def main():
                 "joint_names": list(ARM_JOINT_NAMES), "feature_order": "oldest to newest; each row q(6),dq(6),previous_applied_position(6)",
                 "input_units": "rad, rad/s, rad", "output_order": ["Fx_N", "Fy_N", "Mz_Nm"], "output_frame": "payload_local",
                 "output_point": "payload_COM", "output_semantics": "external_on_payload during preceding control interval",
-                "deployment": "observation only; no robot command output", "normalization": "tracking error preprocessing and normalization embedded in TorchScript", "training_args": vars(args)}
+                "deployment": "observation only; no robot command output", "normalization": "tracking error preprocessing and normalization embedded in TorchScript", "training_args": vars(args),
+                "training_backends": [{"backend": contract.get("backend", "unspecified"), "runtime": contract.get("runtime", {})} for contract in contracts]}
     for filename, payload in (("metadata.json", metadata), ("metrics.json", report), ("splits.json", splits), ("source_contracts.json", contracts)):
         (output / filename).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report["test"], indent=2))

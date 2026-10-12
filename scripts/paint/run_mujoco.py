@@ -120,6 +120,11 @@ def main():
         meta = json.loads((directory / "metadata.json").read_text())
         if meta["schema"] != SCHEMA or meta["joint_names"] != list(ARM_JOINT_NAMES) or not np.isclose(meta["step_dt"], dt):
             raise ValueError("Intent model contract mismatch.")
+        trained_versions = {item.get("runtime", {}).get("mujoco") for item in meta.get("training_backends", []) if item.get("backend") == "mujoco"}
+        trained_versions.discard(None)
+        if trained_versions and mujoco.__version__ not in trained_versions:
+            print(f"[WARNING] Estimator trained with MuJoCo {sorted(trained_versions)}, current runtime={mujoco.__version__}. "
+                  "Zero-force responses may differ; this run is a transfer diagnostic, not a validated demo.", flush=True)
         with (directory / "intent_estimator.ts").open("rb") as stream:
             intent_model = torch.jit.load(stream, map_location="cpu").eval()
         intent_history = IntentHistory(meta["history"])
@@ -135,7 +140,8 @@ def main():
             if latent.shape != (1, 3) or actor(torch.zeros((1, 78))).shape != (1, 10):
                 raise ValueError("Expected WholeBody 420-input/3-output encoder and 78-input/10-output actor.")
     contract = {"schema": SCHEMA, "joint_names": list(ARM_JOINT_NAMES), "step_dt": dt, "label_frame": "payload_local", "label_point": "payload_COM",
-                "backend": "mujoco", "base_mode": "floating_policy" if actor else "fixed", "args": vars(args), "protocol": vars(protocol)}
+                "backend": "mujoco", "runtime": {"mujoco": mujoco.__version__, "torch": torch.__version__, "numpy": np.__version__},
+                "base_mode": "floating_policy" if actor else "fixed", "args": vars(args), "protocol": vars(protocol)}
     (output / "contract.json").write_text(json.dumps(contract, indent=2) + "\n")
     viewer = None
     if args.viewer:
