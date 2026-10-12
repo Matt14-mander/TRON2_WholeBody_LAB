@@ -319,6 +319,18 @@ cat "$PAINT_MJ_NOLOAD/manifest.json"
 native 方式的估计误差需要重新测量，不能沿用旧指标。每次运行的 backend 存在 contract.args。
 MuJoCo NPZ 同时保存 policy_input（78）、policy_history（420）、leg_position、
 leg_velocity、leg_applied_position，供后续与 Isaac 策略输入和动作逐项比较。
+Isaac collector 也保存实际的 policy_input 和 policy_history（必须在 env.step 前复制）。
+两端无负载同 seed/速度运行后，可以检查导出的网络是否重现 Isaac 的动作和 latent：
+
+```bash
+paint327 scripts/paint/compare_locomotion_inputs.py \
+  --isaac_dir "$PAINT_ISAAC_INPUT" --mujoco_dir "$PAINT_MJ_NOLOAD" \
+  --locomotion_dir "$PAINT_LOCO"
+```
+
+报告保存在 MuJoCo 目录的 locomotion_input_comparison.json。重放误差应接近浮点误差；
+若明显偏大，先检查导出目录/checkpoint 是否一致。首帧各输入项同时输出，
+用于定位重置、历史和观测接口差异。不同动力学下的后续闭环轨迹不能直接当作相同状态比较。
 
 只有行走稳定且零力偏置可接受，才去掉 --conditions zero 运行七条件估计对照。
 单条件不要运行 analyze_pd_pairs，它会按设计报告没有完整配对组。

@@ -17,6 +17,27 @@ from paint_run_status import PaintRunStatus
 
 
 class PaintIntentTests(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec("torch"), "PyTorch unavailable")
+    def test_policy_replay_detects_network_and_history_mismatch(self):
+        import torch
+        spec = importlib.util.spec_from_file_location("paint_policy_compare", ROOT / "scripts/paint/compare_locomotion_inputs.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        actor, encoder = torch.nn.Linear(78, 10), torch.nn.Linear(420, 3)
+        history = torch.zeros(2, 420)
+        inputs = torch.zeros(2, 78)
+        with torch.no_grad():
+            inputs[:, :3] = encoder(history)
+            arrays = {"policy_input": inputs.numpy().copy(), "policy_history": history.numpy(),
+                      "locomotion_action": actor(inputs).numpy()}
+        result = module.replay(arrays, actor, encoder)
+        self.assertLess(result["actor_replay_max_abs_error"], 1e-6)
+        self.assertLess(result["encoder_replay_max_abs_error"], 1e-6)
+        arrays["policy_input"][:, :3] += 1.
+        result = module.replay(arrays, actor, encoder)
+        self.assertGreater(result["encoder_replay_max_abs_error"], .9)
+        self.assertGreater(result["actor_replay_max_abs_error"], 1e-5)
+
     @unittest.skipUnless(importlib.util.find_spec("mujoco") and importlib.util.find_spec("torch"), "MuJoCo/PyTorch unavailable")
     def test_unloaded_native_pd_holds_arm_for_complete_episode(self):
         with tempfile.TemporaryDirectory(dir=TEST_TEMP) as temporary:

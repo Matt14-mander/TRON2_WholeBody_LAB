@@ -251,7 +251,10 @@ def main():
                         robot.set_external_force_and_torque(w[..., :3], w[..., 3:], body_ids=body_ids, is_global=False)
                         if trace_step:
                             run_status.mark("policy_inference", step=index)
-                        actions = policy(torch.cat((encoder(history), obs, commands), dim=-1))
+                        actor_input = torch.cat((encoder(history), obs, commands), dim=-1)
+                        policy_input_record = row(actor_input).copy()
+                        policy_history_record = row(history).copy()
+                        actions = policy(actor_input)
                         if trace_step:
                             run_status.mark("physics_step", step=index, action_shape=list(actions.shape))
                         obs_dict, _, dones, _ = env.step(actions)
@@ -278,6 +281,7 @@ def main():
                                        "base_position_world": row(robot.data.root_pos_w),
                                        "base_quaternion_world": row(robot.data.root_quat_w),
                                        "locomotion_action": row(actions),
+                                       "policy_input": policy_input_record, "policy_history": policy_history_record,
                                        "payload_position_world": row(robot.data.body_pos_w[:, body_ids]),
                                        "payload_quaternion_world": row(robot.data.body_quat_w[:, body_ids])})
                         if trace_step:
