@@ -13,9 +13,28 @@ TEST_TEMP = ROOT / ".test-temp"
 TEST_TEMP.mkdir(exist_ok=True)
 sys.path.insert(0, str(ROOT / "exts/bipedal_locomotion/bipedal_locomotion/controllers"))
 from paint_intent import ARM_JOINT_NAMES, CONDITIONS, SCHEMA, IntentHistory, InteractionProtocol, make_history_samples
+from paint_run_status import PaintRunStatus
 
 
 class PaintIntentTests(unittest.TestCase):
+    def test_simulator_failure_status_persists_before_cleanup(self):
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP) as directory, redirect_stdout(StringIO()), redirect_stderr(StringIO()) as errors:
+            status = PaintRunStatus(directory)
+            status.mark("physics_step", episode_id="group_0000_zero", step=0)
+            incomplete = json.loads((Path(directory) / "run_status.json").read_text())
+            self.assertFalse(incomplete["complete"])
+            try:
+                raise RuntimeError("test simulator step failure")
+            except RuntimeError as error:
+                status.fail(error)
+            saved = json.loads((Path(directory) / "run_status.json").read_text())
+            self.assertEqual(saved["state"], "failed")
+            self.assertEqual(saved["stage"], "physics_step")
+            self.assertEqual(saved["error_type"], "RuntimeError")
+            self.assertIn("test simulator step failure", errors.getvalue())
+
     def test_protocol_zero_and_sign_symmetry(self):
         protocol = InteractionProtocol()
         for time in (0., 2., 2.1, 3., 3.9, 4., 5.):

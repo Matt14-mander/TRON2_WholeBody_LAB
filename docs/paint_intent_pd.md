@@ -149,6 +149,32 @@ cat "$PAINT_DIAG/run_status.json"
 负载偏移须在可视化中核查；不要靠增大外力解决负载导入或接触问题。
 数据配对默认关闭观测噪声、执行器随机延迟和已知随机化事件，用于先定位信号。
 
+### 首回合退出时的诊断
+
+采集器在进入环境构造前写入 `run_status.json`，默认 complete=false。
+首 3 步及之后每 50 步记录 `[PAINT_STAGE]`，区分准备观测、推理、physics_step、
+read_response、保存回合。Python 异常在环境清理前打印完整堆栈，并将状态设为 failed。
+原生崩溃不能由 Python 捕获，但上次写入的 stage 可定位到最后一个检查点。
+退出码 0 不能代替 collection_finished/complete 与回合数量检查。
+如果单独重敲 `PAINT_RC=${PIPESTATUS[0]}`，可能取得后一个命令的状态；必须紧接采集流水线赋值。
+
+```bash
+PAINT_STAMP="$(date +%Y%m%d_%H%M%S)"
+PAINT_DEBUG="logs/paint/isaac_debug_$PAINT_STAMP"
+PAINT_LOG="logs/paint/isaac_debug_$PAINT_STAMP.log"
+set -o pipefail
+PYTHONFAULTHANDLER=1 LIVESTREAM=0 python -u scripts/rsl_rl/collect_paint_pd.py \
+  --checkpoint_path "$PAINT_CHECKPOINT" --output_dir "$PAINT_DEBUG" \
+  --headless --repeats 1 --base_command 0 0 0 \
+  2>&1 | tee "$PAINT_LOG"
+PAINT_RC=${PIPESTATUS[0]}
+echo "exit=$PAINT_RC"
+cat "$PAINT_DEBUG/run_status.json"
+tail -n 120 "$PAINT_LOG"
+```
+
+日志位于采集目录之外，避免 tee 创建的文件触发“输出目录必须为空”检查。
+
 诊断通过后采 30 个姿态组，再采慢速行走条件：
 
 ```bash

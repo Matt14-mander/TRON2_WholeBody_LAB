@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import math
 import os
@@ -40,6 +41,7 @@ cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.num_envs = 1
+faulthandler.enable()
 print("[BOOT] stage=app_launcher_start", flush=True)
 app = AppLauncher(args).app
 print("[BOOT] stage=app_launcher_ready", flush=True)
@@ -56,6 +58,9 @@ from bipedal_locomotion.controllers.paint_intent import ARM_JOINT_NAMES, CONDITI
 from bipedal_locomotion.controllers.paint_payload import create_payload_asset
 from bipedal_locomotion.controllers.ocs2_reset import configure_nominal_ocs2_reset
 from bipedal_locomotion.controllers.ocs2_rollout_dataset import save_episode_npz
+from bipedal_locomotion.controllers.paint_run_status import PaintRunStatus
+
+run_status = None
 
 
 def row(value):
@@ -63,6 +68,7 @@ def row(value):
 
 
 def main():
+    global run_status
     protocol = InteractionProtocol(args.warmup, args.duration, args.recovery, args.force_amplitude, args.torque_amplitude, args.profile)
     if "WholeBody" not in args.task or "Play" not in args.task:
         raise ValueError("Use a WholeBody PLAY task and its matching locomotion checkpoint.")
@@ -74,6 +80,8 @@ def main():
     if output.exists() and any(output.iterdir()):
         raise FileExistsError(f"Use a new empty output directory: {output}")
     output.mkdir(parents=True, exist_ok=True)
+    run_status = PaintRunStatus(output)
+    run_status.mark("configure_environment", expected=args.repeats * 7)
     cfg = parse_env_cfg(args.task, device=args.device, num_envs=1)
     cfg.seed = args.seed
     cfg.episode_length_s = protocol.total_time + 2.0
@@ -95,10 +103,12 @@ def main():
     cfg.scene.robot.spawn.usd_path = create_payload_asset(
         cfg.scene.robot.spawn.usd_path, output / "robot_payload.usdc", args.payload_mass,
         args.payload_dimensions, args.payload_offset)
+    run_status.mark("environment_create")
     print("[BOOT] stage=environment_create_start", flush=True)
     env = RslRlVecEnvWrapper(gym.make(args.task, cfg=cfg))
     print("[BOOT] stage=environment_create_ready", flush=True)
     try:
+        run_status.mark("check_payload_and_load_policy")
         raw = env.unwrapped
         robot = raw.scene["robot"]
         joint_ids, names = robot.find_joints(list(ARM_JOINT_NAMES), preserve_order=True)
@@ -139,6 +149,7 @@ def main():
                 "actor_input": 78, "encoder_input": 420, "leg_joint_names": [f"{part}_{side}_Joint" for side in ("L", "R") for part in ("proximal_pitch", "proximal_roll", "proximal_yaw", "knee", "ankle_pitch")],
                 "control_dt": .02, "note": "MuJoCo walking requires separate sim-to-sim validation."}, indent=2))
             print(f"[EXPORT] {output}/policy.pt and encoder.pt", flush=True)
+            run_status.mark("export_complete", complete=True, state="completed")
             return
         policy = runner.get_inference_policy(device=raw.device)
         encoder = runner.get_inference_encoder(device=raw.device)
@@ -180,6 +191,8 @@ def main():
                 if not app.is_running():
                     interrupted = True
                     break
+                episode_id = f"group_{repeat:04d}_{condition}"
+                run_status.mark("reset_episode", episode_id=episode_id, seed=pair_seed, step=-1)
                 # Identical RNG seed and nominal reset for all seven conditions in a pair group.
                 torch.manual_seed(pair_seed)
                 np.random.seed(pair_seed)
@@ -192,14 +205,18 @@ def main():
                 if intent_history is not None:
                     intent_history.reset()
                 reason = "completed"
-                episode_id = f"group_{repeat:04d}_{condition}"
                 print(f"[COLLECT] {episode_id} seed={pair_seed}", flush=True)
+                run_status.mark("episode_start", step=0)
+                w = torch.zeros((1, 1, 6), device=raw.device)
                 for index in range(int(math.ceil(protocol.total_time / dt))):
                     if not app.is_running():
                         reason = "interrupted"
                         interrupted = True
                         break
                     t = index * dt
+                    trace_step = index < 3 or index % 50 == 0
+                    if trace_step:
+                        run_status.mark("prepare_policy_inputs", step=index)
                     with torch.inference_mode():
                         obs = obs_dict["policy"]
                         history = obs_dict["obsHistory"].flatten(start_dim=1)
@@ -214,8 +231,14 @@ def main():
                         wrench = protocol.wrench(condition, t)
                         w = torch.tensor(wrench[None, None], dtype=torch.float32, device=raw.device)
                         robot.set_external_force_and_torque(w[..., :3], w[..., 3:], body_ids=body_ids, is_global=False)
+                        if trace_step:
+                            run_status.mark("policy_inference", step=index)
                         actions = policy(torch.cat((encoder(history), obs, commands), dim=-1))
+                        if trace_step:
+                            run_status.mark("physics_step", step=index, action_shape=list(actions.shape))
                         obs_dict, _, dones, _ = env.step(actions)
+                        if trace_step:
+                            run_status.mark("read_response", step=index)
                         valid = not bool(dones[0])
                         q, dq = row(robot.data.joint_pos[:, joint_ids]), row(robot.data.joint_vel[:, joint_ids])
                         tilt = math.degrees(math.acos(float(np.clip(-row(robot.data.projected_gravity_b)[2], -1., 1.))))
@@ -236,6 +259,8 @@ def main():
                                        "base_angular_velocity": row(robot.data.root_ang_vel_b),
                                        "payload_position_world": row(robot.data.body_pos_w[:, body_ids]),
                                        "payload_quaternion_world": row(robot.data.body_quat_w[:, body_ids])})
+                        if trace_step:
+                            run_status.mark("response_recorded", step=index, frames=len(frames))
                     if not valid or tilt > args.max_tilt_deg or margin < -1e-4:
                         reason = "environment_done" if not valid else "tilt_limit" if tilt > args.max_tilt_deg else "joint_limit"
                         break
@@ -243,18 +268,23 @@ def main():
                 accepted = reason == "completed"
                 if frames:
                     relative = Path("episodes" if accepted else "rejected") / f"{episode_id}.npz"
+                    run_status.mark("save_episode", frames=len(frames), termination_reason=reason)
                     save_episode_npz(output / relative, frames, {"schema": SCHEMA, "group_id": f"seed_{pair_seed}", "condition": condition,
                                      "accepted": accepted, "termination_reason": reason, "step_dt": dt})
                     summary.append({"episode_id": episode_id, "group_id": f"seed_{pair_seed}", "condition": condition,
                                     "accepted": accepted, "reason": reason, "file": str(relative), "frames": len(frames)})
                     (output / "manifest.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+                    run_status.mark("episode_saved", accepted=sum(r["accepted"] for r in summary), total=len(summary))
                 if interrupted:
                     break
             if interrupted:
                 break
-        (output / "run_status.json").write_text(json.dumps({"complete": not interrupted, "accepted": sum(r["accepted"] for r in summary),
-                                                           "total": len(summary), "expected": args.repeats * 7}) + "\n", encoding="utf-8")
+        run_status.mark("collection_finished", complete=not interrupted, state="interrupted" if interrupted else "completed",
+                        accepted=sum(r["accepted"] for r in summary), total=len(summary), expected=args.repeats * 7)
         print(f"[RESULT] {output}: {sum(r['accepted'] for r in summary)}/{len(summary)} completed episodes", flush=True)
+    except BaseException as error:
+        run_status.fail(error)
+        raise
     finally:
         env.close()
 
@@ -262,5 +292,12 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except BaseException as error:
+        if run_status is not None and run_status.data["state"] != "failed":
+            run_status.fail(error)
+        elif run_status is None:
+            import traceback
+            traceback.print_exception(type(error), error, error.__traceback__)
+        raise
     finally:
         app.close()
