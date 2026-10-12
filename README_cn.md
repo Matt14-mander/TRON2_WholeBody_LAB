@@ -216,7 +216,12 @@ git add robot_description && git commit -m "chore: bump robot_description submod
 
 ## 测试 / Lint
 
-仓库未配置 test suite。`pyproject.toml` 含 `isort` + `pyright` 配置但没有 CI。
+PAINT 阶段功能包含机械臂 PD＋负载配对采集、估计器训练和旁路推理，操作见
+[PAINT 开发指南](docs/paint_intent_pd.md)。Isaac 初步效果已验证；MuJoCo 行走迁移和真机效果仍待验证。
+仓库示例模型是固定底座演示，不是 Linux 上训练的行走模型；`logs/` 中数据和模型不会随代码同步。
+
+可运行相关测试：`python -m unittest discover -s tests -p test_paint_intent.py -v`。
+`pyproject.toml` 含 `isort` + `pyright` 配置，但没有 CI。
 
 ## License
 
