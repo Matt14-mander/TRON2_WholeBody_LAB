@@ -1,0 +1,38 @@
+{
+  "schema": "paint_pd_response_v1",
+  "history": 4,
+  "input_size": 72,
+  "step_dt": 0.02,
+  "joint_names": [
+    "arm1_Joint",
+    "arm2_Joint",
+    "arm3_Joint",
+    "arm4_Joint",
+    "arm5_Joint",
+    "arm6_Joint"
+  ],
+  "feature_order": "oldest to newest; each row q(6),dq(6),previous_applied_position(6)",
+  "input_units": "rad, rad/s, rad",
+  "output_order": [
+    "Fx_N",
+    "Fy_N",
+    "Mz_Nm"
+  ],
+  "output_frame": "payload_local",
+  "output_point": "payload_COM",
+  "output_semantics": "external_on_payload during preceding control interval",
+  "deployment": "observation only; no robot command output",
+  "normalization": "tracking error preprocessing and normalization embedded in TorchScript",
+  "training_args": {
+    "datasets": [
+      "logs/paint/local_fixed_pd_v2"
+    ],
+    "output_dir": "logs/paint/local_intent_model_v3",
+    "history": 4,
+    "epochs": 100,
+    "batch_size": 512,
+    "learning_rate": 0.001,
+    "seed": 42,
+    "device": "cpu"
+  }
+}

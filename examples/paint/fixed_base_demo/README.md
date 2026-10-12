@@ -1,0 +1,16 @@
+# MuJoCo 固定底座初步估计器
+
+这是初步效果演示，使用仓库原始 TRON2 MuJoCo 模型，加 0.5 kg 刚性箱形负载。
+训练数据为 6 个姿态组，每组 zero/±Fx/±Fy/±Mz 七个回合；组级划分，无随机帧混合。
+仅适用于当前 PD=60/6、小幅姿态变化、5 N/0.5 Nm、50 Hz 的固定底座条件。
+不代表行走、跨负载或真机验证，不输出控制命令。
+
+在仓库根目录执行：
+
+```bash
+python scripts/paint/run_mujoco.py --model_dir examples/paint/fixed_base_demo --output_dir logs/paint/demo_run --seed 142 --warmup 0.5 --duration 1 --recovery 0.5
+python scripts/paint/analyze_pd_pairs.py logs/paint/demo_run
+```
+
+输出目录必须为空；有桌面时可加 `--viewer`。
+完整 Linux 采集、训练和部署操作见 [开发指南](../../../docs/paint_intent_pd.md)。
