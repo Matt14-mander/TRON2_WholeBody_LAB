@@ -7,6 +7,14 @@ class StandWalkRLEnv(ManagerBasedRLEnv):
     def __init__(self, *args, **kwargs):
         self._terminal_sample = None
         super().__init__(*args, **kwargs)
+        self._rollout_standing_samples = torch.zeros((), device=self.device)
+        self._rollout_total_samples = 0
+
+    def pop_standing_step_fraction(self):
+        fraction = float(self._rollout_standing_samples) / max(1, self._rollout_total_samples)
+        self._rollout_standing_samples.zero_()
+        self._rollout_total_samples = 0
+        return fraction
 
     def _state(self):
         data = self.scene["robot"].data
@@ -25,6 +33,9 @@ class StandWalkRLEnv(ManagerBasedRLEnv):
     def step(self, action):
         self._terminal_sample = None
         command = self.command_manager.get_command("base_velocity").clone()
+        mask = self.command_manager.get_term("base_velocity").is_standing_env
+        self._rollout_standing_samples += mask.sum()
+        self._rollout_total_samples += len(mask)
         obs, reward, terminated, truncated, extras = super().step(action)
         state = self._state()
         if self._terminal_sample is not None:

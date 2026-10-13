@@ -166,7 +166,11 @@ def main(args, app):
     class FinetuneRunner(OnPolicyRunner):
         def log(self, locs, *positional, **kwargs):
             self.completed_iteration = locs["it"] + 1
-            return super().log(locs, *positional, **kwargs)
+            result = super().log(locs, *positional, **kwargs)
+            fraction = self.env.unwrapped.pop_standing_step_fraction()
+            self.writer.add_scalar("Curriculum/standing_step_fraction", fraction, locs["it"])
+            print(f"[CURRICULUM] rollout standing step fraction={fraction:.3f}", flush=True)
+            return result
 
         def save(self, path, infos=None):
             torch.save({"model_state_dict": self.alg.actor_critic.state_dict(),
@@ -207,6 +211,7 @@ def main(args, app):
                     "leg_actions": 10, "leg_joints": list(LEG_JOINT_NAMES), "arm_joints": list(ARM_JOINT_NAMES),
                     "control_dt": raw.step_dt, "wrench_input": "zero_5x6; synthetic force disabled",
                     "phase_contract": "episode_time*frequency, continuous through standing; unchanged actor encoding",
+                    "case_assignment": "fixed_per_environment_quota_v2; roles persist across resets",
                     "env": cfg.to_dict(), "ppo": agent_cfg.to_dict()}
         (output / "contract.json").write_text(json.dumps(contract, indent=2, default=str) + "\n", encoding="utf-8")
         print(f"[FINETUNE] load={load_report}; encoder_frozen={not args.train_encoder}; "

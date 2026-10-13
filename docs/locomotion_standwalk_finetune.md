@@ -36,15 +36,16 @@
 
 ## 命令课程与站立模式
 
-| `--stage` | 每个 episode 的分布 | 用途 |
+| `--stage` | 固定环境配额 | 用途 |
 |---|---|---|
-| `stand` | 60% 恒零速、40% 恒 `[-0.25,0,0]` | 学站立并维持旧行走基线 |
+| `stand` | 约 60% 环境恒零速、40% 环境恒 `[-0.25,0,0]` | 学站立并维持旧行走基线 |
 | `transition` | 20% 恒零、20% 恒行走、30% 静止→行走→静止、30% 行走→静止→行走 | 学起停 |
 | `expanded` | 同 transition 的类型分布，移动目标一半保留 -0.25，其余在 vx±0.35/vy±0.20/wz±0.40 中采样 | 覆盖 teacher 速度范围 |
 
 默认 20 s episode。转换序列为：首段 5 s，过渡 1 s，中间段 6 s，再过渡 1 s，其余为末段。
 过渡采用 cubic smoothstep；`--transition_s 0.5` 可在稳定后缩短，默认不做瞬时跳变。
-每次 reset 按环境重新采样类型，课程时钟由 episode time 定义，不跨 episode。
+环境角色在创建任务时按配额分配并打乱，reset 保持原角色；仅 expanded 的移动目标重新采样。
+课程时钟由 episode time 定义，不跨 episode。
 站立学习回合从零速开始，行走回合从已验证速度开始，没有强制所有回合先经过一个不稳定的零速 warmup。
 
 站立 flag 从实际命令判定，进入阈值为平移≤0.02 m/s、yaw≤0.03 rad/s；
@@ -94,7 +95,10 @@ LIVESTREAM=0 python scripts/rsl_rl/finetune_standwalk.py \
 ```
 
 1000 轮是首轮观察窗口，不是保证收敛的预算。TensorBoard 观察 standing_fraction、跌倒、实际速度误差，
-然后用固定测试验收。第 A 阶段只要求 stand/walk 通过：
+然后用固定测试验收。日志 `[CURRICULUM] rollout standing step fraction=...` 和 TensorBoard
+`Curriculum/standing_step_fraction` 记录真实 rollout 步数占比，区别于只汇总已结束回合的 standing_fraction。
+256 环境的 stand 阶段分配 154 个站立环境、102 个行走环境，真实站立步数约占 60.2%。
+第 A 阶段只要求 stand/walk 通过：
 
 ```bash
 export STAND_CHECKPOINT="$STAND_RUN/model_1000.pt"
@@ -160,3 +164,28 @@ LIVESTREAM=0 python scripts/rsl_rl/finetune_standwalk.py \
 只有无负载与带载的基本站立/行走/起停案例均通过，才冻结候选模型。
 之后用新 checkpoint 跑 teacher 的零力 smoke，再小幅施力、少量 PPO，最后扩大 teacher 训练。
 Teacher 不需要 estimator；后续主动臂部运动与受力的低层适应性仍需独立验证。
+
+## 200 轮诊断后的课程修正
+
+服务器回传：200 轮候选站立在约 0.42 s 失败，行走完整 20 s、倾角约 3.77°。
+旧实现每次 reset 重抽任务，60% 是回合抽样概率，不是 rollout 步数占比。
+按这两类时长估算，站立占比约为 `0.6*0.42/(0.6*0.42+0.4*20)=3.1%`；
+实际占比需用新的逐步计数验证。固定环境配额修正了这种按生存时间偏置的任务混合。
+这一修正不证明奖励和探索设置足以学会站立，也不放宽原验收条件。
+
+同步修正版后，可从原 200 轮候选 warm-start，先观察 500 轮：
+
+```bash
+export QUOTA_RUN="$PWD/logs/rsl_rl/standwalk_quota_$(date +%Y%m%d_%H%M%S)"
+LIVESTREAM=0 python -u scripts/rsl_rl/finetune_standwalk.py \
+  --checkpoint_path "$PWD/logs/rsl_rl/standwalk_A_20261013_162020/train/model_200.pt" \
+  --stage stand --payload_mode none --num_envs 256 --max_iterations 500 \
+  --output_dir "$QUOTA_RUN/train" --headless --device cuda:0
+LIVESTREAM=0 python -u scripts/rsl_rl/finetune_standwalk.py \
+  --mode eval --checkpoint_path "$QUOTA_RUN/train/model_500.pt" \
+  --payload_mode none --eval_cases stand walk --episodes 5 \
+  --output_dir "$QUOTA_RUN/eval" --headless --device cuda:0
+```
+
+使用新的目录，不覆盖 200 轮候选。观察真实 standing step fraction 是否约 0.602；若站立仍长期
+在 0.4 s 左右失败，应继续诊断策略动作、奖励和探索，不直接增加到数万轮。

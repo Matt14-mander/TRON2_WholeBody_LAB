@@ -48,7 +48,26 @@ def scheduled_velocity(time_s, cases, target, transition_s=1., first_hold_s=5., 
     return target * fraction[:, None]
 
 
+def allocate_case_quota(count, stage, device, generator=None):
+    """Allocate fixed per-environment roles; short failures cannot change the mix.
+
+    Largest-remainder rounding preserves the total and the intended fractions.
+    Role placement is shuffled once, not redrawn after each episode reset.
+    """
+    if count < 1 or stage not in ("stand", "transition", "expanded"):
+        raise ValueError("Positive environment count and a valid stage are required.")
+    fractions = torch.tensor((.6, .4, 0., 0.) if stage == "stand" else (.2, .2, .3, .3), device=device)
+    expected = fractions * count
+    counts = expected.floor().long()
+    remainder = count - int(counts.sum())
+    if remainder:
+        counts[torch.argsort(expected - counts, descending=True)[:remainder]] += 1
+    roles = torch.repeat_interleave(torch.arange(4, device=device), counts)
+    return roles[torch.randperm(count, device=device, generator=generator)]
+
+
 def sample_cases(count, stage, device, generator=None):
+    """Legacy episode sampling, retained for comparison; training uses fixed quotas."""
     if stage not in ("stand", "transition", "expanded"):
         raise ValueError("Stage must be stand, transition or expanded.")
     u = torch.rand(count, device=device, generator=generator)

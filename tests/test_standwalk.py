@@ -106,6 +106,23 @@ class StandWalkTests(unittest.TestCase):
         cases = core.sample_cases(10000, "transition", "cpu", generator)
         self.assertEqual(set(cases.tolist()), {0, 1, 2, 3})
 
+    def test_fixed_quota_is_independent_of_short_episode_resets(self):
+        roles = core.allocate_case_quota(256, "stand", "cpu", torch.Generator().manual_seed(42))
+        self.assertEqual(torch.bincount(roles, minlength=4).tolist(), [154, 102, 0, 0])
+        cfg = self.native.StandWalkVelocityCfg()
+        env = types.SimpleNamespace(num_envs=256, device="cpu", step_dt=.02,
+                                    episode_length_buf=torch.zeros(256, dtype=torch.long))
+        command = self.native.StandWalkVelocity(cfg, env)
+        command._resample_command(torch.arange(256))
+        before = command.cases.clone()
+        stand_ids = (before == 0).nonzero().flatten()
+        for _ in range(50):
+            command._resample_command(stand_ids)
+        torch.testing.assert_close(command.cases, before)
+        self.assertEqual(int(command.is_standing_env.sum()), 154)
+        transition = core.allocate_case_quota(256, "transition", "cpu")
+        self.assertEqual(sorted(torch.bincount(transition, minlength=4).tolist()), [51, 51, 77, 77])
+
     def test_strict_loading_is_atomic_for_actor_and_encoder(self):
         source_actor, source_encoder = networks()
         actor, encoder = networks()
@@ -224,9 +241,11 @@ class StandWalkTests(unittest.TestCase):
     def test_terminal_telemetry_is_not_replaced_by_reset_state(self):
         class BaseEnv:
             def __init__(self):
+                self.device = "cpu"
                 self.episode_length_buf = torch.zeros(1, dtype=torch.long)
                 self.command = torch.tensor([[-.25, 0., 0.]])
-                self.command_manager = types.SimpleNamespace(get_command=lambda _: self.command)
+                self.command_manager = types.SimpleNamespace(get_command=lambda _: self.command,
+                    get_term=lambda _: types.SimpleNamespace(is_standing_env=torch.zeros(1, dtype=torch.bool)))
                 data = types.SimpleNamespace(root_lin_vel_b=torch.zeros(1, 3), root_ang_vel_b=torch.zeros(1, 3),
                     root_pos_w=torch.tensor([[0., 0., .85]]), projected_gravity_b=torch.tensor([[0., 0., -1.]]))
                 class Scene(dict):
@@ -259,6 +278,8 @@ class StandWalkTests(unittest.TestCase):
         self.assertEqual(float(state["linear_velocity"][0, 0]), 2.)
         self.assertEqual(float(env.scene["robot"].data.root_lin_vel_b[0, 0]), 0.)
         self.assertEqual(float(state["command"][0, 0]), -.25)
+        self.assertEqual(env.pop_standing_step_fraction(), 0.)
+        self.assertEqual(env._rollout_total_samples, 0)
 
     def test_yaw_tracking_failure_cannot_pass_with_zero_planar_error(self):
         metrics = core.EpisodeMetrics()

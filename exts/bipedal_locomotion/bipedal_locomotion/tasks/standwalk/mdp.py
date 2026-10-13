@@ -7,7 +7,7 @@ import torch
 from isaaclab.managers import CommandTerm, CommandTermCfg, SceneEntityCfg
 from isaaclab.utils import configclass
 
-from bipedal_locomotion.controllers.standwalk_core import sample_cases, scheduled_velocity, standing_mask
+from bipedal_locomotion.controllers.standwalk_core import allocate_case_quota, scheduled_velocity, standing_mask
 from bipedal_locomotion.tasks.locomotion import mdp as legacy
 from bipedal_locomotion.tasks.locomotion.mdp.commands.gait_command import GaitCommand
 
@@ -24,6 +24,7 @@ class StandWalkVelocity(CommandTerm):
         self._command = torch.zeros(self.num_envs, 3, device=self.device)
         self.target = torch.zeros_like(self._command)
         self.cases = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.case_quota = allocate_case_quota(self.num_envs, cfg.stage, self.device)
         self.is_standing_env = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
         self.metrics = {key: torch.zeros(self.num_envs, device=self.device)
                         for key in ("linear_error", "yaw_error", "standing_fraction")}
@@ -34,7 +35,7 @@ class StandWalkVelocity(CommandTerm):
 
     def _resample_command(self, env_ids):
         count = len(env_ids)
-        cases = sample_cases(count, self.cfg.stage, self.device)
+        cases = self.case_quota[env_ids].clone()
         target = torch.tensor(self.cfg.walk_velocity, device=self.device).repeat(count, 1)
         if self.cfg.stage == "expanded":
             random_target = (2 * torch.rand(count, 3, device=self.device) - 1) * torch.tensor(self.cfg.velocity_limits, device=self.device)
