@@ -10,6 +10,10 @@ Teacher 直接观察真实负载交互 `[Fx,Fy,Mz]`，没有 intent estimator，
 本机当前 Python 环境只有 Isaac Lab 源码，没有 Isaac Sim runtime，且没有正式低层 checkpoint。
 需要在已有 Linux Isaac 环境中先完成下述 smoke 和基线，才能评价带负载的稳定性。
 
+2026-10-13 服务器诊断补充：旧 checkpoint 的零速回合在约 0.35 s 失败；`-0.25 m/s` 行走在无负载/
+有负载下均完成 3 个 20 s 回合。当前先按 [低层站立与起停微调方案](locomotion_standwalk_finetune.md)
+补齐低层能力，使用通过验收的新 checkpoint 后再执行本页训练流程。不能把稳定行走等同于稳定零速支撑。
+
 | 阶段 | 优化对象 | 力输入 | 动作 |
 |---|---|---|---|
 | 原 WholeBody locomotion | 腿部 actor＋低层 history encoder | 未来 5×6 arm-on-base wrench | 十个腿关节位置 |

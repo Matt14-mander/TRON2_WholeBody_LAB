@@ -325,7 +325,9 @@ def stand_still_for_joints(
     env: ManagerBasedRLEnv, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
     asset = env.scene[asset_cfg.name]
-    dof_error = torch.sum(torch.abs(asset.data.joint_pos - asset.data.default_joint_pos), dim=1)
+    dof_error = torch.sum(torch.abs(
+        asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    ), dim=1)
 
     cmd = env.command_manager.get_command(command_name)
     mask = (torch.norm(cmd[:, :2], dim=1) < 0.05) & (torch.abs(cmd[:, 2]) < 0.05)

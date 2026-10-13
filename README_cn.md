@@ -55,6 +55,10 @@ pip install -e rsl_rl
 专用入口为 `scripts/rsl_rl/train_paint_teacher.py`，包含零力诊断、固定臂部基线、PPO 训练和评估。
 控制契约及 Linux 启动步骤见 [docs/paint_teacher_training.md](docs/paint_teacher_training.md)；Isaac Sim 闭环稳定性尚待验证。
 
+当前 checkpoint 在零速下不稳定、在 `-0.25 m/s` 行走下无负载/有负载均已通过初步基线。
+新增独立低层站立与起停微调入口 `scripts/rsl_rl/finetune_standwalk.py`，先补齐低层再冻结用于 teacher。
+分阶段训练和固定测试集见 [docs/locomotion_standwalk_finetune.md](docs/locomotion_standwalk_finetune.md)。
+
 ## 训练
 
 任务 ID 均在 [exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/__init__.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/__init__.py) 中注册。
