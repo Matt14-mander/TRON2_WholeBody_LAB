@@ -50,6 +50,11 @@ pip install -e rsl_rl
 
 下一阶段是 OCS2 ROS 2 C++ 节点、Pinocchio RNEA wrench 推算和 Isaac Lab PLAY bridge。完整接口、阶段划分和安全约束见 [docs/whole_body_ocs2.md](docs/whole_body_ocs2.md)。
 
+新增独立 PAINT 高层 teacher 任务：冻结已有 WholeBody locomotion actor/encoder，读取负载真实
+`[Fx,Fy,Mz]` 与臂部历史，训练底座速度和六维臂部位置目标，不接入 intent estimator。
+专用入口为 `scripts/rsl_rl/train_paint_teacher.py`，包含零力诊断、固定臂部基线、PPO 训练和评估。
+控制契约及 Linux 启动步骤见 [docs/paint_teacher_training.md](docs/paint_teacher_training.md)；Isaac Sim 闭环稳定性尚待验证。
+
 ## 训练
 
 任务 ID 均在 [exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/__init__.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/__init__.py) 中注册。
