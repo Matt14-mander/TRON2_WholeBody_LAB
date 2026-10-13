@@ -1,0 +1,2 @@
+trajectory_id,split,accepted,fall,termination_reason,frames,arrival_time,target_x,target_y,target_z,terminal_vx,terminal_vy,terminal_wz,max_base_tilt_deg,arm_position_rmse,base_velocity_rmse,episode_file
+trajectory_000000,train,True,False,completed,226,0.5,0.24591401976868255,-0.1424967734331999,0.8050058636738239,-0.25,0.0,0.0,10.829946633255043,0.29947925107529777,0.241146981070307,episodes/train/trajectory_000000.npz
