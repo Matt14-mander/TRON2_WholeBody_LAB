@@ -19,4 +19,6 @@ python scripts/paint/analyze_pd_pairs.py logs/paint/demo_run
 输出目录必须为空；有桌面时可加 `--viewer`。
 此示例使用旧显式 PD 训练；复现上述指标须选择 `--arm_pd_backend explicit`。
 新实验默认使用 native PD，其响应和估计误差需要单独验证。
+此模型仅是第一阶段固定底座示例；Isaac 行走训练模型位于 Linux 的
+`logs/paint/intent_model_20261012_153905`，未随本示例提交。阶段收束与交接边界见开发指南。
 完整 Linux 采集、训练和部署操作见 [开发指南](../../../docs/paint_intent_pd.md)。
