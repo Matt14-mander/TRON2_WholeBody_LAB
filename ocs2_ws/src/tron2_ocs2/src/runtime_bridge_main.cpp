@@ -58,7 +58,6 @@ void sendAll(int socket, const std::string& message) {
       if (errno == EINTR) continue;
       throw std::runtime_error(std::string("send failed: ") + std::strerror(errno));
     }
-    if (sent == 0) throw std::runtime_error("send returned zero bytes");
     offset += static_cast<std::size_t>(sent);
   }
 }
@@ -182,12 +181,7 @@ int main(int argc, char** argv) {
   try {
     const int port = parsePort(argv[4]);
     const char* bindAddress = argc == 6 ? argv[5] : "127.0.0.1";
-    const auto initializationStarted = std::chrono::steady_clock::now();
     tron2_ocs2::SolverCore solver(argv[1], argv[2], argv[3]);
-    std::clog << "[OCS2_PROFILE] initialization_ms="
-              << std::chrono::duration<double, std::milli>(
-                     std::chrono::steady_clock::now() - initializationStarted).count()
-              << std::endl;
 
     FileDescriptor server(::socket(AF_INET, SOCK_STREAM, 0));
     if (server.get() < 0) throw std::runtime_error(std::string("socket failed: ") + std::strerror(errno));

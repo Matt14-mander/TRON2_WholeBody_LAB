@@ -46,15 +46,11 @@ add_executable(tron2_ocs2_bridge src/runtime_bridge_main.cpp)
 target_link_libraries(tron2_ocs2_bridge ${PROJECT_NAME})
 ament_target_dependencies(tron2_ocs2_bridge ocs2_oc ocs2_core)
 
-add_executable(tron2_ocs2_benchmark src/benchmark_main.cpp)
-target_link_libraries(tron2_ocs2_benchmark ${PROJECT_NAME})
-ament_target_dependencies(tron2_ocs2_benchmark ocs2_oc ocs2_core)
-
 add_executable(tron2_ocs2_trajectory_export src/trajectory_export_main.cpp)
 target_link_libraries(tron2_ocs2_trajectory_export ${PROJECT_NAME})
 ament_target_dependencies(tron2_ocs2_trajectory_export ocs2_oc ocs2_core)
 
-install(TARGETS ${PROJECT_NAME} tron2_ocs2_smoke tron2_ocs2_bridge tron2_ocs2_benchmark tron2_ocs2_trajectory_export
+install(TARGETS ${PROJECT_NAME} tron2_ocs2_smoke tron2_ocs2_bridge tron2_ocs2_trajectory_export
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -72,10 +68,6 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_dynamics test/test_dynamics.cpp)
   target_link_libraries(test_dynamics ${PROJECT_NAME})
-  ament_add_gtest(test_profiled_cost test/test_profiled_cost.cpp)
-  target_link_libraries(test_profiled_cost ${PROJECT_NAME})
-  ament_add_gtest(test_arm_state_limits test/test_arm_state_limits.cpp)
-  target_link_libraries(test_arm_state_limits ${PROJECT_NAME})
 endif()
 
 ament_package()

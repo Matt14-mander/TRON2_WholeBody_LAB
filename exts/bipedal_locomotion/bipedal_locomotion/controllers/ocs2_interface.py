@@ -8,7 +8,6 @@ policy and environment code.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from collections import deque
 import socket
 import threading
 import time
@@ -66,10 +65,6 @@ class Ocs2AsyncStatus:
     error: str | None
     error_serial: int
     busy: bool
-    observation: Ocs2MpcObservation | None = None
-    completed_wall_time: float | None = None
-    solution_serial: int = 0
-    submitted_wall_time: float | None = None
 
 
 def _finite_vector(name: str, value: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
@@ -240,15 +235,10 @@ class Ocs2AsyncClient:
     def __init__(self, client: Ocs2TcpClient):
         self._client = client
         self._condition = threading.Condition()
-        self._pending: tuple[int, Ocs2MpcObservation, float] | None = None
+        self._pending: tuple[int, Ocs2MpcObservation] | None = None
         self._latest_solution: Ocs2MpcSolution | None = None
         self._latest_duration_s: float | None = None
         self._latest_error: str | None = None
-        self._latest_observation = None
-        self._completed_wall_time = None
-        self._submitted_wall_time = None
-        self._solution_serial = 0
-        self._events = deque(maxlen=256)
         self._error_serial = 0
         self._generation = 0
         self._reset_pending = False
@@ -262,7 +252,7 @@ class Ocs2AsyncClient:
         with self._condition:
             if self._closed:
                 raise RuntimeError("OCS2 asynchronous client is closed.")
-            self._pending = (self._generation, observation, time.monotonic())
+            self._pending = (self._generation, observation)
             self._condition.notify()
 
     def status(self) -> Ocs2AsyncStatus:
@@ -273,29 +263,7 @@ class Ocs2AsyncClient:
                 error=self._latest_error,
                 error_serial=self._error_serial,
                 busy=self._busy or self._pending is not None,
-                observation=self._latest_observation,
-                completed_wall_time=self._completed_wall_time,
-                solution_serial=self._solution_serial,
-                submitted_wall_time=self._submitted_wall_time,
             )
-
-    def invalidate(self) -> None:
-        """Discard old-target results without destroying the solver warm start."""
-        with self._condition:
-            self._generation += 1
-            self._pending = None
-            self._latest_solution = None
-            self._latest_duration_s = None
-            self._latest_observation = None
-            self._completed_wall_time = None
-            self._submitted_wall_time = None
-            self._latest_error = None
-
-    def drain_events(self):
-        with self._condition:
-            events = list(self._events)
-            self._events.clear()
-            return events
 
     def reset(self) -> None:
         """Invalidate old results and enqueue a reset without blocking Isaac Lab."""
@@ -307,9 +275,6 @@ class Ocs2AsyncClient:
             self._latest_solution = None
             self._latest_duration_s = None
             self._latest_error = None
-            self._latest_observation = None
-            self._completed_wall_time = None
-            self._submitted_wall_time = None
             self._reset_pending = True
             self._condition.notify()
 
@@ -344,7 +309,7 @@ class Ocs2AsyncClient:
                     observation = None
                 else:
                     operation = "solve"
-                    generation, observation, submitted = self._pending  # type: ignore[misc]
+                    generation, observation = self._pending  # type: ignore[misc]
                     self._pending = None
                 self._busy = True
 
@@ -359,13 +324,6 @@ class Ocs2AsyncClient:
                 continue
 
             started = time.monotonic()
-            with self._condition:
-                self._events.append({"event": "solve_started", "generation": generation,
-                    "observation_sim_time": observation.time, "submitted_wall_time": submitted,
-                    "started_wall_time": started,
-                    "target_position_world": observation.end_effector_target_position_world.copy()})
-            solve_error = None
-            solution = None
             try:
                 solution = self._client.solve(observation)  # type: ignore[arg-type]
                 duration = time.monotonic() - started
@@ -376,35 +334,11 @@ class Ocs2AsyncClient:
                         self._latest_solution = solution
                         self._latest_duration_s = duration
                         self._latest_error = None
-                        self._latest_observation = observation
-                        self._completed_wall_time = time.monotonic()
-                        self._submitted_wall_time = submitted
-                        self._solution_serial += 1
             except (Ocs2BridgeError, OSError, ValueError, RuntimeError) as error:
-                solve_error = str(error)
                 with self._condition:
                     current_generation = self._generation
                 if generation == current_generation:
                     self._record_error(error)
             finally:
                 with self._condition:
-                    self._events.append({
-                        "event": "solve_completed", "generation": generation,
-                        "observation_sim_time": observation.time,
-                        "target_position_world": observation.end_effector_target_position_world.copy(),
-                        "target_quaternion_wxyz": observation.end_effector_target_quaternion_world.copy(),
-                        "started_wall_time": started, "completed_wall_time": time.monotonic(),
-                        "submitted_wall_time": submitted,
-                        "solve_duration_s": time.monotonic() - started,
-                        "invalidated": generation != self._generation,
-                        "error": solve_error,
-                        "solution": None if solution is None else {
-                            "time": solution.time,
-                            "arm_position": solution.arm_position.copy(),
-                            "arm_velocity": solution.arm_velocity.copy(),
-                            "arm_feedforward_effort": solution.arm_feedforward_effort.copy(),
-                            "base_velocity_command": solution.base_velocity_command.copy(),
-                            "ocs2_arm_on_base_wrench_plan": solution.base_wrench_prediction.copy(),
-                        },
-                    })
                     self._busy = False

@@ -15,9 +15,7 @@ from .ocs2_interface import (
     Ocs2MpcObservation,
     Ocs2MpcSolution,
     Ocs2TcpClient,
-    validate_mpc_solution,
 )
-from .ocs2_live import ArmTargetSmoother, FIXED_WALK_COMMAND, target_values
 
 
 ARM_JOINT_NAMES = tuple(f"arm{index}_Joint" for index in range(1, 7))
@@ -131,15 +129,11 @@ class Ocs2PlayBridge(Ocs2OutputApplicator):
         update_period_s: float = 0.1,
         target_offset_world: np.ndarray = (0.0, 0.0, 0.0),
         target_arrival_s: float = 1.0,
-        arm_speed: float = 0.4,
-        arm_acceleration: float = 1.0,
     ):
         super().__init__(env)
-        if not 0 < arm_speed <= 5 or not 0 < arm_acceleration <= 20:
-            raise ValueError("Live arm speed/acceleration must be within 5 rad/s and 20 rad/s^2.")
-        if not np.isfinite(max_solution_age_s) or max_solution_age_s < 0.0:
+        if max_solution_age_s < 0.0:
             raise ValueError("max_solution_age_s must be non-negative.")
-        if not np.isfinite(update_period_s) or update_period_s <= 0.0:
+        if update_period_s <= 0.0:
             raise ValueError("update_period_s must be positive.")
         self._target_position_implicit = target_position_world is None
         self._target_quaternion_implicit = target_quaternion_world is None
@@ -164,8 +158,8 @@ class Ocs2PlayBridge(Ocs2OutputApplicator):
             if quaternion_norm < 1e-9:
                 raise ValueError("OCS2 target quaternion has zero norm.")
             self._target_quaternion_world /= quaternion_norm
-        if not np.isfinite(target_arrival_s) or not 0 <= target_arrival_s <= 1.0:
-            raise ValueError("OCS2 target arrival time must be within the 1 s horizon.")
+        if not np.isfinite(target_arrival_s) or target_arrival_s < 0.0:
+            raise ValueError("OCS2 target arrival time must be finite and non-negative.")
         self._target_arrival_s = target_arrival_s
         self._target_deadline_s: float | None = None
         ee_body_ids, ee_body_names = self._robot.find_bodies(["gripper_base_Link"], preserve_order=True)
@@ -182,59 +176,6 @@ class Ocs2PlayBridge(Ocs2OutputApplicator):
         self._reported_error_serial = 0
         self._reported_solution_time: float | None = None
         self._pending_message_printed = False
-        self._arm_speed = arm_speed
-        self._arm_acceleration = arm_acceleration
-        limits = self._numpy(self._robot.data.soft_joint_pos_limits[:, self._arm_joint_ids])
-        self._smoother = ArmTargetSmoother(
-            self._numpy(self._robot.data.joint_pos[:, self._arm_joint_ids]),
-            limits[:, 0], limits[:, 1], arm_speed, arm_acceleration,
-        )
-        self.target_id = "initial"
-        self.target_revision = 0
-        self.diagnostics = {}
-
-    def set_target(self, position_world, quaternion_wxyz, arrival_s=1.0, target_id=None):
-        """Accept a new reference on the simulation thread and invalidate old work."""
-        position, quaternion, arrival = target_values(position_world, quaternion_wxyz, arrival_s)
-        measured = self._numpy(self._robot.data.body_pos_w[:, self._ee_body_id])
-        if np.linalg.norm(position - measured) > 0.15:
-            raise ValueError("Live target exceeds the initial 0.15 m measured-EE workspace guard.")
-        self._target_position_world = position
-        self._target_quaternion_world = quaternion
-        self._target_position_implicit = False
-        self._target_quaternion_implicit = False
-        self._target_arrival_s = arrival
-        self._target_deadline_s = None
-        self.target_revision += 1
-        self.target_id = str(target_id or self.target_revision)
-        self._async_client.invalidate()
-        self._last_submission_time = -math.inf
-        self._next_retry_wall_time = -math.inf
-
-    def _fixed_command(self, command_observation):
-        command = torch.as_tensor(FIXED_WALK_COMMAND, device=self._env.device, dtype=command_observation.dtype).unsqueeze(0)
-        self._env.command_manager.get_command("base_velocity")[:] = command
-        command_observation.copy_(command)
-
-    def _fallback(self, policy_observation, command_observation):
-        # Hold the last bounded reference, rather than chasing measured joints.
-        self._smoother.velocity.fill(0.0)
-        self._set_arm_targets(self._smoother.position, np.zeros(6), np.zeros(6))
-        wrench = torch.zeros(1, 5, 6, device=self._env.device, dtype=policy_observation.dtype)
-        self._wrench_term.set_external_prediction(wrench)
-        policy_observation[:, self._policy_wrench_slice].zero_()
-        self._fixed_command(command_observation)
-
-    def _apply_solution(self, solution, policy_observation, command_observation):
-        validate_mpc_solution(solution)
-        if not np.allclose(solution.base_velocity_command, FIXED_WALK_COMMAND, atol=1e-4, rtol=0):
-            raise ValueError("Solver is not using the arm-only fixed-walk configuration.")
-        position, velocity = self._smoother.step(solution.arm_position, float(self._env.step_dt))
-        # Start with bounded PD targets; enable effort feed-forward only after
-        # actuator calibration and validating the effect of target smoothing.
-        self._set_arm_targets(position, velocity, np.zeros(6))
-        self._write_policy_inputs(solution, policy_observation, command_observation)
-        self._fixed_command(command_observation)
 
     def _observation(self) -> Ocs2MpcObservation:
         data = self._robot.data
@@ -246,8 +187,6 @@ class Ocs2PlayBridge(Ocs2OutputApplicator):
         if self._target_quaternion_world is None:
             self._target_quaternion_world = self._numpy(data.body_quat_w[:, self._ee_body_id])
         if self._target_deadline_s is None:
-            if np.linalg.norm(self._target_position_world - self._numpy(data.body_pos_w[:, self._ee_body_id])) > 0.15:
-                raise ValueError("Initial live target exceeds the 0.15 m measured-EE workspace guard.")
             self._target_deadline_s = simulation_time + self._target_arrival_s
             print(
                 f"[INFO] OCS2 live target: position={self._target_position_world.tolist()}, "
@@ -281,28 +220,6 @@ class Ocs2PlayBridge(Ocs2OutputApplicator):
             self._last_submission_time = observation.time
 
         status = self._async_client.status()
-        solution = status.solution
-        simulation_age = None if solution is None else observation.time - solution.time
-        wall_age = None if status.completed_wall_time is None else (
-            now - status.completed_wall_time + (status.solve_duration_s or 0.0)
-        )
-        if status.submitted_wall_time is not None:
-            wall_age = now - status.submitted_wall_time
-        self.diagnostics = {
-            "control_sim_time": observation.time, "control_wall_time": now,
-            "target_id": self.target_id, "target_revision": self.target_revision,
-            "target_position_world": self._target_position_world.copy(),
-            "target_quaternion_wxyz": self._target_quaternion_world.copy(),
-            "target_deadline_sim_time": self._target_deadline_s,
-            "solution_serial": status.solution_serial,
-            "solution_sim_time": None if solution is None else solution.time,
-            "solve_duration_s": status.solve_duration_s,
-            "solution_sim_age_s": simulation_age, "solution_wall_age_s": wall_age,
-            "busy": status.busy, "solver_error": status.error,
-            "applied": False, "failure_reason": None,
-            "end_effector_error_m": float(np.linalg.norm(
-                self._numpy(self._robot.data.body_pos_w[:, self._ee_body_id]) - self._target_position_world)),
-        }
         if status.error_serial > self._reported_error_serial:
             self._reported_error_serial = status.error_serial
             self._failure_count += 1
@@ -313,24 +230,18 @@ class Ocs2PlayBridge(Ocs2OutputApplicator):
             self._next_retry_wall_time = now + 1.0
             self._warn(f"OCS2 background solve failed (failure {self._failure_count}): {status.error}")
 
+        solution = status.solution
         if solution is None:
-            self.diagnostics["failure_reason"] = "solver_error" if status.error else "pending"
             self._fallback(policy_observation, command_observation)
             if not self._pending_message_printed:
                 print(
-                    "[INFO] OCS2 solve is pending; continuing fixed walking with arm hold."
+                    "[INFO] OCS2 solve is pending; physics is paused while WebRTC remains responsive."
                 )
                 self._pending_message_printed = True
             return False
 
         solution_age = observation.time - solution.time
-        if status.error is not None:
-            self.diagnostics["failure_reason"] = "solver_error"
-            self._fallback(policy_observation, command_observation)
-            return False
-        if (solution_age < -1e-6 or solution_age > self._max_solution_age_s
-                or wall_age is None or wall_age > self._max_solution_age_s):
-            self.diagnostics["failure_reason"] = "stale_solution"
+        if solution_age < -1e-6 or solution_age > self._max_solution_age_s:
             self._fallback(policy_observation, command_observation)
             self._warn(
                 f"OCS2 solution is stale: age={solution_age:.3f}s, "
@@ -340,12 +251,6 @@ class Ocs2PlayBridge(Ocs2OutputApplicator):
 
         try:
             self._apply_solution(solution, policy_observation, command_observation)
-            self.diagnostics["applied"] = True
-            self.diagnostics["arm_position_reference"] = self._smoother.position.copy()
-            self.diagnostics["arm_velocity_reference"] = self._smoother.velocity.copy()
-            self.diagnostics["arm_feedforward_effort_applied"] = np.zeros(6)
-            self.diagnostics["solver_arm_position"] = solution.arm_position.copy()
-            self.diagnostics["ocs2_arm_on_base_wrench_plan"] = solution.base_wrench_prediction.copy()
             self._failure_count = 0
             self._pending_message_printed = False
             if solution.time != self._reported_solution_time:
@@ -363,7 +268,6 @@ class Ocs2PlayBridge(Ocs2OutputApplicator):
             return True
         except (Ocs2BridgeError, OSError, ValueError, RuntimeError) as error:
             self._failure_count += 1
-            self.diagnostics["failure_reason"] = str(error)
             self._fallback(policy_observation, command_observation)
             self._warn(f"OCS2 bridge fallback (failure {self._failure_count}): {error}")
             return False
@@ -375,20 +279,16 @@ class Ocs2PlayBridge(Ocs2OutputApplicator):
             self._last_warning_wall_time = now
 
     def reset(self) -> None:
-        # A fallen/reset episode must never resume the previous world target.
-        self._target_position_world = None
-        self._target_quaternion_world = None
-        self._target_offset_world = np.zeros(3)
-        self.target_revision += 1
-        self.target_id = f"reset_hold_{self.target_revision}"
+        if self._target_position_implicit:
+            self._target_position_world = None
+        if self._target_quaternion_implicit:
+            self._target_quaternion_world = None
         self._target_deadline_s = None
         self._last_submission_time = -math.inf
         self._next_retry_wall_time = -math.inf
         self._reported_solution_time = None
         self._pending_message_printed = False
         self._async_client.reset()
-        self._smoother.position = self._numpy(self._robot.data.joint_pos[:, self._arm_joint_ids])
-        self._smoother.velocity.fill(0.0)
 
     def close(self) -> None:
         self._async_client.close()

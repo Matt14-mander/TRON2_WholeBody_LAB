@@ -104,48 +104,22 @@ orientation. An explicit `--ocs2_target_position` and optional
 arrival time must be within the configured MPC horizon; unlike the former
 zero-arrival live request, a positive value avoids an immediate reference step.
 
-Live PLAY now uses `config/task_arm_live.info`: the optimizer's planar inputs
-are constrained to `[-0.29, -0.08, 0]`, matching the continuing walk command.
-The arm position/velocity targets are rate limited and feed-forward effort is
-disabled for the first diagnostic stage. Its 5x6 base-wrench prediction replaces the zero
+OCS2 owns the six arm position/velocity/feed-forward-effort targets and the
+planar locomotion command. Its 5x6 base-wrench prediction replaces the zero
 PLAY command observed by the policy. It is not applied as an external force:
 the articulated arm already produces that reaction in simulation. Blocking
 TCP and DDP work runs on a background thread, and observations submitted while
-a solve is in flight are coalesced to the newest state. Physics continues while
-waiting. A timeout, invalid response, stale timestamp, or solver failure holds
-the last bounded arm position target, zeros velocity/effort/predicted wrench,
-and preserves the fixed walk command. Both simulation and wall-clock solution
-ages are checked. New targets invalidate old-target results.
+a solve is in flight are coalesced to the newest state. While no fresh result
+is available, PLAY pauses physics but continues pumping the render/WebRTC event
+loop. A timeout, invalid response, stale timestamp, or solver failure therefore
+cannot advance the robot with mismatched inputs; the arm is held and both the
+planar command and predicted wrench are zeroed.
 
 The bridge reports wall-clock solve duration. If solves are slower than the
 requested update period, the bridge is useful for functional validation but
 not real-time locomotion; use offline export/replay until MPC latency is reduced.
 
-The earlier runtime command above must use `config/task_arm_live.info` for the
-new arm-only live client; the unconstrained `task.info` remains for offline
-experiments. See [online development and validation](../../../../docs/ocs2_live_arm_development.md)
-for hot-update targets, aligned diagnostic recording, performance profiling,
-and the conditions for advancing to bulk collection.
-
-The first performance pass keeps SLQ available, adds exact analytic dynamics and
-a model-consistent initializer, and provides `tron2_ocs2_benchmark` for repeated
-cold/warm solves without Isaac Lab or TCP. Run `scripts/ocs2/run_mpc_benchmarks.sh`
-from the repository root after rebuilding to compare AD/analytic SLQ and iLQR
-variants. The live-development guide contains commands and interpretation of
-latency, cost, constraint and internal DDP statistics. Candidate configurations
-require live tracking validation before adoption.
-
 ## Offline trajectory export and replay
-
-The offline exporter initializes the base root height from
-`model.initialBaseHeight` in `config/task.info` (0.85 m, matching the Isaac Lab
-SFYG reset pose). This is intentionally separate from `model.desiredBaseHeight`
-(0.74 m), the steady-state height used by OCS2 dynamics. If playback begins
-after a warm-up and the simulated robot has settled to a different height,
-measure the actual root height at motion start and set `initialBaseHeight` in
-the runtime task-info copy to that value before exporting. Changing the
-desired height to match the spawn height would change the OCS2 model, not
-correct its initial observation.
 
 When the host cannot solve OCS2 in real time, export the complete primal
 solution once. The default target is position `[0.35, 0.0, 0.85]`, identity
@@ -175,16 +149,13 @@ For a safer first dataset, prefer a small displacement from the *initial*
 forcing an identity wrist orientation:
 
 ```bash
-mkdir -p "$HOME/datasets/tron2_ocs2_debug"
 ros2 run tron2_ocs2 tron2_ocs2_trajectory_export \
-  "$PWD/ocs2_ws/src/tron2_ocs2/config/task.info" \
+  /tmp/tron2_ocs2_runtime.info \
   "$PWD/robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf" \
   /tmp/tron2_ocs2_codegen \
-  "$HOME/datasets/tron2_ocs2_debug/reach_02m.csv" \
+  /tmp/tron2_reach_safe.csv \
   --relative-target 0.02 0.0 0.0 0.02 1.0
 ```
-
-Keep replayable CSVs outside `/tmp`, which may be cleared between sessions.
 
 Offline export checks every MPC knot and every 52-column output sample against
 the URDF arm position limits with a 0.05 rad margin, arm velocity/effort
@@ -244,17 +215,6 @@ test split. Falls and excessive-tilt episodes are retained under `rejected/`
 and recorded in `replay_failures.csv`. `rollout_manifest.csv` stores per-run
 tracking metrics. Use `--resume_collection` to skip all trajectory ids already
 present in either metadata file.
-
-For intent-estimator training, use a new rollout output directory after the
-post-step alignment update. Each row retains the legacy pre-step state and
-applied interval wrench for existing consumers, and now also stores the arm
-response at `t + step_dt`, `external_wrench_base_at_response` in that response
-frame, both timestamps, and `response_observation_valid`. Done steps can
-contain an auto-reset state and are not valid response samples. The initial
-trajectory warm-up holds the first arm pose with zero arm velocity, zero
-feed-forward effort, and zero predicted wrench; it does not replay the first
-OCS2 wrench before arm motion. Older rollout NPZ files lack this alignment
-contract and must not be mixed into the new intent dataset.
 
 Replay requires only the Isaac Lab environment; do not start the TCP service:
 

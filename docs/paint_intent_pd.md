@@ -1,10 +1,49 @@
 # PAINT 意图估计：PD＋负载交互采集与 MuJoCo 部署
 
-本分支 `codex/paint-intent-pd` 从 `ocs2-core-stage1` 的 `82ef92c` 创建。
+本功能从 `codex/paint-intent-pd` 整理合入 main，仅包含 PAINT 工具及必要的独立复位依赖。
 第一目标是让意图估计器从机械臂观测历史恢复交互力，并在 MuJoCo 在线验证。
 现有 OCS2 控制流程保留；新增流程不连接 OCS2、不读取其轨迹、不需要 ROS 2。
 
+## 当前验证状态
+
+Isaac PD＋负载七条件采集已跑通，按姿态组留出的测试 MAE 约为
+Fx=0.065 N、Fy=0.062 N、Mz=0.0077 Nm；新 seed 的旁路测试完成 21/21 条轨迹。
+这些结果来自 Linux 的 `logs/paint/intent_model_20261012_153905`，模型和原始数据未提交到 Git。
+仓库内 `examples/paint/fixed_base_demo` 是另一份固定底座示例。
+
+MuJoCo 跨仿真估计和浮动底座行走尚未通过；行走迁移优先对接官方
+`tron2_rl_deploy_python` 与 `tron2_mujoco_sim`，当前独立 MuJoCo 入口用于诊断。
+估计器保持旁路，不根据估计输出自动改变机器人指令。真机未验证。
+
 ## 方法与当前边界
+
+### Intent estimator 第一阶段收束（2026-10-13）
+
+本阶段交付为独立的观测估计器：PD＋刚性负载七条件采集、组级划分训练、
+TorchScript 导出、旁路推理及离线/在线诊断。代码已通过此前的 PAINT 整理提交合入 main；
+本阶段收束保留 main 的后续部署与 teacher 开发，不重新引入旧分支的 MPC 求解器改动。
+
+阶段验收记录：
+
+| 项目 | 结果 | 适用范围 |
+| --- | --- | --- |
+| Isaac 留出组测试 | MAE 0.0647 N / 0.0624 N / 0.00774 Nm | 当前负载、PD 与采样契约 |
+| Isaac 新 seed 旁路运行 | 21/21 条轨迹完成 | 初步同分布验证 |
+| Isaac 动作/encoder 重放 | 最大误差 1.91e-6 / 1.13e-6 | 导出网络可重现记录的输入输出 |
+| MuJoCo 动作/encoder 重放 | 最大误差 5.25e-6 / 1.19e-6 | 不等于动力学一致 |
+| 两端首帧输入 | 非 latent 项一致，latent 差异约 4.69e-7 | 不证明运动后的全部观测转换一致 |
+| MuJoCo 无负载行走 | 2.36 s 触发 32.09° 倾角限制 | 行走迁移尚未通过 |
+
+部署输入固定为 `arm1_Joint` 至 `arm6_Joint` 的 q、dq、上一控制间隔实际位置目标，
+4 帧历史、20 ms 周期；输出为负载局部质心 Fx/Fy/Mz。复位或采样中断后清空历史。
+估计器不写机器人控制命令。更换负载、PD、仿真版本或采样契约后，需要重新评估。
+
+`logs/paint/intent_model_20261012_153905` 是本阶段 Linux 训练产物，未包含在 Git 中。
+交接时应连同 metadata、metrics、splits 和来源 contract 保存；不能用仓库固定底座示例
+代替该模型，也不能将离线 gate 通过解释为 sim2sim 或真机部署通过。
+
+下一阶段以官方部署链路验证行走，再按零外力、正负单轴外力顺序检验估计器的
+偏置、方向与幅值。闭环使用估计值和真机验证不属于本阶段已完成内容。
 
 参考 [PAINT v2 §III-C](https://arxiv.org/html/2604.12852v2#S3.SS3)：
 输入为机械臂 q、dq、已经执行的位置指令历史，输出 Fx/Fy/Mz；用已知仿真交互 wrench 回归。
@@ -29,54 +68,27 @@ Isaac 入口在输出目录生成独立 `robot_payload.usdc`；MuJoCo 入口生�
 
 ## Linux 同步
 
-本次使用本地 Git bundle，不推送 GitHub。包包含本分支的 Git 历史、代码和初步模型；
-不包含 logs 下的仿真数据、Conda 环境或 robot_description 子模块实体文件。
-本机交付包路径为 `logs/paint/sync/paint-intent-pd.bundle`。
-
-先在 **Windows PowerShell** 上传（若服务器名称不能解析，将目标替换成实际 IP）：
-
-```powershell
-Set-Location 'E:\Robot\Sustech-多人形协作\TRON2_WholeBody_LAB'
-scp '.\logs\paint\sync\paint-intent-pd.bundle' matt14@server-Super-Server:~/paint-intent-pd.bundle
-```
-
-先确认 Linux 工作区干净。若有未提交代码，先自行保存，不要用 reset 覆盖。
+Windows 上完成本机 main 合并后，由用户推送 `git push origin main`。
+Linux 先确认工作区干净，再同步；有未提交代码时先保存，不要用 reset 覆盖。
 
 ```bash
 cd ~/workspace/isaaclab_tron2/TRON2_WholeBody_LAB
 git status --short
-git bundle verify "$HOME/paint-intent-pd.bundle"
-git fetch "$HOME/paint-intent-pd.bundle" \
-  refs/heads/codex/paint-intent-pd:refs/remotes/paint-bundle/paint-intent-pd
-if git show-ref --verify --quiet refs/heads/codex/paint-intent-pd; then
-  git switch codex/paint-intent-pd
-else
-  git switch -c codex/paint-intent-pd refs/remotes/paint-bundle/paint-intent-pd
-fi
-git merge --ff-only refs/remotes/paint-bundle/paint-intent-pd
+git fetch origin main
+git switch main
+git merge --ff-only origin/main
 git submodule update --init --recursive robot_description
-git branch --show-current
-git log -1 --oneline
-```
-
-导入、合并时若有本地不同提交，ff-only 会停止；保留现有代码再检查差异。
-如果 robot_description 已完整且对应提交一致，子模块命令无需额外下载。
-
-激活你原来能运行 WholeBody PLAY 的 Isaac Lab 环境；当前未提供该环境名，因此交互输入。
-这里不是 OCS2 的 Conda 环境。
-
-```bash
-conda env list
-read -r -p 'Isaac Lab Conda 环境名: ' PAINT_ENV
-conda activate "$PAINT_ENV"
+conda activate limx
 python -m pip install -e exts/bipedal_locomotion -e rsl_rl
-python -m pip install 'mujoco==3.2.7'
 export PAINT_CHECKPOINT="$PWD/logs/rsl_rl/sfyg_tron_2a_wholebody_flat/2026-09-10_22-16-15/model_20000.pt"
 test -f "$PAINT_CHECKPOINT"
 export PAINT_RUN="$(date +%Y%m%d_%H%M%S)"
 python -m unittest discover -s tests -p test_paint_intent.py -v
 ```
 
+只同步代码及仓库演示模型；`logs/` 数据、Linux 训练模型和 Conda 环境不会自动传输。
+ff-only 若停止，保留现有提交后检查分叉原因。
+MuJoCo 3.2.7 的独立目录安装方法见下文，不必替换 Isaac 环境的已有版本。
 后续命令在同一个终端执行，变量沿用上述定义。输出目录必须为空；重跑时更新 PAINT_RUN。
 
 ## 先看 MuJoCo 初始效果
@@ -86,7 +98,7 @@ python -m unittest discover -s tests -p test_paint_intent.py -v
 
 ```bash
 python scripts/paint/run_mujoco.py \
-  --model_dir examples/paint/fixed_base_demo \
+  --model_dir examples/paint/fixed_base_demo --arm_pd_backend explicit \
   --output_dir "logs/paint/mujoco_demo_$PAINT_RUN" \
   --seed 142 --warmup 0.5 --duration 1 --recovery 0.5
 python scripts/paint/analyze_pd_pairs.py "logs/paint/mujoco_demo_$PAINT_RUN" \
@@ -120,7 +132,7 @@ paint327() {
 }
 paint327 -c 'import mujoco; print(mujoco.__version__, mujoco.__file__)'
 PAINT_DEMO327="logs/paint/demo327_$(date +%Y%m%d_%H%M%S)"
-paint327 scripts/paint/run_mujoco.py --model_dir examples/paint/fixed_base_demo \
+paint327 scripts/paint/run_mujoco.py --model_dir examples/paint/fixed_base_demo --arm_pd_backend explicit \
   --output_dir "$PAINT_DEMO327" --seed 142 --warmup 0.5 --duration 1 --recovery 0.5
 paint327 scripts/paint/analyze_pd_pairs.py "$PAINT_DEMO327"
 ```
@@ -131,7 +143,7 @@ paint327 scripts/paint/analyze_pd_pairs.py "$PAINT_DEMO327"
 
 ## Isaac Lab：采集初始行走/受力数据
 
-先跑零底座速度指令对照：底座仍由行走策略支撑，**不等于物理固定底座**。
+底座由行走策略支撑，**不等于物理固定底座**。当前 checkpoint 在零速度指令下不稳定，使用已验证的 `-0.25 0 0` 作为初步行走基线。
 入口检查模型 actor 与 encoder 完整匹配，避免仓库 runner 静默跳过不匹配权重。
 新增负载会改变 critic 的质量观测；采集只执行已验证匹配的 actor 和 encoder。
 

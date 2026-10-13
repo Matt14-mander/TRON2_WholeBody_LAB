@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -22,46 +22,6 @@ def _column_names() -> tuple[str, ...]:
 
 
 TRAJECTORY_COLUMNS = _column_names()
-
-
-def warmup_hold_solution(
-    solution: Ocs2MpcSolution, base_command: np.ndarray
-) -> Ocs2MpcSolution:
-    """Hold the first arm pose without replaying its planned motion or wrench."""
-    held = replace(
-        solution,
-        arm_velocity=np.zeros(6, dtype=np.float64),
-        arm_feedforward_effort=np.zeros(6, dtype=np.float64),
-        base_velocity_command=np.asarray(base_command, dtype=np.float64).copy(),
-        base_wrench_prediction=np.zeros((5, 6), dtype=np.float64),
-    )
-    validate_mpc_solution(held)
-    return held
-
-
-def replay_diagnostic_solution(
-    solution: Ocs2MpcSolution,
-    *,
-    hold_arm_position: np.ndarray | None = None,
-    zero_arm_effort: bool = False,
-    fixed_base_command: np.ndarray | None = None,
-    zero_wrench: bool = False,
-) -> Ocs2MpcSolution:
-    """Apply independent replay ablations without changing the source CSV."""
-    changes = {}
-    if hold_arm_position is not None:
-        changes["arm_position"] = np.asarray(hold_arm_position, dtype=np.float64).copy()
-        changes["arm_velocity"] = np.zeros(6, dtype=np.float64)
-        changes["arm_feedforward_effort"] = np.zeros(6, dtype=np.float64)
-    elif zero_arm_effort:
-        changes["arm_feedforward_effort"] = np.zeros(6, dtype=np.float64)
-    if fixed_base_command is not None:
-        changes["base_velocity_command"] = np.asarray(fixed_base_command, dtype=np.float64).copy()
-    if zero_wrench:
-        changes["base_wrench_prediction"] = np.zeros((5, 6), dtype=np.float64)
-    result = replace(solution, **changes)
-    validate_mpc_solution(result)
-    return result
 
 
 @dataclass(frozen=True)

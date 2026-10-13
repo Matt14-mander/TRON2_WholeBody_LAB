@@ -50,6 +50,11 @@ pip install -e rsl_rl
 
 下一阶段是 OCS2 ROS 2 C++ 节点、Pinocchio RNEA wrench 推算和 Isaac Lab PLAY bridge。完整接口、阶段划分和安全约束见 [docs/whole_body_ocs2.md](docs/whole_body_ocs2.md)。
 
+新增独立 PAINT 高层 teacher 任务：冻结已有 WholeBody locomotion actor/encoder，读取负载真实
+`[Fx,Fy,Mz]` 与臂部历史，训练底座速度和六维臂部位置目标，不接入 intent estimator。
+专用入口为 `scripts/rsl_rl/train_paint_teacher.py`，包含零力诊断、固定臂部基线、PPO 训练和评估。
+控制契约及 Linux 启动步骤见 [docs/paint_teacher_training.md](docs/paint_teacher_training.md)；Isaac Sim 闭环稳定性尚待验证。
+
 ## 训练
 
 任务 ID 均在 [exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/__init__.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/__init__.py) 中注册。
@@ -216,7 +221,12 @@ git add robot_description && git commit -m "chore: bump robot_description submod
 
 ## 测试 / Lint
 
-仓库未配置 test suite。`pyproject.toml` 含 `isort` + `pyright` 配置但没有 CI。
+PAINT 阶段功能包含机械臂 PD＋负载配对采集、估计器训练和旁路推理，操作见
+[PAINT 开发指南](docs/paint_intent_pd.md)。Isaac 初步效果已验证；MuJoCo 行走迁移和真机效果仍待验证。
+仓库示例模型是固定底座演示，不是 Linux 上训练的行走模型；`logs/` 中数据和模型不会随代码同步。
+
+可运行相关测试：`python -m unittest discover -s tests -p test_paint_intent.py -v`。
+`pyproject.toml` 含 `isort` + `pyright` 配置，但没有 CI。
 
 ## License
 

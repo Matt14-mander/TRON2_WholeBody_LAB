@@ -52,17 +52,15 @@ five prediction offsets are always available.
 
 - A localhost TCP service and non-blocking Isaac Lab PLAY client now connect
   the native C++ solver without mixing the OCS2 and Isaac Sim Conda environments.
-- The live PLAY adapter writes bounded arm position/velocity targets and the
-  normalized 5x6 predicted-wrench observation. Its planar command stays at
-  `[-0.29, -0.08, 0]`; feed-forward effort is zero during initial validation.
+- The PLAY adapter writes arm position/velocity/feed-forward effort targets,
+  the planar base command, and the normalized 5x6 predicted-wrench observation.
 - OCS2 runs on one background worker; requests are coalesced to the newest
   observation so a slow solver cannot block rendering or build an unbounded
-  queue. Physics and the locomotion policy continue while waiting. Missing,
-  stale, invalid, or failed results hold the last bounded arm reference with
-  zero velocity/effort and zero predicted wrench; walking commands persist.
-  Both simulation age and monotonic wall age (including queue time) must pass.
-  New targets invalidate in-flight old-target results without resetting the
-  solver warm start. Episode resets invalidate the old target and solution.
+  queue. Until a fresh solution is available, PLAY pumps the render/WebRTC
+  event loop but pauses physics, preventing fallback falls and episode resets
+  from invalidating a slow solve. Stale solutions, transport errors, and solver
+  failures hold the arm and zero both the locomotion command and predicted
+  wrench.
 - Build and closed-loop simulation validation on the Linux Isaac Lab host is
   still required before this stage is marked implemented.
 - Reuse the same transport-neutral contract for the MuJoCo deployment bridge.
@@ -108,8 +106,7 @@ five prediction offsets are always available.
 - Never apply the synthetic training wrench while a simulated or physical arm
   already produces the same reaction wrench.
 - Reject stale, non-finite, or dimensionally invalid OCS2 solutions.
-- On live solver failure, hold the arm and preserve the validated fixed walk
-  command. This behavior requires simulation validation before hardware use.
+- On solver failure, stop arm motion and send a zero planar base command.
 - Confirm the wrench sign is "arm acting on base" in the current base frame.
 
 ## Model validation record

@@ -213,7 +213,12 @@ git add robot_description && git commit -m "chore: bump robot_description submod
 
 ## Testing / Linting
 
-No test suite is configured. `pyproject.toml` contains `isort` + `pyright` configuration but no CI.
+The experimental PAINT workflow provides PD/payload data collection, estimator training and observation-only inference.
+See the [PAINT guide](docs/paint_intent_pd.md). Initial Isaac results are validated; MuJoCo walking transfer and hardware deployment remain unvalidated.
+The checked-in model is a fixed-base demo. Walking models and datasets under `logs/` are not synchronized with code.
+
+Run its tests with `python -m unittest discover -s tests -p test_paint_intent.py -v`.
+`pyproject.toml` contains `isort` + `pyright` configuration but no CI.
 
 ## License
 

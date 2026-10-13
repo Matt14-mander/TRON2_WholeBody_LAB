@@ -23,16 +23,7 @@ parser.add_argument(
     "--task", default="Isaac-Limx-SFYG-TRON2A-WholeBody-Flat-Play-v0"
 )
 parser.add_argument("--checkpoint_path", required=True)
-source_mode = parser.add_mutually_exclusive_group(required=True)
-source_mode.add_argument("--trajectory_manifest")
-source_mode.add_argument("--live", action="store_true", help="Collect one bounded online diagnostic run without trajectory CSVs.")
-parser.add_argument("--live_target_file", help="Hot-update end-effector JSON target file.")
-parser.add_argument("--live_duration", type=float, default=10.0)
-parser.add_argument("--ocs2_host", default="127.0.0.1")
-parser.add_argument("--ocs2_port", type=int, default=5555)
-parser.add_argument("--ocs2_timeout", type=float, default=120.0)
-parser.add_argument("--ocs2_deterministic_reset", action="store_true",
-                    help="Opt into nominal root/all-joint reset for --live; offline collection always uses nominal reset.")
+parser.add_argument("--trajectory_manifest", required=True)
 parser.add_argument("--output_dir", required=True)
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--split_seed", type=int, default=42)
@@ -91,32 +82,6 @@ AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.num_envs = 1
 
-if args_cli.live:
-    # Use the same control/recording path as PLAY so command and response
-    # alignment cannot diverge between diagnostic entry points.
-    import runpy
-    if args_cli.external_wrench_validation or args_cli.external_wrench_paired:
-        raise ValueError("Live diagnostics currently record a zero external-wrench baseline only.")
-    if not math.isfinite(args_cli.live_duration) or args_cli.live_duration <= 0:
-        raise ValueError("--live_duration must be finite and positive.")
-    live_args = [
-        "--task", args_cli.task, "--checkpoint_path", args_cli.checkpoint_path,
-        "--ocs2", "--ocs2_host", args_cli.ocs2_host,
-        "--ocs2_port", str(args_cli.ocs2_port), "--ocs2_timeout", str(args_cli.ocs2_timeout),
-        "--ocs2_live_duration", str(args_cli.live_duration),
-        "--ocs2_diagnostic_log", str(Path(args_cli.output_dir) / "live_diagnostics.jsonl"),
-        "--device", args_cli.device, "--seed", str(args_cli.seed),
-    ]
-    if args_cli.headless:
-        live_args.append("--headless")
-    if args_cli.ocs2_deterministic_reset:
-        live_args.append("--ocs2_deterministic_reset")
-    if args_cli.live_target_file:
-        live_args.extend(["--ocs2_target_file", args_cli.live_target_file])
-    sys.argv = [str(Path(__file__).with_name("play.py")), *live_args]
-    runpy.run_path(sys.argv[0], run_name="__main__")
-    raise SystemExit(0)
-
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
@@ -133,7 +98,6 @@ from rsl_rl.runner import OnPolicyRunner
 
 import bipedal_locomotion  # noqa: F401
 from bipedal_locomotion.controllers.ocs2_play_bridge import ARM_JOINT_NAMES
-from bipedal_locomotion.controllers.ocs2_reset import configure_nominal_ocs2_reset
 from bipedal_locomotion.controllers.ocs2_rollout_dataset import (
     append_manifest_row,
     completed_trajectory_ids,
@@ -174,8 +138,21 @@ def configure_collection_environment(
     env_cfg.commands.base_velocity.heading_command = False
     env_cfg.commands.base_velocity.rel_standing_envs = 0.0
     env_cfg.commands.base_velocity.rel_heading_envs = 0.0
-    configure_nominal_ocs2_reset(env_cfg, SceneEntityCfg("robot"))
+    reset_base = env_cfg.events.reset_robot_base
+    reset_joints = env_cfg.events.reset_robot_joints
+    if reset_base is None or reset_joints is None:
+        raise RuntimeError("The rollout task must define base and joint reset events.")
+    for reset_range in (reset_base.params["pose_range"], reset_base.params["velocity_range"]):
+        for axis in reset_range:
+            reset_range[axis] = (0.0, 0.0)
+    reset_joints.params["position_range"] = (0.0, 0.0)
+    reset_joints.params["velocity_range"] = (0.0, 0.0)
     if deterministic_pairing:
+        # The SFYG task normally restricts joint reset to the legs so training
+        # randomization cannot kick the arm.  Here the offset is exactly zero,
+        # so reset the complete articulation; otherwise each paired rollout
+        # inherits the previous rollout's terminal arm/gripper state.
+        reset_joints.params["asset_cfg"] = SceneEntityCfg("robot")
         # PLAY already disables policy corruption, but the history group feeds
         # the encoder independently and otherwise retains its training noise.
         env_cfg.observations.policy.enable_corruption = False
@@ -373,13 +350,6 @@ def main() -> None:
             "reference_point": "base_Link_origin",
             "semantics": "external_on_payload_proxy",
         },
-        "intent_response_label": {
-            "field": "external_wrench_base_at_response",
-            "frame": "base_Link at t + step_dt",
-            "reference_point": "base_Link_origin at t + step_dt",
-            "semantics": "external_on_payload_proxy during [t, t + step_dt)",
-            "features": "next_arm_position_actual, next_arm_velocity_actual, arm_position_reference",
-        },
         "ocs2_label": {
             "frame": "base_Link",
             "reference_point": "base_Link_origin",
@@ -526,19 +496,6 @@ def main() -> None:
                         base_body_id, wrench_body_id,
                     )
 
-                # The pre-step state cannot reveal a wrench first applied in
-                # [t, t + step_dt). Pair that interval's known input with the
-                # arm response measured at t + step_dt instead.
-                response_time = episode_time + float(env.unwrapped.step_dt)
-                response_valid = not bool(dones[0].item())
-                external_wrench_base_at_response = transform_wrench_to_base_origin(
-                    external_wrench_payload,
-                    next_state["payload_proxy_com_position_world"],
-                    next_state["payload_proxy_com_quaternion_world"],
-                    next_state["base_link_position_world"],
-                    next_state["base_link_quaternion_world"],
-                )
-
                 gravity_z = float(np.clip(-state["projected_gravity_body"][2], -1.0, 1.0))
                 tilt_deg = math.degrees(math.acos(gravity_z))
                 arm_error = state["arm_position_actual"] - solution.arm_position
@@ -575,14 +532,9 @@ def main() -> None:
                     "ocs2_arm_on_base_wrench_plan": solution.base_wrench_prediction.copy(),
                     "external_wrench_payload_at_body_com": external_wrench_payload,
                     "external_wrench_base_at_base_origin": external_wrench_base,
-                    "external_wrench_base_at_response": external_wrench_base_at_response,
                     "external_wrench_active": np.asarray(bool(np.any(external_wrench_payload))),
                     # Commanded at this simulation interval [t, t + step_dt).
                     "external_wrench_command_time": np.asarray(episode_time),
-                    "external_wrench_response_time": np.asarray(response_time),
-                    # A done step may return an auto-reset state, not the
-                    # physical response to the force just applied.
-                    "response_observation_valid": np.asarray(response_valid),
                     "reward": np.asarray(float(rewards[0].item())),
                     "done": np.asarray(bool(dones[0].item())),
                     "next_base_position_world": next_state["base_position_world"],
@@ -635,7 +587,6 @@ def main() -> None:
                     "step_dt": float(env.unwrapped.step_dt),
                     "phase_codes": np.asarray(["warmup", "motion", "terminal"]),
                     "wrench_schema_version": "2.0",
-                    "intent_alignment_version": "post_step_v1",
                     "ocs2_wrench_semantics": "arm_on_base; frame=base_Link; point=base_Link_origin",
                     "external_wrench_semantics": "external_on_payload_proxy; local_frame; point=body_COM",
                     "external_wrench_enabled": args_cli.external_wrench_validation,

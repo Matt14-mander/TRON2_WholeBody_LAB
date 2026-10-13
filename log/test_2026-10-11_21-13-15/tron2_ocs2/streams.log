@@ -1,0 +1,62 @@
+[0.054s] Invoking command in '/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2': CMAKE_PREFIX_PATH=/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/tron2_ocs2:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_mobile_manipulator:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_self_collision:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_pinocchio_interface:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_ddp:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_robotic_tools:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_qp_solver:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_mpc:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_oc:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_core:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_thirdparty:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_robotic_assets CONDA_PROMPT_MODIFIER=(tron2_ocs2) /home/matt14/.conda/envs/tron2_ocs2/bin/ctest -C Release -D ExperimentalTest --no-compress-output -V --force-new-ctest-process
+[0.059s] SetCTestConfiguration:BuildDirectory:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2
+[0.059s] UpdateCTestConfiguration  from :/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2/CTestConfiguration.ini
+[0.059s] Parse Config file:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2/CTestConfiguration.ini
+[0.059s] SetCMakeVariable:CTEST_SITE:server-Super-Server
+[0.059s] SetCMakeVariable:CTEST_SOURCE_DIRECTORY:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/src/tron2_ocs2
+[0.059s] SetCMakeVariable:CTEST_BINARY_DIRECTORY:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2
+[0.059s] SetCMakeVariable:CTEST_CONFIGURE_COMMAND:"/home/matt14/.conda/envs/tron2_ocs2/bin/cmake" "/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/src/tron2_ocs2"
+[0.059s] SetCMakeVariable:CTEST_TEST_TIMEOUT:10000000
+[0.060s] UpdateCTestConfiguration  from :/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2/CTestConfiguration.ini
+[0.060s] Parse Config file:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2/CTestConfiguration.ini
+[0.060s] SetCMakeVariable:CTEST_SITE:server-Super-Server
+[0.060s] SetCMakeVariable:CTEST_SOURCE_DIRECTORY:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/src/tron2_ocs2
+[0.060s] SetCMakeVariable:CTEST_BINARY_DIRECTORY:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2
+[0.060s] SetCMakeVariable:CTEST_CONFIGURE_COMMAND:"/home/matt14/.conda/envs/tron2_ocs2/bin/cmake" "/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/src/tron2_ocs2"
+[0.060s] SetCTestConfiguration:BuildDirectory:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2
+[0.060s] SetCTestConfiguration:SourceDirectory:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/src/tron2_ocs2
+[0.061s] Test project /home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2
+[0.061s] Constructing a list of tests
+[0.061s] Done constructing a list of tests
+[0.061s] Updating test list for fixtures
+[0.061s] Added 0 tests to meet fixture requirements
+[0.061s] Checking test dependency graph...
+[0.061s] Checking test dependency graph end
+[0.061s] test 1
+[0.061s]     Start 1: test_dynamics
+[0.062s] 
+[0.062s] 1: Test command: /home/matt14/.conda/envs/tron2_ocs2/bin/python "-u" "/home/matt14/.conda/envs/tron2_ocs2/share/ament_cmake_test/cmake/run_test.py" "/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2/test_results/tron2_ocs2/test_dynamics.gtest.xml" "--package-name" "tron2_ocs2" "--output-file" "/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2/ament_cmake_gtest/test_dynamics.txt" "--command" "/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2/test_dynamics" "--gtest_output=xml:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2/test_results/tron2_ocs2/test_dynamics.gtest.xml"
+[0.062s] 1: Working Directory: /home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2
+[0.062s] 1: Test timeout computed to be: 60
+[0.114s] 1: -- run_test.py: invoking following command in '/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2':
+[0.115s] 1:  - /home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2/test_dynamics --gtest_output=xml:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2/test_results/tron2_ocs2/test_dynamics.gtest.xml
+[0.121s] 1: Running main() from /home/matt14/.conda/envs/tron2_ocs2/src/gtest_vendor/src/gtest_main.cc
+[0.122s] 1: [==========] Running 3 tests from 2 test suites.
+[0.122s] 1: [----------] Global test environment set-up.
+[0.122s] 1: [----------] 2 tests from Tron2Dynamics
+[0.122s] 1: [ RUN      ] Tron2Dynamics.PaperModelFlowMap
+[0.795s] 1: [       OK ] Tron2Dynamics.PaperModelFlowMap (673 ms)
+[0.795s] 1: [ RUN      ] Tron2Dynamics.AnalyticMatchesAdAndFiniteDifferences
+[1.471s] 1: [       OK ] Tron2Dynamics.AnalyticMatchesAdAndFiniteDifferences (677 ms)
+[1.471s] 1: [----------] 2 tests from Tron2Dynamics (1350 ms total)
+[1.472s] 1: 
+[1.472s] 1: [----------] 1 test from Tron2Initializer
+[1.472s] 1: [ RUN      ] Tron2Initializer.ConsistentConstantInputAndZeroInterval
+[1.475s] 1: [       OK ] Tron2Initializer.ConsistentConstantInputAndZeroInterval (4 ms)
+[1.475s] 1: [----------] 1 test from Tron2Initializer (4 ms total)
+[1.475s] 1: 
+[1.475s] 1: [----------] Global test environment tear-down
+[1.475s] 1: [==========] 3 tests from 2 test suites ran. (1354 ms total)
+[1.475s] 1: [  PASSED  ] 3 tests.
+[1.477s] 1: -- run_test.py: return code 0
+[1.477s] 1: -- run_test.py: inject classname prefix into gtest result file '/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2/test_results/tron2_ocs2/test_dynamics.gtest.xml'
+[1.477s] 1: -- run_test.py: verify result file '/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2/test_results/tron2_ocs2/test_dynamics.gtest.xml'
+[1.501s] 1/1 Test #1: test_dynamics ....................   Passed    1.44 sec
+[1.501s] 
+[1.502s] [0;32m100% tests passed[0;0m out of 1
+[1.502s] 
+[1.502s] Label Time Summary:
+[1.502s] gtest    =   1.44 sec*proc (1 test)
+[1.502s] 
+[1.503s] Total Test time (real) =   1.44 sec
+[1.648s] Invoked command in '/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/build/tron2_ocs2' returned '0': CMAKE_PREFIX_PATH=/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/tron2_ocs2:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_mobile_manipulator:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_self_collision:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_pinocchio_interface:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_ddp:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_robotic_tools:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_qp_solver:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_mpc:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_oc:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_core:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_thirdparty:/home/matt14/workspace/isaaclab_tron2/TRON2_WholeBody_LAB/ocs2_ws/install/ocs2_robotic_assets CONDA_PROMPT_MODIFIER=(tron2_ocs2) /home/matt14/.conda/envs/tron2_ocs2/bin/ctest -C Release -D ExperimentalTest --no-compress-output -V --force-new-ctest-process

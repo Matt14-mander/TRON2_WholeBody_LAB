@@ -11,11 +11,12 @@ int main(int argc, char** argv) {
   try {
     tron2_ocs2::SolverCore solver(argv[1], argv[2], argv[3]);
     tron2_ocs2::Observation observation;
-    observation.basePositionWorld.z() = solver.initialBaseHeight();
+    observation.basePositionWorld.z() = 0.74;
     observation.armPosition << 0.0, 1.57079632679, -1.48352986420, 0.0, 0.0, 0.0;
-    // The smoke test checks model construction and one MPC/RNEA pass, not
-    // reachability of a hard-coded world target at a particular base height.
-    const auto target = solver.currentEndEffectorTarget(observation);
+    tron2_ocs2::EndEffectorTarget target;
+    // Deliberately use the current nominal vicinity; this executable checks model
+    // construction and one complete MPC/RNEA pass, not task performance.
+    target.positionWorld << 0.35, 0.0, 0.85;
     const auto solution = solver.solve(observation, target);
     std::cout << "valid=" << std::boolalpha << solution.valid
               << " base_cmd=" << solution.baseVelocityCommand.transpose()
