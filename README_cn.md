@@ -40,15 +40,16 @@ pip install -e rsl_rl
 
 ## WholeBody + OCS2 开发状态
 
-当前已完成阶段一的训练接口：
+当前训练接口已按论文的解耦语义完成 v2 修复：
 
-- 新增独立 SFYG WholeBody 资产，机械臂和夹爪不再共用 `arm_lock`；
+- 训练使用不含机械臂刚体的 SF 资产，由合成 wrench 完整替代机械臂反作用，避免重力/惯性重复计算；
+- PLAY 使用完整 SFYG WholeBody 资产，机械臂和夹爪不再共用 `arm_lock`；
 - 底盘 PPO 动作保持 10 维足式关节位置控制，机械臂预留给 OCS2 独立控制；
 - actor 新增 `[w(0.0), w(0.2), ..., w(0.8)]` 共 30 维的基座 wrench 预测；
-- 训练时使用平滑二次曲线生成器和基座加速度相关的未观测扰动，不在 4096 个环境里运行 OCS2；
+- 训练时在世界系生成平滑二次 wrench 序列，转换到当前底座系作为观测，并加入基座加速度相关的未观测扰动；不在 4096 个环境里运行 OCS2；
 - WholeBody PLAY 保持相同观测维度，但在 OCS2 bridge 接入前输出零 wrench；当前阶段明确不开发轮足 WholeBody。
 
-下一阶段是 OCS2 ROS 2 C++ 节点、Pinocchio RNEA wrench 推算和 Isaac Lab PLAY bridge。完整接口、阶段划分和安全约束见 [docs/whole_body_ocs2.md](docs/whole_body_ocs2.md)。
+配置修复和从零训练步骤见 [docs/whole_body_paper_training_v2.md](docs/whole_body_paper_training_v2.md)。OCS2 接口、阶段划分和安全约束见 [docs/whole_body_ocs2.md](docs/whole_body_ocs2.md)。
 
 新增独立 PAINT 高层 teacher 任务：冻结已有 WholeBody locomotion actor/encoder，读取负载真实
 `[Fx,Fy,Mz]` 与臂部历史，训练底座速度和六维臂部位置目标，不接入 intent estimator。
@@ -166,7 +167,7 @@ python scripts/rsl_rl/play.py \
 
 机械臂排除清单的具体覆盖见 [exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_solefoot_yg_tron2a_env_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_solefoot_yg_tron2a_env_cfg.py) 与 [limx_wheelfoot_yg_tron2a_env_cfg.py](exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_wheelfoot_yg_tron2a_env_cfg.py)。
 
-WholeBody 是独立增量任务，不改变上述兼容行为。它使用 `arm_mpc` 和 `gripper` actuator 组，并由 wrench sequence generator 模拟部署阶段 OCS2/Pinocchio 给出的机械臂反作用预测。机械臂关节不加入 PPO action。
+WholeBody 是独立增量任务，不改变上述兼容行为。训练环境不加载机械臂刚体，而由 wrench sequence generator 模拟部署阶段 OCS2/Pinocchio 给出的机械臂反作用预测；PLAY 环境才使用 `arm_mpc` 和 `gripper` actuator 组。机械臂关节不加入 PPO action。
 
 ### OCS2 求解器核心
 

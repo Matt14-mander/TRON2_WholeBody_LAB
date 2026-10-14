@@ -60,6 +60,11 @@ class GaitCommand(CommandTerm):
 
     def _resample_command(self, env_ids):
         """Resample the gait command for specified environments."""
+        # Observation and gait reward consume this same phase buffer.  Start a
+        # newly sampled gait in the stance phase instead of leaking phase from
+        # the previous episode/command interval.
+        if self.cfg.reset_phase_on_resample:
+            self.gait_indices[env_ids] = 0.0
         # sample gait parameters
         r = torch.empty(len(env_ids), device=self.device)
         # -- frequency

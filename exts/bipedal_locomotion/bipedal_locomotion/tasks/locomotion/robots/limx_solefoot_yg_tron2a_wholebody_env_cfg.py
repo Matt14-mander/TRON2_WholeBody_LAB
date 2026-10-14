@@ -10,6 +10,7 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
+from bipedal_locomotion.assets.config.solefoot_tron2a_cfg import SOLEFOOT_TRON2A_CFG
 from bipedal_locomotion.assets.config.solefoot_yg_tron2a_wholebody_cfg import (
     SOLEFOOT_YG_TRON2A_WHOLEBODY_CFG,
 )
@@ -40,6 +41,10 @@ class WholeBodyCommandsCfg(CommandsCfg):
 class WholeBodyObservationsCfg(ObservarionsCfg):
     @configclass
     class PolicyCfg(ObservarionsCfg.PolicyCfg):
+        gait_phase = ObsTerm(
+            func=mdp.get_managed_gait_phase,
+            params={"command_name": "gait_command"},
+        )
         wrench_prediction = ObsTerm(
             func=mdp.normalized_wrench_prediction,
             params={"command_name": "arm_wrench"},
@@ -47,7 +52,18 @@ class WholeBodyObservationsCfg(ObservarionsCfg):
         )
 
     @configclass
+    class HistoryCfg(ObservarionsCfg.HistoryObsCfg):
+        gait_phase = ObsTerm(
+            func=mdp.get_managed_gait_phase,
+            params={"command_name": "gait_command"},
+        )
+
+    @configclass
     class CriticCfg(ObservarionsCfg.CriticCfg):
+        gait_phase = ObsTerm(
+            func=mdp.get_managed_gait_phase,
+            params={"command_name": "gait_command"},
+        )
         arm_joint_pos = ObsTerm(
             func=mdp.joint_pos_rel,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINTS)},
@@ -73,7 +89,7 @@ class WholeBodyObservationsCfg(ObservarionsCfg):
     commands: ObservarionsCfg.CommandsObsCfg = ObservarionsCfg.CommandsObsCfg()
     # Keep the existing proprioceptive history encoder independent of the
     # explicit wrench sequence. A dedicated wrench RNN belongs to stage 3.
-    obsHistory: ObservarionsCfg.HistoryObsCfg = ObservarionsCfg.HistoryObsCfg()
+    obsHistory: HistoryCfg = HistoryCfg()
 
 
 @configclass
@@ -135,8 +151,41 @@ class WholeBodyRewardsCfg(RewardsCfg):
 
 
 class _WholeBodyMixin:
+    def _configure_paper_training(self):
+        """Train the leg policy without simulating the manipulator rigid bodies.
+
+        The paper replaces the manipulator during locomotion training with a
+        predicted base wrench.  Keeping both the physical arm and the complete
+        synthetic arm wrench would count the arm mass/gravity reaction twice.
+        """
+        self.scene.robot = SOLEFOOT_TRON2A_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.scene.robot.init_state.joint_pos = {
+            "proximal_pitch_L_Joint": 0.0,
+            "proximal_pitch_R_Joint": 0.0,
+            "proximal_roll_L_Joint": 0.0,
+            "proximal_roll_R_Joint": 0.0,
+            "proximal_yaw_L_Joint": -3.14159,
+            "proximal_yaw_R_Joint": 3.14159,
+            "knee_L_Joint": 0.0,
+            "knee_R_Joint": 0.0,
+            "ankle_pitch_L_Joint": 0.0,
+            "ankle_pitch_R_Joint": 0.0,
+        }
+        # Arm-only privileged observations/rewards cannot be present in the
+        # arm-free paper training model.  Actor/action dimensions stay intact.
+        self.observations.critic.arm_joint_pos = None
+        self.observations.critic.arm_joint_vel = None
+        self.rewards.arm_pos_limits = None
+        self.rewards.arm_vel_limits = None
+        self.rewards.arm_joint_vel_l2 = None
+        self.rewards.arm_joint_torque_l2 = None
+        self.rewards.feet_distance.weight = 0.2
+        self.commands.base_velocity.rel_standing_envs = 0.2
+        self.commands.gait_command.reset_phase_on_resample = True
+
     def _configure_whole_body(self):
         self.scene.robot = SOLEFOOT_YG_TRON2A_WHOLEBODY_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.commands.gait_command.reset_phase_on_resample = True
 
     def _disable_training_wrench_for_play(self):
         zero_ranges = ((0.0, 0.0), (0.0, 0.0), (0.0, 0.0))
@@ -158,7 +207,7 @@ class SFYG_TRON2A_WholeBodyFlatEnvCfg(_WholeBodyMixin, SFYG_TRON2A_BlindFlatEnvC
 
     def __post_init__(self):
         super().__post_init__()
-        self._configure_whole_body()
+        self._configure_paper_training()
 
 
 @configclass
@@ -181,7 +230,7 @@ class SFYG_TRON2A_WholeBodyRoughEnvCfg(_WholeBodyMixin, SFYG_TRON2A_BlindRoughEn
 
     def __post_init__(self):
         super().__post_init__()
-        self._configure_whole_body()
+        self._configure_paper_training()
 
 
 @configclass

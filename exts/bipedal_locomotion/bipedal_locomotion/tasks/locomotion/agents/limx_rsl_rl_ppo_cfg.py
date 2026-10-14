@@ -124,8 +124,10 @@ class WFYG_TRON2ARoughPPORunnerCfg(WF_TRON2AFlatPPORunnerCfg):
 #-----------------------------------------------------------------
 @configclass
 class SFYG_TRON2AWholeBodyFlatPPORunnerCfg(SF_TRON2AFlatPPORunnerCfg):
-    max_iterations = 15000
-    experiment_name = "sfyg_tron_2a_wholebody_flat"
+    max_iterations = 20000
+    # New name prevents paper-aligned from-scratch runs from being mixed with
+    # legacy runs that simulated a physical arm plus a full synthetic wrench.
+    experiment_name = "sfyg_tron_2a_wholebody_paper_v2_flat"
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_hidden_dims=[512, 512, 256, 128],

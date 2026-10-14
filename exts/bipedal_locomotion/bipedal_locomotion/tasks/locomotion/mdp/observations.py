@@ -140,6 +140,16 @@ def get_gait_phase(env: ManagerBasedRLEnv) -> torch.Tensor:
     return torch.cat([sin_phase, cos_phase], dim=-1)
 
 
+def get_managed_gait_phase(env: ManagerBasedRLEnv, command_name: str = "gait_command") -> torch.Tensor:
+    """Return the command term's authoritative phase used by the gait reward."""
+    command_term = env.command_manager.get_term(command_name)
+    gait_indices = command_term.gait_indices.unsqueeze(-1)
+    return torch.cat(
+        (torch.sin(2 * torch.pi * gait_indices), torch.cos(2 * torch.pi * gait_indices)),
+        dim=-1,
+    )
+
+
 def get_gait_command(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
     """Get the current gait command parameters as observation.
 

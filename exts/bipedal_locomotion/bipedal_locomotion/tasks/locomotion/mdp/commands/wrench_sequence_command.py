@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import torch
 from isaaclab.assets import Articulation
 from isaaclab.managers import CommandTerm
+from isaaclab.utils import math as math_utils
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
@@ -19,6 +20,9 @@ class WrenchSequenceCommand(CommandTerm):
 
     The flattened command contains ``[w(0.0), ..., w(0.8)]``. Each wrench is
     ordered ``[Fx, Fy, Fz, Tx, Ty, Tz]`` in the current base-link frame.
+    The quadratic control points are sampled in the world frame, matching the
+    paper.  They are transformed into the current base frame only when exposed
+    to the policy.
     """
 
     cfg: WrenchSequenceCommandCfg
@@ -162,8 +166,17 @@ class WrenchSequenceCommand(CommandTerm):
         self._refresh_commands(self._all_env_ids)
 
     def _refresh_commands(self, env_ids: torch.Tensor):
-        clean_sequence = self._evaluate_quadratic(self._points[env_ids], self._prediction_times)
-        flattened = clean_sequence.flatten(start_dim=1)
+        world_sequence = self._evaluate_quadratic(self._points[env_ids], self._prediction_times)
+        num_predictions = world_sequence.shape[1]
+        base_quat_w = self._asset.data.root_quat_w[env_ids]
+        prediction_quat_w = base_quat_w[:, None, :].expand(-1, num_predictions, -1).reshape(-1, 4)
+        clean_sequence = world_sequence.reshape(-1, 6)
+        clean_force_b = math_utils.quat_apply_inverse(prediction_quat_w, clean_sequence[:, :3])
+        clean_torque_b = math_utils.quat_apply_inverse(prediction_quat_w, clean_sequence[:, 3:])
+        clean_sequence_b = torch.cat((clean_force_b, clean_torque_b), dim=-1).reshape(
+            len(env_ids), num_predictions, 6
+        )
+        flattened = clean_sequence_b.flatten(start_dim=1)
         self._clean_command[env_ids] = flattened
         noise_std = torch.tensor(
             [*self.cfg.force_observation_noise_std, *self.cfg.torque_observation_noise_std],
@@ -179,15 +192,20 @@ class WrenchSequenceCommand(CommandTerm):
         unobserved += torch.randn_like(unobserved) * self.cfg.unobserved_noise_std
         unobserved_limits = torch.tensor(self.cfg.unobserved_wrench_limits, device=self.device)
         unobserved = torch.clamp(unobserved, min=-unobserved_limits, max=unobserved_limits)
-        applied = clean_sequence[:, 0] + unobserved
-        self._applied_wrench[env_ids] = applied
+        applied_b = clean_sequence_b[:, 0] + unobserved
+        self._applied_wrench[env_ids] = applied_b
         self._previous_twist[env_ids] = current_twist
+
+        unobserved_force_w = math_utils.quat_apply(base_quat_w, unobserved[:, :3])
+        unobserved_torque_w = math_utils.quat_apply(base_quat_w, unobserved[:, 3:])
+        applied_force_w = world_sequence[:, 0, :3] + unobserved_force_w
+        applied_torque_w = world_sequence[:, 0, 3:] + unobserved_torque_w
         self._asset.set_external_force_and_torque(
-            applied[:, None, :3],
-            applied[:, None, 3:],
+            applied_force_w[:, None, :],
+            applied_torque_w[:, None, :],
             body_ids=self._body_ids,
             env_ids=env_ids,
-            is_global=False,
+            is_global=True,
         )
 
     def _set_debug_vis_impl(self, debug_vis: bool):

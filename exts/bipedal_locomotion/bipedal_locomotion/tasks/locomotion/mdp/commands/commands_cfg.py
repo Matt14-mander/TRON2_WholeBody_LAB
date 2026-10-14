@@ -33,6 +33,9 @@ class UniformGaitCommandCfg(CommandTermCfg):
     resampling_time_range: tuple[float, float] = MISSING
     """Time interval for resampling the gait (in seconds)."""
 
+    reset_phase_on_resample: bool = False
+    """Reset phase on resampling. Disabled by default for legacy task compatibility."""
+
 
 @configclass
 class WrenchSequenceCommandCfg(CommandTermCfg):
@@ -41,30 +44,32 @@ class WrenchSequenceCommandCfg(CommandTermCfg):
     class_type: type = WrenchSequenceCommand
     asset_name: str = "robot"
     body_name: str = "base_Link"
-    resampling_time_range: tuple[float, float] = (8.0, 12.0)
+    # One polynomial realization per 20 s episode, as in the paper's wrench
+    # sequence generator.  The sequence itself is advanced every policy step.
+    resampling_time_range: tuple[float, float] = (20.0, 20.0)
     prediction_times: tuple[float, ...] = (0.0, 0.2, 0.4, 0.6, 0.8)
     force_ranges: tuple[tuple[float, float], ...] = (
-        (-80.0, 80.0),
-        (-80.0, 80.0),
-        (-120.0, 40.0),
+        (-50.0, 50.0),
+        (-50.0, 50.0),
+        (-60.0, 20.0),
     )
     torque_ranges: tuple[tuple[float, float], ...] = (
-        (-30.0, 30.0),
-        (-30.0, 30.0),
-        (-20.0, 20.0),
+        (-12.0, 12.0),
+        (-12.0, 12.0),
+        (-8.0, 8.0),
     )
     beta_range: tuple[float, float] = (0.5, 3.0)
     endpoint_step_scale: float = 0.02
     force_observation_noise_std: tuple[float, float, float] = (2.0, 2.0, 2.0)
     torque_observation_noise_std: tuple[float, float, float] = (0.5, 0.5, 0.5)
-    force_acceleration_gain: tuple[float, float, float] = (3.0, 3.0, 3.0)
-    torque_acceleration_gain: tuple[float, float, float] = (0.5, 0.5, 0.5)
-    unobserved_noise_std: float = 0.25
+    force_acceleration_gain: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    torque_acceleration_gain: tuple[float, float, float] = (0.2, 0.2, 0.2)
+    unobserved_noise_std: float = 0.1
     unobserved_wrench_limits: tuple[float, float, float, float, float, float] = (
-        40.0,
-        40.0,
-        40.0,
-        10.0,
-        10.0,
-        10.0,
+        15.0,
+        15.0,
+        15.0,
+        3.0,
+        3.0,
+        3.0,
     )
