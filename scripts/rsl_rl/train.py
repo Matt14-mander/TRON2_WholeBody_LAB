@@ -84,6 +84,13 @@ def main():
     )
     agent_cfg: RslRlPpoAlgorithmMlpCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
 
+    # Velocity debug markers fetch remote USD assets even without a viewer.
+    # Disable only their visualization for headless training.
+    if args_cli.headless:
+        velocity_cfg = getattr(env_cfg.commands, "base_velocity", None)
+        if velocity_cfg is not None:
+            velocity_cfg.debug_vis = False
+
     if args_cli.max_iterations is not None:
         agent_cfg.max_iterations = args_cli.max_iterations
     if args_cli.save_interval is not None:
