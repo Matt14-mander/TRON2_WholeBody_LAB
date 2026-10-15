@@ -101,6 +101,8 @@ class WholeBodyPaperTrainingV3Tests(unittest.TestCase):
         self.assertIn('"Policy/action_saturation_fraction"', runner_source)
         self.assertIn('"encoder_optimizer_state_dict"', runner_source)
         self.assertIn("Checkpoint action-bound architecture", runner_source)
+        self.assertIn("start_iter = self.current_learning_iteration", runner_source)
+        self.assertIn("{locs['it']}/{locs['tot_iter']}", runner_source)
         self.assertIn("self.max_learning_rate", ppo_source)
         self.assertIn("clip_grad_norm_", ppo_source)
         self.assertIn("actor_layers.append(ScaledTanh(squash_action_scale))", actor_source)
