@@ -99,6 +99,14 @@ def simulate(args):
 
 
 def control(args):
+    model = Path(args.model_dir).expanduser().resolve()
+    output = Path(args.output_dir).expanduser().resolve()
+    for name in ("encoder.onnx", "policy.onnx"):
+        if not (model / name).is_file():
+            raise FileNotFoundError(f"Missing {model / name}; complete the export subcommand first")
+    if output.exists():
+        raise FileExistsError(f"Use a new output directory; already exists: {output}")
+
     import hashlib
     import threading
     from types import SimpleNamespace
@@ -112,9 +120,6 @@ def control(args):
     from limxsdk.robot import Robot, RobotType
     from limxsdk import datatypes
 
-    model = Path(args.model_dir).expanduser().resolve()
-    output = Path(args.output_dir).expanduser().resolve()
-    output.mkdir(parents=True, exist_ok=False)
     options = ort.SessionOptions()
     options.intra_op_num_threads = options.inter_op_num_threads = 1
     sessions = []
@@ -139,6 +144,8 @@ def control(args):
     contract = dict(args=vars(args), sha256=hashes, joint_names=JOINTS, default_q=POSE,
                     kp=kp.tolist(), kd=kd.tolist(), phase="continuous episode clock",
                     physics_note="Isaac implicit PD and SDK explicit PD can differ")
+    # Invalid/missing models must not leave an empty output directory behind.
+    output.mkdir(parents=True, exist_ok=False)
     (output / "contract.json").write_text(json.dumps(contract, indent=2), encoding="utf-8")
 
     lock = threading.Lock()
