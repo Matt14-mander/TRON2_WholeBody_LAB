@@ -12,11 +12,28 @@ WRENCH_CFG = ROOT / "exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion
 OBSERVATIONS = ROOT / "exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/mdp/observations.py"
 GAIT_COMMAND = ROOT / "exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/mdp/commands/gait_command.py"
 PPO_CFG = ROOT / "exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/agents/limx_rsl_rl_ppo_cfg.py"
+RUNNER = ROOT / "rsl_rl/rsl_rl/runner/on_policy_runner.py"
+PPO = ROOT / "rsl_rl/rsl_rl/algorithm/ppo.py"
+ACTOR_CRITIC = ROOT / "rsl_rl/rsl_rl/modules/actor_critic.py"
+EVENTS = ROOT / "exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/mdp/events.py"
+PAINT_TEACHER_CORE = ROOT / "exts/bipedal_locomotion/bipedal_locomotion/controllers/paint_teacher_core.py"
 
 
-class WholeBodyPaperTrainingV2Tests(unittest.TestCase):
+class WholeBodyPaperTrainingV3Tests(unittest.TestCase):
     def test_changed_python_files_parse(self):
-        for path in (WHOLEBODY_CFG, WRENCH_COMMAND, WRENCH_CFG, OBSERVATIONS, GAIT_COMMAND, PPO_CFG):
+        for path in (
+            WHOLEBODY_CFG,
+            WRENCH_COMMAND,
+            WRENCH_CFG,
+            OBSERVATIONS,
+            GAIT_COMMAND,
+            PPO_CFG,
+            RUNNER,
+            PPO,
+            ACTOR_CRITIC,
+            EVENTS,
+            PAINT_TEACHER_CORE,
+        ):
             ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
     def test_training_and_play_use_different_robot_models(self):
@@ -65,8 +82,46 @@ class WholeBodyPaperTrainingV2Tests(unittest.TestCase):
 
     def test_new_run_has_separate_experiment_name(self):
         source = PPO_CFG.read_text(encoding="utf-8")
-        self.assertIn('experiment_name = "sfyg_tron_2a_wholebody_paper_v2_flat"', source)
+        self.assertIn('experiment_name = "sfyg_tron_2a_wholebody_paper_v3_flat"', source)
         self.assertIn("max_iterations = 20000", source)
+
+    def test_v3_bounds_policy_and_optimizer_updates(self):
+        config_source = PPO_CFG.read_text(encoding="utf-8")
+        runner_source = RUNNER.read_text(encoding="utf-8")
+        ppo_source = PPO.read_text(encoding="utf-8")
+        actor_source = ACTOR_CRITIC.read_text(encoding="utf-8")
+
+        self.assertIn("clip_actions = 5.0", config_source)
+        self.assertIn("squash_action=True", config_source)
+        self.assertIn("squash_action_scale=5.0", config_source)
+        self.assertIn("max_learning_rate=3.0e-4", config_source)
+        self.assertIn("encoder_max_grad_norm=1.0", config_source)
+        self.assertIn("actions = torch.clamp", runner_source)
+        self.assertIn("Policy produced NaN or Inf", runner_source)
+        self.assertIn('"Policy/action_saturation_fraction"', runner_source)
+        self.assertIn('"encoder_optimizer_state_dict"', runner_source)
+        self.assertIn("Checkpoint action-bound architecture", runner_source)
+        self.assertIn("self.max_learning_rate", ppo_source)
+        self.assertIn("clip_grad_norm_", ppo_source)
+        self.assertIn("actor_layers.append(ScaledTanh(squash_action_scale))", actor_source)
+        self.assertIn('register_buffer("scale"', actor_source)
+        self.assertIn('if "9.scale" in actor', PAINT_TEACHER_CORE.read_text(encoding="utf-8"))
+
+    def test_zero_wrench_is_an_explicit_training_condition(self):
+        env_source = WHOLEBODY_CFG.read_text(encoding="utf-8")
+        command_cfg_source = WRENCH_CFG.read_text(encoding="utf-8")
+        command_source = WRENCH_COMMAND.read_text(encoding="utf-8")
+
+        self.assertIn("zero_wrench_probability=0.25", env_source)
+        self.assertIn("zero_wrench_probability: float = 0.0", command_cfg_source)
+        self.assertIn("self._zero_wrench_mask", command_source)
+        self.assertIn("noisy_command[zero_mask] = 0.0", command_source)
+        self.assertIn("unobserved[zero_mask] = 0.0", command_source)
+
+    def test_wholebody_termination_matches_bounded_action_contract(self):
+        source = WHOLEBODY_CFG.read_text(encoding="utf-8")
+        self.assertIn('action_out_of_limits.params["threshold"] = 5.01', source)
+        self.assertIn("~torch.isfinite(actions).all", EVENTS.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,10 @@
 from isaaclab.utils import configclass
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg
-from bipedal_locomotion.utils.wrappers.rsl_rl.rl_mlp_cfg import EncoderCfg, RslRlPpoAlgorithmMlpCfg
+from bipedal_locomotion.utils.wrappers.rsl_rl.rl_mlp_cfg import (
+    EncoderCfg,
+    RslRlPpoActorCriticBoundedCfg,
+    RslRlPpoAlgorithmMlpCfg,
+)
 
 import os
 robot_type = os.getenv("ROBOT_TYPE")
@@ -125,17 +129,41 @@ class WFYG_TRON2ARoughPPORunnerCfg(WF_TRON2AFlatPPORunnerCfg):
 @configclass
 class SFYG_TRON2AWholeBodyFlatPPORunnerCfg(SF_TRON2AFlatPPORunnerCfg):
     max_iterations = 20000
-    # New name prevents paper-aligned from-scratch runs from being mixed with
-    # legacy runs that simulated a physical arm plus a full synthetic wrench.
-    experiment_name = "sfyg_tron_2a_wholebody_paper_v2_flat"
-    policy = RslRlPpoActorCriticCfg(
+    # Keep v3 separate from v2: v2 could silently execute unbounded actions and
+    # its adaptive learning rate could rise to 1e-2 late in training.
+    experiment_name = "sfyg_tron_2a_wholebody_paper_v3_flat"
+    clip_actions = 5.0
+    policy = RslRlPpoActorCriticBoundedCfg(
         init_noise_std=1.0,
         actor_hidden_dims=[512, 512, 256, 128],
         critic_hidden_dims=[512, 512, 256, 128],
         activation="elu",
+        squash_action=True,
+        squash_action_scale=5.0,
+    )
+    algorithm = RslRlPpoAlgorithmMlpCfg(
+        class_name="PPO",
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=4,
+        learning_rate=3.0e-4,
+        min_learning_rate=1.0e-5,
+        max_learning_rate=3.0e-4,
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+        early_stop=True,
+        obs_history_len=10,
+        est_learning_rate=3.0e-4,
+        encoder_max_grad_norm=1.0,
     )
 
 
 @configclass
 class SFYG_TRON2AWholeBodyRoughPPORunnerCfg(SFYG_TRON2AWholeBodyFlatPPORunnerCfg):
-    experiment_name = "sfyg_tron_2a_wholebody_rough"
+    experiment_name = "sfyg_tron_2a_wholebody_paper_v3_rough"

@@ -240,9 +240,13 @@ def action_out_of_limits(
     # Get the current actions from the environment
     actions = env.action_manager.action
     
-    # Check if any action exceeds the threshold (in absolute value)
+    # A NaN comparison is always false, so check finiteness explicitly instead
+    # of allowing an invalid action to bypass the magnitude termination.
+    invalid_action = ~torch.isfinite(actions).all(dim=1)
+
+    # Check if any finite action exceeds the threshold (in absolute value)
     action_magnitude = torch.abs(actions)
     max_action_per_env = torch.max(action_magnitude, dim=1)[0]
     
     # Return True for environments where max action exceeds threshold
-    return max_action_per_env > threshold
+    return invalid_action | (max_action_per_env > threshold)

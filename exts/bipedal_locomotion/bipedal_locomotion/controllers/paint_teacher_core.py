@@ -28,6 +28,20 @@ def mlp(widths):
     return nn.Sequential(*layers)
 
 
+class CheckpointScaledTanh(nn.Module):
+    """Reconstruct the optional v3 locomotion action bound from its checkpoint."""
+
+    def __init__(self, scale):
+        super().__init__()
+        scale = float(scale)
+        if scale <= 0.0:
+            raise ValueError("Locomotion action bound must be positive.")
+        self.register_buffer("scale", torch.tensor(scale))
+
+    def forward(self, inputs):
+        return self.scale * torch.tanh(inputs / self.scale)
+
+
 class FrozenLocomotion(nn.Module):
     """Strictly load the existing flat WholeBody ELU 78->10 / 420->3 pair.
 
@@ -39,12 +53,14 @@ class FrozenLocomotion(nn.Module):
         if not path.is_file():
             raise FileNotFoundError(f"Locomotion checkpoint does not exist: {path}")
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-        self.actor = mlp([78, 512, 512, 256, 128, 10])
-        self.encoder = mlp([420, 256, 128, 3])
         try:
             actor = {k.removeprefix("actor."): v for k, v in checkpoint["model_state_dict"].items()
                      if k.startswith("actor.")}
             encoder = {k.removeprefix("encoder."): v for k, v in checkpoint["encoder_state_dict"].items()}
+            self.actor = mlp([78, 512, 512, 256, 128, 10])
+            if "9.scale" in actor:
+                self.actor.add_module("9", CheckpointScaledTanh(actor["9.scale"]))
+            self.encoder = mlp([420, 256, 128, 3])
             self.actor.load_state_dict(actor, strict=True)
             self.encoder.load_state_dict(encoder, strict=True)
         except (KeyError, RuntimeError) as error:

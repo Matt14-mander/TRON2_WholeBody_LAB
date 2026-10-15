@@ -30,6 +30,7 @@
 
 import time
 import os
+import copy
 from collections import deque
 import statistics
 import matplotlib.pyplot as plt
@@ -47,11 +48,15 @@ class OnPolicyRunner:
     def __init__(self, env: VecEnv, train_cfg, log_dir=None, device="cpu"):
         self.cfg = train_cfg
         print(f"encoder cfg: {train_cfg.keys()}")
-        self.ecd_cfg = train_cfg["encoder"]
-        self.alg_cfg = train_cfg["algorithm"]
-        self.policy_cfg = train_cfg["policy"]
+        self.ecd_cfg = copy.deepcopy(train_cfg["encoder"])
+        self.alg_cfg = copy.deepcopy(train_cfg["algorithm"])
+        self.policy_cfg = copy.deepcopy(train_cfg["policy"])
         self.device = device
         self.env = env
+        clip_actions = train_cfg.get("clip_actions")
+        self.clip_actions = None if clip_actions is None else float(clip_actions)
+        if self.clip_actions is not None and self.clip_actions <= 0.0:
+            raise ValueError("clip_actions must be positive or None")
         obs_dict = self.env.get_observations()
         obs = obs_dict["policy"]
         self.num_obs = obs.shape[1]
@@ -179,10 +184,35 @@ class OnPolicyRunner:
         tot_iter = self.current_learning_iteration + num_learning_iterations
         for it in range(self.current_learning_iteration, tot_iter):
             start = time.time()
+            raw_action_abs_max = 0.0
+            policy_mean_abs_max = 0.0
+            saturated_action_count = 0
+            sampled_action_count = 0
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
-                    actions = self.alg.act(obs, obs_history, commands, critic_obs)
+                    raw_actions = self.alg.act(obs, obs_history, commands, critic_obs)
+                    if not torch.isfinite(raw_actions).all():
+                        raise FloatingPointError(
+                            f"Policy produced NaN or Inf at iteration {it}, rollout step {i}."
+                        )
+                    raw_action_abs_max = max(
+                        raw_action_abs_max, float(raw_actions.abs().max().item())
+                    )
+                    policy_mean_abs_max = max(
+                        policy_mean_abs_max,
+                        float(self.alg.actor_critic.action_mean.abs().max().item()),
+                    )
+                    if self.clip_actions is None:
+                        actions = raw_actions
+                    else:
+                        saturated_action_count += int(
+                            (raw_actions.abs() > self.clip_actions).sum().item()
+                        )
+                        sampled_action_count += raw_actions.numel()
+                        actions = torch.clamp(
+                            raw_actions, -self.clip_actions, self.clip_actions
+                        )
                     # add critic_obs_buf to step returns, make sure it updates in every for loop
                     (obs_dict, rewards, dones, infos) = self.env.step(actions)
                     obs = obs_dict["policy"]
@@ -246,11 +276,12 @@ class OnPolicyRunner:
 
             if self.log_dir is not None:
                 self.log(locals())
+            self.current_learning_iteration = it + 1
             if it % self.save_interval == 0:
                 self.save(os.path.join(self.log_dir, "model_{}.pt".format(it)))
             ep_infos.clear()
 
-        self.current_learning_iteration += num_learning_iterations
+        self.current_learning_iteration = tot_iter
         self.save(
             os.path.join(
                 self.log_dir, "model_{}.pt".format(self.current_learning_iteration)
@@ -294,6 +325,20 @@ class OnPolicyRunner:
         self.writer.add_scalar("Loss/learning_rate", self.alg.learning_rate, locs["it"])
         self.writer.add_scalar("Policy/mean_noise_std", mean_std.item(), locs["it"])
         self.writer.add_scalar("Policy/mean_kl", locs["mean_kl"], locs["it"])
+        self.writer.add_scalar(
+            "Policy/raw_action_abs_max", locs["raw_action_abs_max"], locs["it"]
+        )
+        self.writer.add_scalar(
+            "Policy/mean_action_abs_max", locs["policy_mean_abs_max"], locs["it"]
+        )
+        saturation_fraction = (
+            locs["saturated_action_count"] / locs["sampled_action_count"]
+            if locs["sampled_action_count"] > 0
+            else 0.0
+        )
+        self.writer.add_scalar(
+            "Policy/action_saturation_fraction", saturation_fraction, locs["it"]
+        )
         self.writer.add_scalar("Perf/total_fps", fps, locs["it"])
         self.writer.add_scalar(
             "Perf/collection time", locs["collection_time"], locs["it"]
@@ -369,6 +414,11 @@ class OnPolicyRunner:
                 "model_state_dict": self.alg.actor_critic.state_dict(),
                 "encoder_state_dict": self.alg.encoder.state_dict(),
                 "optimizer_state_dict": self.alg.optimizer.state_dict(),
+                "encoder_optimizer_state_dict": (
+                    self.alg.extra_optimizer.state_dict()
+                    if self.alg.extra_optimizer is not None
+                    else None
+                ),
                 "iter": self.current_learning_iteration,
                 "infos": infos,
             },
@@ -381,6 +431,17 @@ class OnPolicyRunner:
         # Check for size mismatch in actor_critic and load selectively
         model_state_dict = self.alg.actor_critic.state_dict()
         checkpoint_state_dict = loaded_dict["model_state_dict"]
+        model_action_bounds = {
+            key for key in model_state_dict if key.startswith("actor.") and key.endswith(".scale")
+        }
+        checkpoint_action_bounds = {
+            key for key in checkpoint_state_dict if key.startswith("actor.") and key.endswith(".scale")
+        }
+        if model_action_bounds != checkpoint_action_bounds:
+            raise ValueError(
+                "Checkpoint action-bound architecture does not match the configured policy. "
+                "Do not resume a WholeBody v3 run from a legacy v2 checkpoint."
+            )
         
         filtered_state_dict = {}
         for k, v in checkpoint_state_dict.items():
@@ -403,6 +464,17 @@ class OnPolicyRunner:
                 self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
             except Exception as e:
                 print(f"[Warning] Could not load optimizer state dict: {e}")
+        if (
+            load_optimizer
+            and self.alg.extra_optimizer is not None
+            and loaded_dict.get("encoder_optimizer_state_dict") is not None
+        ):
+            try:
+                self.alg.extra_optimizer.load_state_dict(
+                    loaded_dict["encoder_optimizer_state_dict"]
+                )
+            except Exception as e:
+                print(f"[Warning] Could not load encoder optimizer state dict: {e}")
                 
         self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]
@@ -411,7 +483,14 @@ class OnPolicyRunner:
         self.alg.actor_critic.eval()  # switch to evaluation mode (dropout for example)
         if device is not None:
             self.alg.actor_critic.to(device)
-        return self.alg.actor_critic.act_inference
+        policy = self.alg.actor_critic.act_inference
+        if self.clip_actions is None:
+            return policy
+
+        def clipped_policy(observations):
+            return torch.clamp(policy(observations), -self.clip_actions, self.clip_actions)
+
+        return clipped_policy
 
     def get_inference_encoder(self, device=None):
         self.alg.encoder.eval()  # switch to evaluation mode (dropout for example)

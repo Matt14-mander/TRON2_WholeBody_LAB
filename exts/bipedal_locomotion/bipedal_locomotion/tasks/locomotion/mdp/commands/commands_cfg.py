@@ -44,6 +44,8 @@ class WrenchSequenceCommandCfg(CommandTermCfg):
     class_type: type = WrenchSequenceCommand
     asset_name: str = "robot"
     body_name: str = "base_Link"
+    zero_wrench_probability: float = 0.0
+    """Probability that an episode has exactly zero observed and applied wrench."""
     # One polynomial realization per 20 s episode, as in the paper's wrench
     # sequence generator.  The sequence itself is advanced every policy step.
     resampling_time_range: tuple[float, float] = (20.0, 20.0)

@@ -41,4 +41,18 @@ base_test --command -0.25 0 0 --duration 10
 
 每0.5s输出time,z,tilt_deg,vx_body,vy_body,max_abs_action；每物理步检查倾角超过35度或底座高度低于0.45m时终止并返回错误。结束打印COMPLETED、全过程最大倾角、热身后的机身系平均速度。完成不等于跟踪达标，需要比较实际速度与指令并观察高度/倾角。若本轮训练改了速度方向、动作缩放、关节零点、步态相位逻辑，需同步接口后再评估。
 
-本地仅通过两个测试（输入顺序/维度检查和合成零输出ONNX的0.06s物理烟雾测试），不声称新model_15000的sim2sim已验证。SDK主入口尚未新增BASE模式；直接测试通过后再接SDK链路。
+本地通过三个测试（输入顺序/维度检查、速度曲线连续性、合成零输出ONNX的短时物理和日志烟雾测试），不声称新model_15000的sim2sim已验证。SDK主入口尚未新增BASE模式；直接测试通过后再接SDK链路。
+
+## 0 → 0.5 → 0 的可视化测试
+
+同步新版同名脚本后：
+
+```bash
+base_test --speed-cycle --peak-speed 0.5 \
+  --cycle-times 3 4 5 4 5 --viewer \
+  --log-csv "$PWD/doc/base_cycle_$(date +%Y%m%d_%H%M%S).csv"
+```
+
+时间线：0–3s零速，3–7s平滑加速，7–12s保持+0.5m/s，12–16s平滑减速，16–21s零速。周期模式总时长由五段时长相加决定，不使用--duration。速度曲线用smoothstep，切换处斜率连续；每次policy推理使用当前模拟时间对应的指令，不重置encoder历史或步态相位，不切换成固定PD站立。
+
+记录CSV含cmd_vx和实际vx/vy/wz、倾角、高度；最后打印FINAL_STOP最后2s的平均/P95平面速度。给零速度指令不保证机器人会停止或停止踏步，应以实际速度和姿态判断。可将--peak-speed改为-0.5测试负向；不同时使用非零--command。

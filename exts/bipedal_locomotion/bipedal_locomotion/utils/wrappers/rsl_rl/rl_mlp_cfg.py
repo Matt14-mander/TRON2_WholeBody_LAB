@@ -7,7 +7,15 @@ from dataclasses import MISSING
 from typing import Literal
 
 from isaaclab.utils import configclass
-from isaaclab_rl.rsl_rl import RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+
+
+@configclass
+class RslRlPpoActorCriticBoundedCfg(RslRlPpoActorCriticCfg):
+    """Actor-critic configuration with an optional bounded policy mean."""
+
+    squash_action: bool = False
+    squash_action_scale: float = 1.0
 
 
 @configclass
@@ -17,6 +25,11 @@ class RslRlPpoAlgorithmMlpCfg(RslRlPpoAlgorithmCfg):
     # runner_type: str = "OnPolicyRunner"
 
     obs_history_len: int = 1
+    min_learning_rate: float = 1.0e-5
+    max_learning_rate: float = 1.0e-2
+    early_stop: bool = False
+    est_learning_rate: float = 1.0e-3
+    encoder_max_grad_norm: float = 0.0
 
 
 @configclass

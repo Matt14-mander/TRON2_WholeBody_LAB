@@ -57,8 +57,11 @@ class PPO:
         use_clipped_value_loss=True,
         schedule="fixed",
         desired_kl=0.01,
+        min_learning_rate=1.0e-5,
+        max_learning_rate=1.0e-2,
         vae_beta=1.0,
         est_learning_rate=1.0e-3,
+        encoder_max_grad_norm=0.0,
         critic_take_latent=False,
         early_stop=False,
         anneal_lr=False,
@@ -72,9 +75,18 @@ class PPO:
         self.early_stop = early_stop
         self.schedule = schedule
         self.learning_rate = learning_rate
+        self.min_learning_rate = min_learning_rate
+        self.max_learning_rate = max_learning_rate
+        if not 0.0 < self.min_learning_rate <= self.max_learning_rate:
+            raise ValueError("learning-rate bounds must satisfy 0 < min <= max")
+        self.learning_rate = min(
+            max(self.learning_rate, self.min_learning_rate),
+            self.max_learning_rate,
+        )
         self.anneal_lr = anneal_lr
         self.vae_beta = vae_beta
         self.critic_take_latent = critic_take_latent
+        self.encoder_max_grad_norm = float(encoder_max_grad_norm)
 
         self.encoder = encoder
 
@@ -82,7 +94,9 @@ class PPO:
         self.actor_critic = actor_critic
         self.actor_critic.to(self.device)
         self.storage = None  # initialized later
-        self.optimizer = optim.Adam([{"params": self.actor_critic.parameters()}], lr=learning_rate)
+        self.optimizer = optim.Adam(
+            [{"params": self.actor_critic.parameters()}], lr=self.learning_rate
+        )
 
         if self.encoder.num_output_dim != 0:
             self.extra_optimizer = optim.Adam(
@@ -236,9 +250,13 @@ class PPO:
             if self.desired_kl != None and self.schedule == "adaptive":
                 with torch.inference_mode():
                     if kl_mean > self.desired_kl * 2.0:
-                        self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                        self.learning_rate = max(
+                            self.min_learning_rate, self.learning_rate / 1.5
+                        )
                     elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
-                        self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                        self.learning_rate = min(
+                            self.max_learning_rate, self.learning_rate * 1.5
+                        )
 
                     for param_group in self.optimizer.param_groups:
                         param_group["lr"] = self.learning_rate
@@ -318,16 +336,20 @@ class PPO:
 
                 self.extra_optimizer.zero_grad()
                 extra_loss.backward()
+                if self.encoder_max_grad_norm > 0.0:
+                    nn.utils.clip_grad_norm_(
+                        self.encoder.parameters(), self.encoder_max_grad_norm
+                    )
                 self.extra_optimizer.step()
 
                 num_updates_extra += 1
                 mean_extra_loss += extra_loss.item()
 
-        mean_value_loss /= num_updates
+        mean_value_loss /= max(1, num_updates)
         if num_updates_extra > 0:
-            mean_extra_loss /= num_updates
-        mean_surrogate_loss /= num_updates
-        mean_kl /= num_updates
+            mean_extra_loss /= num_updates_extra
+        mean_surrogate_loss /= max(1, num_updates)
+        mean_kl /= max(1, num_updates)
         self.storage.clear()
 
         return (mean_value_loss, mean_extra_loss, mean_surrogate_loss, mean_kl)

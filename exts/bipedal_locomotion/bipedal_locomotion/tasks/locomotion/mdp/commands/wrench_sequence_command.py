@@ -29,6 +29,8 @@ class WrenchSequenceCommand(CommandTerm):
 
     def __init__(self, cfg: WrenchSequenceCommandCfg, env: ManagerBasedEnv):
         super().__init__(cfg, env)
+        if not 0.0 <= cfg.zero_wrench_probability <= 1.0:
+            raise ValueError("zero_wrench_probability must be in [0, 1].")
         self._asset: Articulation = env.scene[cfg.asset_name]
         body_ids, body_names = self._asset.find_bodies(cfg.body_name)
         if len(body_ids) != 1:
@@ -52,6 +54,7 @@ class WrenchSequenceCommand(CommandTerm):
         self._beta = torch.ones(self.num_envs, 1, device=self.device)
         self._acceleration_gain = torch.zeros(self.num_envs, 6, device=self.device)
         self._previous_twist = torch.zeros(self.num_envs, 6, device=self.device)
+        self._zero_wrench_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._external_prediction_enabled = False
         self.metrics = {}
 
@@ -133,6 +136,9 @@ class WrenchSequenceCommand(CommandTerm):
             return
         if self._external_prediction_enabled:
             return
+        self._zero_wrench_mask[env_ids] = (
+            torch.rand(len(env_ids), device=self.device) < self.cfg.zero_wrench_probability
+        )
         self._points[env_ids, 0] = self._sample_uniform(env_ids)
         self._points[env_ids, 1] = self._sample_uniform(env_ids)
         self._points[env_ids, 2] = self._sample_uniform(env_ids)
@@ -143,6 +149,11 @@ class WrenchSequenceCommand(CommandTerm):
         self._acceleration_gain[env_ids] = (
             2.0 * torch.rand(len(env_ids), 6, device=self.device) - 1.0
         ) * acceleration_limits
+        zero_mask = self._zero_wrench_mask[env_ids]
+        if zero_mask.any():
+            zero_env_ids = env_ids[zero_mask]
+            self._points[zero_env_ids] = 0.0
+            self._acceleration_gain[zero_env_ids] = 0.0
         self._previous_twist[env_ids, :3] = self._asset.data.root_lin_vel_b[env_ids]
         self._previous_twist[env_ids, 3:] = self._asset.data.root_ang_vel_b[env_ids]
         self._refresh_commands(env_ids)
@@ -163,10 +174,13 @@ class WrenchSequenceCommand(CommandTerm):
             min=self._bounds[:, 0],
             max=self._bounds[:, 1],
         )
+        self._points[self._zero_wrench_mask] = 0.0
         self._refresh_commands(self._all_env_ids)
 
     def _refresh_commands(self, env_ids: torch.Tensor):
         world_sequence = self._evaluate_quadratic(self._points[env_ids], self._prediction_times)
+        zero_mask = self._zero_wrench_mask[env_ids]
+        world_sequence[zero_mask] = 0.0
         num_predictions = world_sequence.shape[1]
         base_quat_w = self._asset.data.root_quat_w[env_ids]
         prediction_quat_w = base_quat_w[:, None, :].expand(-1, num_predictions, -1).reshape(-1, 4)
@@ -182,7 +196,9 @@ class WrenchSequenceCommand(CommandTerm):
             [*self.cfg.force_observation_noise_std, *self.cfg.torque_observation_noise_std],
             device=self.device,
         ).repeat(len(self.cfg.prediction_times))
-        self._noisy_command[env_ids] = flattened + torch.randn_like(flattened) * noise_std
+        noisy_command = flattened + torch.randn_like(flattened) * noise_std
+        noisy_command[zero_mask] = 0.0
+        self._noisy_command[env_ids] = noisy_command
 
         current_twist = torch.cat(
             (self._asset.data.root_lin_vel_b[env_ids], self._asset.data.root_ang_vel_b[env_ids]), dim=-1
@@ -192,6 +208,7 @@ class WrenchSequenceCommand(CommandTerm):
         unobserved += torch.randn_like(unobserved) * self.cfg.unobserved_noise_std
         unobserved_limits = torch.tensor(self.cfg.unobserved_wrench_limits, device=self.device)
         unobserved = torch.clamp(unobserved, min=-unobserved_limits, max=unobserved_limits)
+        unobserved[zero_mask] = 0.0
         applied_b = clean_sequence_b[:, 0] + unobserved
         self._applied_wrench[env_ids] = applied_b
         self._previous_twist[env_ids] = current_twist

@@ -34,7 +34,9 @@ ARM_JOINTS = ["arm[1-6]_Joint"]
 
 @configclass
 class WholeBodyCommandsCfg(CommandsCfg):
-    arm_wrench = mdp.WrenchSequenceCommandCfg()
+    # PLAY/deployment normally starts with an exact zero prediction. Include
+    # the same condition during training instead of making zero wrench OOD.
+    arm_wrench = mdp.WrenchSequenceCommandCfg(zero_wrench_probability=0.25)
 
 
 @configclass
@@ -182,6 +184,9 @@ class _WholeBodyMixin:
         self.rewards.feet_distance.weight = 0.2
         self.commands.base_velocity.rel_standing_envs = 0.2
         self.commands.gait_command.reset_phase_on_resample = True
+        # The v3 runner executes actions in [-5, 5]. Keep this termination as a
+        # finite-value guard without inheriting the ineffective legacy 80.0.
+        self.terminations.action_out_of_limits.params["threshold"] = 5.01
 
     def _configure_whole_body(self):
         self.scene.robot = SOLEFOOT_YG_TRON2A_WHOLEBODY_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")

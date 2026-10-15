@@ -36,6 +36,28 @@ from torch.distributions import Normal
 from torch.nn.modules import rnn
 
 
+class ScaledTanh(nn.Module):
+    """Parameter-free action bound that remains part of JIT/ONNX exports."""
+
+    def __init__(self, scale):
+        super().__init__()
+        scale = float(scale)
+        if scale <= 0.0:
+            raise ValueError("squash_action_scale must be positive")
+        # Persist the bound in checkpoints. This prevents a v3 checkpoint from
+        # being silently reconstructed as an unbounded legacy actor.
+        self.register_buffer("scale", torch.tensor(scale))
+        self._scale_value = scale
+
+    def forward(self, inputs):
+        # Division preserves unit slope around zero, so enabling the bound does
+        # not amplify the actor's initialization or small control corrections.
+        return self.scale * torch.tanh(inputs / self.scale)
+
+    def extra_repr(self):
+        return f"scale={self._scale_value}"
+
+
 class ActorCritic(nn.Module):
     is_recurrent = False
     is_sequence = False
@@ -51,6 +73,8 @@ class ActorCritic(nn.Module):
         activation="elu",
         orthogonal_init=False,
         init_noise_std=1.0,
+        squash_action=False,
+        squash_action_scale=1.0,
         **kwargs,
     ):
         if kwargs:
@@ -87,6 +111,8 @@ class ActorCritic(nn.Module):
                     torch.nn.init.constant_(actor_layers[-1].bias, 0.0)
                 actor_layers.append(activation)
                 # actor_layers.append(torch.nn.LayerNorm(actor_hidden_dims[l + 1]))
+        if squash_action:
+            actor_layers.append(ScaledTanh(squash_action_scale))
         self.actor = nn.Sequential(*actor_layers)
 
         # Value function
@@ -114,8 +140,11 @@ class ActorCritic(nn.Module):
         print(f"Critic MLP: {self.critic}")
 
         # Action noise
-        # self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
-        self.logstd = nn.Parameter(torch.zeros(num_actions))
+        if init_noise_std <= 0.0:
+            raise ValueError("init_noise_std must be positive")
+        self.logstd = nn.Parameter(
+            torch.log(init_noise_std * torch.ones(num_actions))
+        )
         self.distribution = None
         # disable args validation for speedup
         Normal.set_default_validate_args = False
