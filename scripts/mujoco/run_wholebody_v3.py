@@ -118,6 +118,7 @@ def control(args):
     from controllers.sfyg_contract import projected_gravity_from_wxyz
     from controllers.sfyg_contract import JointSpaceArmTest
     from controllers.sfyg_contract import WRENCH_SCALE
+    from controllers.sfyg_contract import SFYGPolicyConfig
     from limxsdk.robot import Robot, RobotType
     if not np.allclose(WRENCH_SCALE, [.01, .01, .01, .05, .05, .05]):
         raise ValueError("Deployment wrench normalization differs from the v3 training contract")
@@ -154,9 +155,18 @@ def control(args):
         shadow = (load_payload_model(preview_path, args.payload_mass, args.payload_dimensions, args.payload_offset)
                   if args.payload_mass is not None else load_mujoco_model(preview_path))
         preview = MuJoCoAddedBodyModel(shadow, ROOT / "robot_description/tron2/SF_TRON2A/urdf/robot_rl.urdf")
+        config_check = SFYGPolicyConfig(str(model_dir / "params.yaml"))
+        mapping = preview.resolve_joint_names(config_check.wire_joint_names)
+        print("[V3 PREVIEW JOINTS] " + json.dumps(mapping), flush=True)
+        initial = preview.gravity_wrench(dict(zip(config_check.wire_joint_names, config_check.default_q)),
+                                        np.array([0., 0., -np.linalg.norm(shadow.opt.gravity)]))
         print(f"[V3 PREVIEW] source={preview_path}; mode={args.low_wrench}; "
               f"added_mass={sum(b[0] for b in preview.bodies.values()):.6f}kg; "
               f"payload_mass={args.payload_mass}; private model, observation only", flush=True)
+        print(f"[V3 PREVIEW CHECK] joints={len(mapping)} gravity={initial.tolist()}", flush=True)
+        if args.preview_only:
+            print("[V3 PREVIEW CHECK] passed; no SDK connection started", flush=True)
+            return
 
     class DiagnosticController(deployment.SFYGController):
         def __init__(self, *a, **kw):
@@ -311,6 +321,7 @@ def main():
     ctl.add_argument("--arm-pose", choices=("configured", "folded"), default="configured")
     ctl.add_argument("--low-wrench", choices=("zero", "gravity", "plan"), default="zero")
     ctl.add_argument("--sim-root", help="Same simulator root as terminal A; required for gravity/plan")
+    ctl.add_argument("--preview-only", action="store_true", help="Validate model, 18 joints and gravity without connecting to SDK")
     motion = ctl.add_mutually_exclusive_group()
     motion.add_argument("--arm-test-joint", choices=tuple(f"arm{i}" for i in range(1, 7)))
     motion.add_argument("--arm-test-offsets", nargs=6, type=float)
@@ -338,6 +349,8 @@ def main():
                     args.wrench_duration, args.wrench_ramp_time, args.wrench_frequency))):
             parser.error("wrench must be finite; start nonnegative; duration/ramp/frequency positive")
     if args.mode == "control":
+        if args.preview_only and args.low_wrench == "zero":
+            parser.error("--preview-only requires --low-wrench gravity or plan")
         if args.low_wrench != "zero":
             if args.sim_root is None or not Path(args.sim_root).expanduser().is_dir():
                 parser.error("gravity/plan requires an existing --sim-root")

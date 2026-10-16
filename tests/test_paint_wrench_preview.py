@@ -4,6 +4,8 @@ from pathlib import Path
 import tempfile
 import unittest
 import importlib.util
+from unittest.mock import patch
+from types import SimpleNamespace
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,7 +70,7 @@ class WrenchTests(unittest.TestCase):
     def test_mujoco_preview_uses_native_inertia_and_private_state(self):
         import mujoco
         model = mujoco.MjModel.from_xml_string('''<mujoco><worldbody>
-          <body name="base_Link" pos="0 0 0.85"><freejoint/>
+          <body name="base_Link" pos="0 0 0.85"><freejoint name="floating_base"/>
           <inertial pos="0 0 0" mass="1" diaginertia=".1 .1 .1"/>
           <body name="arm"><joint name="q" axis="0 0 1"/>
           <inertial pos="1 0 0" mass="2" diaginertia=".1 .1 .1"/>
@@ -76,7 +78,10 @@ class WrenchTests(unittest.TestCase):
         live = mujoco.MjData(model)
         live.qpos[-1] = .73
         before = live.qpos.copy()
-        preview = MuJoCoAddedBodyModel(model, Path(self.temp.name)/"base.urdf")
+        # Emulate bindings whose enum objects do not compare to numpy ints.
+        with patch.object(mujoco, "mjtJoint", SimpleNamespace(mjJNT_HINGE=object(), mjJNT_SLIDE=object())):
+            preview = MuJoCoAddedBodyModel(model, Path(self.temp.name)/"base.urdf")
+        self.assertEqual(set(preview.addresses), {"q"})
         gravity = np.array([0, 0, -9.81])
         np.testing.assert_allclose(preview.gravity_wrench({"q": 0}, gravity), [0, 0, -19.62, 0, 19.62, 0])
         dynamic = preview.preview(lambda t:{"q":1.5*t*t}, 0., np.zeros(3))

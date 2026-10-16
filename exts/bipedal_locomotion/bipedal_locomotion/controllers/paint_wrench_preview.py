@@ -141,8 +141,18 @@ class MuJoCoAddedBodyModel(AddedBodyModel):
             self.bodies[name] = (float(model.body_mass[i]), np.eye(4), np.diag(model.body_inertia[i]))
         self.addresses = {}
         for i in range(model.njnt):
-            if model.jnt_type[i] in (mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE):
-                self.addresses[mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, i)] = model.jnt_qposadr[i]
+            # Infer scalar joints from native coordinate spans. Comparing numpy
+            # jnt_type scalars against pybind enum objects is version-dependent.
+            start = int(model.jnt_qposadr[i])
+            end = int(model.jnt_qposadr[i+1]) if i+1 < model.njnt else model.nq
+            dof_start = int(model.jnt_dofadr[i])
+            dof_end = int(model.jnt_dofadr[i+1]) if i+1 < model.njnt else model.nv
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, i)
+            if name is not None and end-start == 1 and dof_end-dof_start == 1:
+                self.addresses[name] = start
+        if not self.addresses:
+            raise ValueError(f"MuJoCo preview has no named scalar joints: njnt={model.njnt}, "
+                             f"nq={model.nq}, nv={model.nv}, types={model.jnt_type.tolist()}")
 
     def resolve_joint_names(self, names):
         """Resolve exact names first, then the explicit SDK '_Joint' suffix alias."""
