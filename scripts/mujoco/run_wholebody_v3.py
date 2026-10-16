@@ -97,6 +97,7 @@ def export(args):
 def control(args):
     import numpy as np
 
+    arm_requested = args.arm_test_joint is not None or args.arm_test_offsets is not None
     deploy = Path(args.deploy_root).expanduser().resolve()
     root = Path(args.model_root).expanduser().resolve()
     model_dir = root / "SFYG_TRON2A"
@@ -145,13 +146,20 @@ def control(args):
                 self.config.default_q[10:16] = list(FOLDED_ARM.values())
             # Build AFTER the pose override: otherwise a folded test would
             # silently reuse the legacy extended arm origin during its motion.
-            if args.arm_test_joint is not None:
+            if arm_requested:
                 self.arm_test = JointSpaceArmTest(
                     self.config.default_q[10:16].copy(),
                     args.arm_test_joint, args.arm_test_delta,
+                    offsets=args.arm_test_offsets,
                     start_delay=args.arm_test_start_delay,
                     move_duration=args.arm_test_move_duration,
                     hold_duration=args.arm_test_hold_duration)
+            if self.trajectory is not None:
+                if not np.allclose(self.trajectory.sample(0.).arm_position,
+                                   self.config.default_q[10:16], atol=.05):
+                    raise ValueError("OCS2 CSV initial arm pose differs from configured pose; align the trajectory first")
+                if args.duration < args.ocs2_start_delay + self.trajectory.duration + 1.:
+                    raise ValueError("duration must cover OCS2 startup, full trajectory and at least 1s terminal hold")
             if (not np.allclose(self.config.action_scale, .25)
                     or not np.allclose(self.config.gait, [.8, .5, .5, .2])
                     or abs(self.config.policy_frequency - 50.) > 1e-6):
@@ -167,7 +175,7 @@ def control(args):
             if self.rl_started is None:
                 self.rl_started = time.monotonic()
             q, _, quaternion, _ = self._snapshot()
-            if args.arm_test_joint is not None:
+            if arm_requested:
                 if self.arm_test is None:
                     self.arm_sequence_aborted = True
                 else:
@@ -184,7 +192,8 @@ def control(args):
                 print(f"[V3 RL] t={time.monotonic() - self.rl_started:.2f}s "
                       f"calls={self.policy_calls} tilt={tilt:.2f}deg "
                       f"action_max={np.max(np.abs(action)):.3f} "
-                      f"arm_q={np.round(q[10:16], 3).tolist()}", flush=True)
+                      f"arm_q={np.round(q[10:16], 3).tolist()} "
+                      f"arm_target={np.round(solution.arm_position, 3).tolist()}", flush=True)
             self.policy_calls += 1
             return action
 
@@ -196,9 +205,14 @@ def control(args):
         if not robot.init("127.0.0.1"):
             raise RuntimeError("SDK init failed")
         controller = DiagnosticController(str(root), robot, "SFYG_TRON2A",
-                                          start_controller=True, base_command=args.command)
+            start_controller=True, base_command=args.command,
+            ocs2_trajectory=args.ocs2_trajectory,
+            ocs2_start_delay=args.ocs2_start_delay if args.ocs2_trajectory else 0.,
+            safe_walk_command=args.safe_walk_command,
+            ocs2_terminal_command=args.safe_walk_command if args.ocs2_trajectory else None)
         print(f"[V3] checkpoint={manifest['checkpoint']} command={args.command}; "
-              "articulated SFYG, predicted wrench=0, managed stance phase", flush=True)
+              f"articulated SFYG, predicted wrench={'OCS2 CSV' if args.ocs2_trajectory else '0'}, "
+              "managed stance phase", flush=True)
         print(f"[V3] arm_pose={args.arm_pose} target={controller.config.default_q[10:16].tolist()} "
               f"kp={controller.config.kp[10:16].tolist()} kd={controller.config.kd[10:16].tolist()}", flush=True)
         completed = controller.run(duration=args.duration)
@@ -209,7 +223,8 @@ def control(args):
     finally:
         print("[V3 RESULT] " + json.dumps(dict(completed=completed, error=error,
             arm_pose=args.arm_pose,
-            arm_test_requested=args.arm_test_joint is not None,
+            ocs2_trajectory=args.ocs2_trajectory,
+            arm_test_requested=arm_requested,
             arm_sequence_started=getattr(controller, "arm_sequence_started", False),
             arm_sequence_completed=getattr(controller, "arm_sequence_completed", False),
             arm_sequence_aborted=getattr(controller, "arm_sequence_aborted", False),
@@ -245,7 +260,12 @@ def main():
     ctl.add_argument("--command", nargs=3, type=float, default=[0., 0., 0.])
     ctl.add_argument("--duration", type=float, default=60.)
     ctl.add_argument("--arm-pose", choices=("configured", "folded"), default="configured")
-    ctl.add_argument("--arm-test-joint", choices=tuple(f"arm{i}" for i in range(1, 7)))
+    motion = ctl.add_mutually_exclusive_group()
+    motion.add_argument("--arm-test-joint", choices=tuple(f"arm{i}" for i in range(1, 7)))
+    motion.add_argument("--arm-test-offsets", nargs=6, type=float)
+    motion.add_argument("--ocs2-trajectory")
+    ctl.add_argument("--ocs2-start-delay", type=float, default=3.)
+    ctl.add_argument("--safe-walk-command", nargs=3, type=float)
     ctl.add_argument("--arm-test-delta", type=float)
     ctl.add_argument("--arm-test-start-delay", type=float, default=5.)
     ctl.add_argument("--arm-test-move-duration", type=float, default=3.)
@@ -258,13 +278,37 @@ def main():
                     args.wrench_duration, args.wrench_ramp_time, args.wrench_frequency))):
             parser.error("wrench must be finite; start nonnegative; duration/ramp/frequency positive")
     if args.mode == "control":
+        if args.ocs2_trajectory is not None:
+            if not Path(args.ocs2_trajectory).expanduser().is_file():
+                parser.error("OCS2 CSV does not exist; provide its real absolute path")
+            if args.arm_pose != "configured":
+                parser.error("Legacy absolute OCS2 CSV replay requires --arm-pose configured")
+            if any(args.command):
+                parser.error("Do not combine --command with OCS2 CSV; use --safe-walk-command")
+            if (args.safe_walk_command is None
+                    or any(not math.isfinite(v) or abs(v) > limit for v, limit in
+                           zip(args.safe_walk_command, (1., .5, 1.5)))
+                    or math.hypot(*args.safe_walk_command[:2]) < .02):
+                parser.error("OCS2 replay requires a verified nonzero --safe-walk-command")
+            if not math.isfinite(args.ocs2_start_delay) or args.ocs2_start_delay < 0:
+                parser.error("OCS2 start delay must be finite and nonnegative")
+        elif args.safe_walk_command is not None:
+            parser.error("--safe-walk-command requires --ocs2-trajectory")
         if (args.arm_test_joint is None) != (args.arm_test_delta is None):
             parser.error("provide both --arm-test-joint and --arm-test-delta")
-        if args.arm_test_joint is not None:
-            values = (args.arm_test_delta, args.arm_test_start_delay,
+        if args.arm_test_offsets is not None:
+            offsets = args.arm_test_offsets
+            if (any(not math.isfinite(v) for v in offsets)
+                    or sum(abs(v) > 1e-9 for v in offsets) != 2
+                    or max(abs(v) for v in offsets) > .10
+                    or math.sqrt(sum(v * v for v in offsets)) > .12):
+                parser.error("offsets require exactly two active joints, |each|<=.10 and norm<=.12")
+        if args.arm_test_joint is not None or args.arm_test_offsets is not None:
+            values = (args.arm_test_start_delay,
                       args.arm_test_move_duration, args.arm_test_hold_duration)
             if (any(not math.isfinite(v) for v in values)
-                    or not 0 < abs(args.arm_test_delta) <= .15
+                    or (args.arm_test_delta is not None and
+                        (not math.isfinite(args.arm_test_delta) or not 0 < abs(args.arm_test_delta) <= .15))
                     or args.arm_test_start_delay < 2. or args.arm_test_move_duration < 1.5
                     or args.arm_test_hold_duration < .5):
                 parser.error("arm test requires |delta|<=.15, delay>=2, move>=1.5, hold>=.5 (finite)")
