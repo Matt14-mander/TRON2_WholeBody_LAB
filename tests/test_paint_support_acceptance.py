@@ -2,6 +2,11 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import contextlib
+import io
+import json
+import tempfile
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -12,6 +17,23 @@ spec.loader.exec_module(support)
 
 
 class AcceptanceTests(unittest.TestCase):
+    def test_original_failure_survives_shutdown_exit_zero(self):
+        with tempfile.TemporaryDirectory() as output:
+            args = SimpleNamespace(_acceptance_output=output, _diagnostic_stage="COM check")
+            def fail(*_):
+                raise ValueError("inertial mismatch")
+            def shutdown():
+                # Isaac shutdown must not turn an evaluation failure into success.
+                raise SystemExit(0)
+            with contextlib.redirect_stderr(io.StringIO()) as log:
+                status = support.run_with_diagnostics(args, SimpleNamespace(close=shutdown), run=fail)
+            self.assertEqual(status, 1)
+            result = json.loads(Path(output, "failure.json").read_text())
+            self.assertEqual(result["stage"], "COM check")
+            self.assertEqual(result["exception"], "ValueError")
+            self.assertIn("inertial mismatch", result["traceback"])
+            self.assertIn("PAINT ERROR", log.getvalue())
+
     def test_disturbance_is_bounded_and_released(self):
         self.assertEqual(support.pulse(0), 0)
         self.assertEqual(support.pulse(10), 0)

@@ -11,12 +11,34 @@ import json
 import math
 from pathlib import Path
 import sys
+import traceback
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "rsl_rl"))
 sys.path.insert(0, str(ROOT / "exts/bipedal_locomotion"))
 CASES = ("hold", "forward", "backward", "left", "right", "yaw_left", "yaw_right",
          "start_stop", "arm_hold", "arm_walk", "force_hold", "force_walk", "coupled")
+
+
+def stage(args, name):
+    args._diagnostic_stage = name
+    print(f"[PAINT STAGE] {name}", flush=True)
+
+
+def record_failure(args, error):
+    """Persist the original exception before Isaac/Kit shutdown can hide it."""
+    if getattr(args, "_failure_recorded", False):
+        return
+    details = dict(stage=getattr(args, "_diagnostic_stage", "startup"),
+        exception=type(error).__name__, message=str(error), traceback=traceback.format_exc())
+    print("[PAINT ERROR] " + json.dumps(details), file=sys.stderr, flush=True)
+    output = getattr(args, "_acceptance_output", None)
+    if output:
+        try:
+            Path(output, "failure.json").write_text(json.dumps(details, indent=2), encoding="utf-8")
+        except OSError as write_error:
+            print(f"[PAINT ERROR] Cannot save failure.json: {write_error}", file=sys.stderr, flush=True)
+    args._failure_recorded = True
 
 
 def smooth(u):
@@ -142,6 +164,7 @@ def main(args, app):
     output = Path(args.output_dir or ROOT / "logs/paint" /
                   datetime.now().strftime("paint_support_%Y%m%d_%H%M%S_%f")).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=False)
+    args._acceptance_output = str(output)
     task = "Isaac-Limx-SFYG-TRON2A-Paint-Teacher-Flat-Play-v0"
     cfg = parse_env_cfg(task, device=args.device, num_envs=1)
     cfg.seed, cfg.episode_length_s = args.seed, args.duration
@@ -204,9 +227,12 @@ def main(args, app):
             if args.low_wrench == "zero":
                 self.physical_preview.zero_()
             else:
+                if self.model_check is None:
+                    stage(args, "preview: read measured joints and gravity")
                 q = dict(zip(self._asset.joint_names, self._asset.data.joint_pos[0].cpu().tolist()))
                 gravity = self._asset.data.projected_gravity_b[0].cpu().numpy() * np.linalg.norm(cfg.sim.gravity)
                 if self.model_check is None:
+                    stage(args, "preview: read native body masses and COM positions")
                     # Compare URDF mass/COM with the actual spawned USD before
                     # trusting its wrench. This also catches merged/missing links.
                     names = self._asset.body_names
@@ -216,6 +242,7 @@ def main(args, app):
                         self._asset.data.root_quat_w[0].expand(len(names), -1),
                         self._asset.data.body_com_pos_w[0]-self._asset.data.root_pos_w[0]).cpu().numpy()
                     checks = []
+                    stage(args, "preview: compare URDF and USD inertias/frames")
                     for name, (mass, _, _) in model.bodies.items():
                         if name not in names:
                             checks.append(dict(body=name, missing=True)); continue
@@ -229,6 +256,7 @@ def main(args, app):
                     (output / "wrench_model_check.json").write_text(json.dumps(self.model_check, indent=2), encoding="utf-8")
                     if not valid:
                         raise ValueError("URDF/USD inertial or frame mismatch; inspect wrench_model_check.json before interpreting predictions")
+                    stage(args, "preview: inertial/frame consistency passed")
                 if args.low_wrench == "gravity":
                     physical = np.repeat(model.gravity_wrench(q, gravity)[None], 5, axis=0)
                 else:
@@ -266,6 +294,7 @@ def main(args, app):
             super()._reset_idx(ids)
 
     cfg.actions.teacher.class_type = AuditAction
+    stage(args, "create environment")
     env = AuditEnv(cfg)
     results = []
     try:
@@ -305,9 +334,12 @@ def main(args, app):
                     env._acceptance_capture = None
                     interaction = env.command_manager.get_term("interaction")
                     interaction.cfg.test_force = tuple(args.force) if case in ("force_hold", "force_walk", "coupled") else (0., 0., 0.)
+                    stage(args, f"{case} trial={trial}: reset")
                     env.reset(seed=args.seed + trial)
                     term.preview_case = case
+                    stage(args, f"{case} trial={trial}: initialize {args.low_wrench} preview")
                     term.update_preview(0.)
+                    stage(args, f"{case} trial={trial}: preview ready")
                     if trial == 0:
                         print(f"[WRENCH INPUT] mode={args.low_wrench} first={term.physical_preview[0, 0].tolist()}", flush=True)
                     term._asset.set_joint_position_target(term._asset.data.default_joint_pos)
@@ -378,9 +410,30 @@ def main(args, app):
         if not frozen:
             raise RuntimeError("Frozen locomotion weights changed")
         print(f"[PAINT SUPPORT] complete; frozen weights verified; output={output}", flush=True)
+    except BaseException as error:
+        record_failure(args, error)
+        raise
     finally:
         env._acceptance_capture = None
         env.close()
+
+
+def run_with_diagnostics(args, app, run=main):
+    status = 0
+    try:
+        run(args, app)
+    except BaseException as error:
+        record_failure(args, error)
+        status = 130 if isinstance(error, KeyboardInterrupt) else 1
+    finally:
+        try:
+            app.close()
+        except BaseException as error:
+            # Preserve a failure even if Kit shutdown requests sys.exit(0).
+            if not (isinstance(error, SystemExit) and error.code in (None, 0)):
+                record_failure(args, error)
+                status = status or 1
+    return status
 
 
 if __name__ == "__main__":
@@ -391,7 +444,4 @@ if __name__ == "__main__":
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
     app = AppLauncher(args).app
-    try:
-        main(args, app)
-    finally:
-        app.close()
+    sys.exit(run_with_diagnostics(args, app))
