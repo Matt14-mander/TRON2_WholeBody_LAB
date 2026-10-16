@@ -94,6 +94,9 @@ class PaintTeacherFlatEnvCfg(SFYG_TRON2A_WholeBodyFlatEnvCfg):
     def __post_init__(self):
         # Run legacy asset configuration first, before replacing its MDP terms.
         super().__post_init__()
+        # Paper v3 trains on SF without an arm. Teacher execution needs the
+        # articulated SFYG asset before attaching the physical payload.
+        self._configure_whole_body()
         gait = deepcopy(self.commands.gait_command)
         self.commands = TeacherCommandsCfg()
         self.commands.gait_command = gait

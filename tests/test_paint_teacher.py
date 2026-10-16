@@ -170,7 +170,7 @@ class TeacherTests(unittest.TestCase):
         torch.testing.assert_close(core.force_envelope(phase, torch.zeros(7, dtype=torch.bool)),
                                    torch.tensor([0., 0., .5, 1., .5, 0., 0.]))
 
-    def make_env(self):
+    def make_env(self, low_checkpoint=None):
         robot = RobotDouble(2)
         scene = {"robot": robot}
         class Scene(dict):
@@ -188,10 +188,28 @@ class TeacherTests(unittest.TestCase):
         env.command_manager = types.SimpleNamespace(get_command=commands.__getitem__,
                                                     get_term=lambda name: interaction)
         cfg = self.native.FrozenLocomotionActionCfg()
-        cfg.locomotion_checkpoint = str(self.path)
+        cfg.locomotion_checkpoint = str(low_checkpoint or self.path)
         action = self.native.FrozenLocomotionAction(cfg, env)
         env.action_manager = types.SimpleNamespace(get_term=lambda name: action)
         return env, action, interaction
+
+    def test_v3_phase_holds_stance_and_interpolates_low_level_samples(self):
+        saved = torch.load(self.path, weights_only=False)
+        saved["model_state_dict"]["actor.9.scale"] = torch.tensor(5.)
+        bounded_path = Path(self.temp.name) / "bounded_low.pt"
+        torch.save(saved, bounded_path)
+        env, action, interaction = self.make_env(bounded_path)
+        gait = types.SimpleNamespace(gait_indices=torch.tensor([.25, .5]))
+        base = types.SimpleNamespace(is_standing_env=torch.zeros(2, dtype=torch.bool))
+        terms = {"interaction": interaction, "gait_command": gait, "base_velocity": base}
+        env.command_manager.get_term = terms.__getitem__
+        self.assertTrue(action.managed_phase)
+        torch.testing.assert_close(action.proprioception()[:, 36:38], torch.tensor([[0., 1.], [0., 1.]]))
+        action.process_actions(torch.tensor([[0.] * 9, [.5] + [0.] * 8]))
+        self.assertEqual(base.is_standing_env.tolist(), [True, False])
+        angle = 2 * math.pi * (.5 + .02 * 1.125)
+        expected = torch.tensor([[0., 1.], [math.sin(angle), math.cos(angle)]])
+        torch.testing.assert_close(action.proprioception(.02)[:, 36:38], expected)
 
     def test_native_rate_frame_observations_and_reset(self):
         env, action, interaction = self.make_env()

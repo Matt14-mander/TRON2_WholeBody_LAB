@@ -118,6 +118,7 @@ class FrozenLocomotionAction(ActionTerm):
         if not torch.allclose(imported_mass, torch.full_like(imported_mass, cfg.payload_mass), rtol=.05, atol=1e-5):
             raise ValueError("Imported payload mass does not match the configured attached payload.")
         self.locomotion = FrozenLocomotion(cfg.locomotion_checkpoint, self.device)
+        self.managed_phase = hasattr(self.locomotion.actor[-1], "scale")
         self.nominal = self._asset.data.default_joint_pos[:, self.arm_ids].clone()
         self.limits = self._asset.data.soft_joint_pos_limits[:, self.arm_ids].clone()
         if ((self.nominal < self.limits[..., 0]) | (self.nominal > self.limits[..., 1])).any():
@@ -153,8 +154,14 @@ class FrozenLocomotionAction(ActionTerm):
     def proprioception(self, offset_s=0.):
         data = self._asset.data
         gait = self._env.command_manager.get_command("gait_command")
-        phase = 2 * torch.pi * torch.remainder(
-            (self._env.episode_length_buf * self._env.step_dt + offset_s) * gait[:, 0], 1.)
+        if self.managed_phase:
+            index = self._env.command_manager.get_term("gait_command").gait_indices
+            moving = self._processed[:, :3].norm(dim=-1) > 1e-3
+            phase = 2 * torch.pi * torch.where(moving,
+                torch.remainder(index + offset_s * gait[:, 0], 1.), torch.zeros_like(index))
+        else:
+            phase = 2 * torch.pi * torch.remainder(
+                (self._env.episode_length_buf * self._env.step_dt + offset_s) * gait[:, 0], 1.)
         return torch.cat((data.root_ang_vel_b.clamp(-100, 100) * .25,
                           data.projected_gravity_b.clamp(-100, 100),
                           (data.joint_pos[:, self.leg_ids] - data.default_joint_pos[:, self.leg_ids]).clamp(-100, 100),
@@ -194,6 +201,11 @@ class FrozenLocomotionAction(ActionTerm):
         self._processed[warmup, 3:] = self.nominal[warmup]
         self.delta[warmup] = 0
         self._env.command_manager.get_command("base_velocity").copy_(self._processed[:, :3])
+        if self.managed_phase:
+            # The native GaitCommand advances after each 40ms teacher step;
+            # proprioception interpolates its second 20ms low-level sample.
+            self._env.command_manager.get_term("base_velocity").is_standing_env.copy_(
+                self._processed[:, :3].norm(dim=-1) <= 1e-3)
         self._substep = 0
 
     @torch.no_grad()
