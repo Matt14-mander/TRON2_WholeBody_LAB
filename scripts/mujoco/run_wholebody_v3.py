@@ -4,6 +4,7 @@ The original deployment sources and models remain unchanged. The control mode
 patches only its process's legacy observation function to match managed v3 phase.
 """
 import argparse
+from dataclasses import replace
 import hashlib
 import importlib
 import importlib.util
@@ -36,6 +37,10 @@ def simulate(args):
     sys.argv = [str(root / "simulator.py")]
     if args.headless:
         sys.argv.append("--headless")
+    if args.payload_mass is not None:
+        sys.argv += ["--payload-mass", str(args.payload_mass),
+                     "--payload-dimensions", *map(str, args.payload_dimensions),
+                     "--payload-offset", *map(str, args.payload_offset)]
     if args.external_wrench is not None:
         sys.argv += ["--external-wrench", *map(str, args.external_wrench),
                      "--wrench-body", args.wrench_body, "--wrench-frame", args.wrench_frame,
@@ -46,6 +51,7 @@ def simulate(args):
                      "--wrench-frequency", str(args.wrench_frequency)]
     print(f"[V3 SIM] arm_pose={args.arm_pose}; initial arm="
           f"{[sfyg.INITIAL_ARM_AND_GRIPPER[name] for name in FOLDED_ARM]}", flush=True)
+    print(f"[V3 SIM] payload mass={args.payload_mass} dimensions={args.payload_dimensions} offset={args.payload_offset}", flush=True)
     simulator.main()
 
 
@@ -111,7 +117,10 @@ def control(args):
     deployment = importlib.import_module("controllers.SFYGController")
     from controllers.sfyg_contract import projected_gravity_from_wxyz
     from controllers.sfyg_contract import JointSpaceArmTest
+    from controllers.sfyg_contract import WRENCH_SCALE
     from limxsdk.robot import Robot, RobotType
+    if not np.allclose(WRENCH_SCALE, [.01, .01, .01, .05, .05, .05]):
+        raise ValueError("Deployment wrench normalization differs from the v3 training contract")
 
     original = deployment.build_proprio_observation
     gait_index = 0.
@@ -129,6 +138,25 @@ def control(args):
         return observation
 
     deployment.build_proprio_observation = v3_observation
+    preview = None
+    preview_path = None
+    if args.low_wrench != "zero":
+        sim_root = Path(args.sim_root).expanduser().resolve()
+        candidates = [sim_root / "robot-description" / folder / "SFYG_TRON2A/xml/robot.xml"
+                      for folder in ("tron2a", "tron2")]
+        preview_path = next((p for p in candidates if p.is_file()), None)
+        if preview_path is None:
+            raise FileNotFoundError(f"SFYG MuJoCo XML not found under {sim_root}/robot-description")
+        sys.path.insert(0, str(sim_root))
+        sys.path.insert(0, str(ROOT / "exts/bipedal_locomotion/bipedal_locomotion/controllers"))
+        from tron2_sim.model_loader import load_mujoco_model, load_payload_model
+        from paint_wrench_preview import MuJoCoAddedBodyModel
+        shadow = (load_payload_model(preview_path, args.payload_mass, args.payload_dimensions, args.payload_offset)
+                  if args.payload_mass is not None else load_mujoco_model(preview_path))
+        preview = MuJoCoAddedBodyModel(shadow, ROOT / "robot_description/tron2/SF_TRON2A/urdf/robot_rl.urdf")
+        print(f"[V3 PREVIEW] source={preview_path}; mode={args.low_wrench}; "
+              f"added_mass={sum(b[0] for b in preview.bodies.values()):.6f}kg; "
+              f"payload_mass={args.payload_mass}; private model, observation only", flush=True)
 
     class DiagnosticController(deployment.SFYGController):
         def __init__(self, *a, **kw):
@@ -183,6 +211,22 @@ def control(args):
                     self.arm_sequence_started |= stage in ("outbound", "hold", "return")
                     self.arm_sequence_completed |= stage == "complete" and self.arm_sequence_started
             gravity = projected_gravity_from_wxyz(quaternion)
+            if preview is not None:
+                positions = dict(zip(self.config.wire_joint_names, q))
+                g = gravity * np.linalg.norm(preview.model.opt.gravity)
+                if args.low_wrench == "gravity" or self.arm_test is None:
+                    prediction = np.repeat(preview.gravity_wrench(positions, g)[None], 5, axis=0)
+                else:
+                    test = self.arm_test
+                    now = test.sample(solution.time, solution.base_command).arm_position
+                    def position_at(future):
+                        delta = test.sample(max(0., future), solution.base_command).arm_position-now
+                        out = dict(positions)
+                        for i, name in enumerate(self.config.wire_joint_names[10:16]):
+                            out[name] += delta[i]
+                        return out
+                    prediction = preview.preview(position_at, solution.time, g)
+                solution = replace(solution, wrench_prediction=prediction)
             tilt = float(np.degrees(np.arccos(np.clip(-gravity[2], -1., 1.))))
             self.peak_tilt = max(self.peak_tilt, tilt)
             if not math.isfinite(tilt) or tilt > 35.:
@@ -193,7 +237,8 @@ def control(args):
                       f"calls={self.policy_calls} tilt={tilt:.2f}deg "
                       f"action_max={np.max(np.abs(action)):.3f} "
                       f"arm_q={np.round(q[10:16], 3).tolist()} "
-                      f"arm_target={np.round(solution.arm_position, 3).tolist()}", flush=True)
+                      f"arm_target={np.round(solution.arm_position, 3).tolist()} "
+                      f"wrench0={np.round(solution.wrench_prediction[0], 3).tolist()}", flush=True)
             self.policy_calls += 1
             return action
 
@@ -211,7 +256,7 @@ def control(args):
             safe_walk_command=args.safe_walk_command,
             ocs2_terminal_command=args.safe_walk_command if args.ocs2_trajectory else None)
         print(f"[V3] checkpoint={manifest['checkpoint']} command={args.command}; "
-              f"articulated SFYG, predicted wrench={'OCS2 CSV' if args.ocs2_trajectory else '0'}, "
+              f"articulated SFYG, predicted wrench={'OCS2 CSV' if args.ocs2_trajectory else args.low_wrench}, "
               "managed stance phase", flush=True)
         print(f"[V3] arm_pose={args.arm_pose} target={controller.config.default_q[10:16].tolist()} "
               f"kp={controller.config.kp[10:16].tolist()} kd={controller.config.kd[10:16].tolist()}", flush=True)
@@ -223,6 +268,7 @@ def control(args):
     finally:
         print("[V3 RESULT] " + json.dumps(dict(completed=completed, error=error,
             arm_pose=args.arm_pose,
+            low_wrench=args.low_wrench, payload_mass=args.payload_mass,
             ocs2_trajectory=args.ocs2_trajectory,
             arm_test_requested=arm_requested,
             arm_sequence_started=getattr(controller, "arm_sequence_started", False),
@@ -260,6 +306,8 @@ def main():
     ctl.add_argument("--command", nargs=3, type=float, default=[0., 0., 0.])
     ctl.add_argument("--duration", type=float, default=60.)
     ctl.add_argument("--arm-pose", choices=("configured", "folded"), default="configured")
+    ctl.add_argument("--low-wrench", choices=("zero", "gravity", "plan"), default="zero")
+    ctl.add_argument("--sim-root", help="Same simulator root as terminal A; required for gravity/plan")
     motion = ctl.add_mutually_exclusive_group()
     motion.add_argument("--arm-test-joint", choices=tuple(f"arm{i}" for i in range(1, 7)))
     motion.add_argument("--arm-test-offsets", nargs=6, type=float)
@@ -270,7 +318,16 @@ def main():
     ctl.add_argument("--arm-test-start-delay", type=float, default=5.)
     ctl.add_argument("--arm-test-move-duration", type=float, default=3.)
     ctl.add_argument("--arm-test-hold-duration", type=float, default=2.)
+    for p in (sim, ctl):
+        p.add_argument("--payload-mass", type=float, help="Same physical payload parameters in both terminals; omit for no payload")
+        p.add_argument("--payload-dimensions", nargs=3, type=float, default=[.20, .12, .08])
+        p.add_argument("--payload-offset", nargs=3, type=float, default=[.15, 0., 0.])
     args = parser.parse_args()
+    if args.mode in ("sim", "control"):
+        values = [*args.payload_dimensions, *args.payload_offset]
+        if (not all(math.isfinite(v) for v in values) or min(args.payload_dimensions) <= 0
+                or (args.payload_mass is not None and (not math.isfinite(args.payload_mass) or args.payload_mass <= 0))):
+            parser.error("payload mass/dimensions must be positive; offset finite")
     if args.mode == "sim" and args.external_wrench is not None:
         if (any(not math.isfinite(v) for v in args.external_wrench)
                 or not math.isfinite(args.wrench_start) or args.wrench_start < 0
@@ -278,6 +335,11 @@ def main():
                     args.wrench_duration, args.wrench_ramp_time, args.wrench_frequency))):
             parser.error("wrench must be finite; start nonnegative; duration/ramp/frequency positive")
     if args.mode == "control":
+        if args.low_wrench != "zero":
+            if args.sim_root is None or not Path(args.sim_root).expanduser().is_dir():
+                parser.error("gravity/plan requires an existing --sim-root")
+            if args.ocs2_trajectory:
+                parser.error("Use either the OCS2 CSV wrench or --low-wrench gravity/plan")
         if args.ocs2_trajectory is not None:
             if not Path(args.ocs2_trajectory).expanduser().is_file():
                 parser.error("OCS2 CSV does not exist; provide its real absolute path")

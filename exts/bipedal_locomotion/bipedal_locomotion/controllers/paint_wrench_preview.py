@@ -113,3 +113,50 @@ class AddedBodyModel:
         if not np.isfinite(result).all():
             raise ValueError("Non-finite inverse-dynamics preview")
         return result
+
+
+class MuJoCoAddedBodyModel(AddedBodyModel):
+    """Use compiled MuJoCo masses, inertias and FK for the same preview contract.
+
+    This private model/data pair never advances or modifies the live simulator.
+    An inertial-frame pose at each COM makes diagonal MuJoCo inertia compatible
+    with the Newton-Euler summation in AddedBodyModel.preview.
+    """
+    def __init__(self, model, reference_urdf):
+        import mujoco
+        self.mj = mujoco
+        self.model, self.data = model, mujoco.MjData(model)
+        reference = {l.get("name") for l in ET.parse(reference_urdf).getroot().findall("link")}
+        self.base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base_Link")
+        if self.base_id < 0:
+            raise ValueError("MuJoCo asset has no base_Link")
+        self.ids, self.bodies = {}, {}
+        for i in range(1, model.nbody):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i)
+            if name in reference or model.body_mass[i] == 0:
+                continue
+            if name is None:
+                raise ValueError("Unnamed massive MuJoCo body cannot be classified")
+            self.ids[name] = i
+            self.bodies[name] = (float(model.body_mass[i]), np.eye(4), np.diag(model.body_inertia[i]))
+        self.addresses = {}
+        for i in range(model.njnt):
+            if model.jnt_type[i] in (mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE):
+                self.addresses[mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, i)] = model.jnt_qposadr[i]
+
+    def states(self, positions):
+        self.mj.mj_resetData(self.model, self.data)
+        for name, value in positions.items():
+            if name not in self.addresses:
+                raise ValueError(f"MuJoCo preview joint not found: {name}")
+            self.data.qpos[self.addresses[name]] = value
+        self.mj.mj_forward(self.model, self.data)
+        r = self.data.xmat[self.base_id].reshape(3, 3).T
+        p = self.data.xpos[self.base_id]
+        out = {}
+        for name, i in self.ids.items():
+            pose = np.eye(4)
+            pose[:3, :3] = r @ self.data.ximat[i].reshape(3, 3)
+            pose[:3, 3] = r @ (self.data.xipos[i]-p)
+            out[name] = pose
+        return out

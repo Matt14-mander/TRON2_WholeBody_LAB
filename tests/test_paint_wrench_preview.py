@@ -3,11 +3,12 @@ import sys
 from pathlib import Path
 import tempfile
 import unittest
+import importlib.util
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "exts/bipedal_locomotion/bipedal_locomotion/controllers"))
-from paint_wrench_preview import AddedBodyModel, TIMES
+from paint_wrench_preview import AddedBodyModel, MuJoCoAddedBodyModel, TIMES
 
 
 class WrenchTests(unittest.TestCase):
@@ -62,6 +63,27 @@ class WrenchTests(unittest.TestCase):
         np.testing.assert_allclose(actual, original.states(converted)["gripper2_Link"], atol=1e-10)
         wrong = original.states(q)["gripper2_Link"]
         self.assertAlmostEqual(np.linalg.norm(actual[:3, 3]-wrong[:3, 3]), .0975)
+
+    @unittest.skipUnless(importlib.util.find_spec("mujoco"), "MuJoCo not installed")
+    def test_mujoco_preview_uses_native_inertia_and_private_state(self):
+        import mujoco
+        model = mujoco.MjModel.from_xml_string('''<mujoco><worldbody>
+          <body name="base_Link" pos="0 0 0.85"><freejoint/>
+          <inertial pos="0 0 0" mass="1" diaginertia=".1 .1 .1"/>
+          <body name="arm"><joint name="q" axis="0 0 1"/>
+          <inertial pos="1 0 0" mass="2" diaginertia=".1 .1 .1"/>
+          </body></body></worldbody></mujoco>''')
+        live = mujoco.MjData(model)
+        live.qpos[-1] = .73
+        before = live.qpos.copy()
+        preview = MuJoCoAddedBodyModel(model, Path(self.temp.name)/"base.urdf")
+        gravity = np.array([0, 0, -9.81])
+        np.testing.assert_allclose(preview.gravity_wrench({"q": 0}, gravity), [0, 0, -19.62, 0, 19.62, 0])
+        dynamic = preview.preview(lambda t:{"q":1.5*t*t}, 0., np.zeros(3))
+        np.testing.assert_allclose(dynamic[0], [0, -6, 0, 0, 0, -6.3], atol=3e-5)
+        np.testing.assert_array_equal(live.qpos, before)
+        with self.assertRaises(ValueError):
+            preview.states({"unknown": 0})
 
 
 if __name__ == "__main__":
