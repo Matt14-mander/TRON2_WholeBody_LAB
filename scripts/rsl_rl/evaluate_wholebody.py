@@ -86,12 +86,26 @@ def main(args, app):
     cfg.commands.gait_command.debug_vis = False
     cfg.terminations.evaluation_fall = TerminationTermCfg(func=fall)
     # Leave rewards, gait class, physical parameters and actuator delay unchanged.
+
+    class ContactDiagnosticEnv(StandWalkRLEnv):
+        def _state(self):
+            state = super()._state()
+            sensor = self.scene.sensors["contact_forces"]
+            if not hasattr(self, "_evaluation_foot_ids"):
+                ids, names = sensor.find_bodies(["ankle_pitch_L_Link", "ankle_pitch_R_Link"], preserve_order=True)
+                if names != ["ankle_pitch_L_Link", "ankle_pitch_R_Link"]:
+                    raise RuntimeError("Expected ordered left/right foot contact bodies")
+                self._evaluation_foot_ids = ids
+            state["foot_normal_force"] = sensor.data.net_forces_w[:, self._evaluation_foot_ids, 2].clone()
+            state["gait_phase"] = self.command_manager.get_term("gait_command").gait_indices.clone()
+            return state
+
     output.mkdir(parents=True)
     env = None
     results = []
     interrupted = False
     try:
-        env = RslRlVecEnvWrapper(StandWalkRLEnv(cfg))
+        env = RslRlVecEnvWrapper(ContactDiagnosticEnv(cfg))
         raw = env.unwrapped
         robot = raw.scene["robot"]
         names = list(robot.joint_names)
@@ -157,6 +171,10 @@ def main(args, app):
                         steps_log.write(json.dumps(dict(case=case, trial=trial, time_s=t,
                             command=state["command"][0].tolist(), velocity=state["linear_velocity"][0].tolist(),
                             yaw_rate=float(state["yaw_rate"][0]), tilt_deg=float(state["tilt_deg"][0]),
+                            position=state["position"][0].tolist(),
+                            gait_phase=float(state["gait_phase"][0]),
+                            foot_normal_force=state["foot_normal_force"][0].tolist(),
+                            action=action[0].tolist(),
                             base_wrench=current_wrench, action_abs_max=float(action.abs().max()), **arm_state)) + "\n")
                         if bool(done[0]):
                             completed = bool(info["time_outs"][0]) and not bool(raw.reset_terminated[0])
