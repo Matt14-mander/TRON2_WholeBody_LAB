@@ -12,6 +12,7 @@ import math
 import os
 from pathlib import Path
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[2]
 FOLDED_ARM = {f"arm{i}_Joint": 0. for i in range(1, 7)}
@@ -35,6 +36,14 @@ def simulate(args):
     sys.argv = [str(root / "simulator.py")]
     if args.headless:
         sys.argv.append("--headless")
+    if args.external_wrench is not None:
+        sys.argv += ["--external-wrench", *map(str, args.external_wrench),
+                     "--wrench-body", args.wrench_body, "--wrench-frame", args.wrench_frame,
+                     "--wrench-profile", args.wrench_profile,
+                     "--wrench-start", str(args.wrench_start),
+                     "--wrench-duration", str(args.wrench_duration),
+                     "--wrench-ramp-time", str(args.wrench_ramp_time),
+                     "--wrench-frequency", str(args.wrench_frequency)]
     print(f"[V3 SIM] arm_pose={args.arm_pose}; initial arm="
           f"{[sfyg.INITIAL_ARM_AND_GRIPPER[name] for name in FOLDED_ARM]}", flush=True)
     simulator.main()
@@ -100,6 +109,7 @@ def control(args):
     sys.path.insert(0, str(deploy))
     deployment = importlib.import_module("controllers.SFYGController")
     from controllers.sfyg_contract import projected_gravity_from_wxyz
+    from controllers.sfyg_contract import JointSpaceArmTest
     from limxsdk.robot import Robot, RobotType
 
     original = deployment.build_proprio_observation
@@ -123,12 +133,25 @@ def control(args):
         def __init__(self, *a, **kw):
             self.policy_calls = 0
             self.peak_tilt = 0.
+            self.rl_started = None
+            self.arm_sequence_started = False
+            self.arm_sequence_completed = False
+            self.arm_sequence_aborted = False
             super().__init__(*a, **kw)
             self.config.action_clip = 5.
             if args.arm_pose == "folded":
                 if list(self.config.wire_joint_names[10:16]) != list(FOLDED_ARM):
                     raise ValueError("Unexpected SFYG arm joint order")
                 self.config.default_q[10:16] = list(FOLDED_ARM.values())
+            # Build AFTER the pose override: otherwise a folded test would
+            # silently reuse the legacy extended arm origin during its motion.
+            if args.arm_test_joint is not None:
+                self.arm_test = JointSpaceArmTest(
+                    self.config.default_q[10:16].copy(),
+                    args.arm_test_joint, args.arm_test_delta,
+                    start_delay=args.arm_test_start_delay,
+                    move_duration=args.arm_test_move_duration,
+                    hold_duration=args.arm_test_hold_duration)
             if (not np.allclose(self.config.action_scale, .25)
                     or not np.allclose(self.config.gait, [.8, .5, .5, .2])
                     or abs(self.config.policy_frequency - 50.) > 1e-6):
@@ -141,7 +164,16 @@ def control(args):
             return super()._move_to_default(start_q)
 
         def _infer(self, proprio, solution):
+            if self.rl_started is None:
+                self.rl_started = time.monotonic()
             q, _, quaternion, _ = self._snapshot()
+            if args.arm_test_joint is not None:
+                if self.arm_test is None:
+                    self.arm_sequence_aborted = True
+                else:
+                    stage = self.arm_test.phase(solution.time)
+                    self.arm_sequence_started |= stage in ("outbound", "hold", "return")
+                    self.arm_sequence_completed |= stage == "complete" and self.arm_sequence_started
             gravity = projected_gravity_from_wxyz(quaternion)
             tilt = float(np.degrees(np.arccos(np.clip(-gravity[2], -1., 1.))))
             self.peak_tilt = max(self.peak_tilt, tilt)
@@ -149,7 +181,8 @@ def control(args):
                 raise RuntimeError(f"Tilt limit exceeded: {tilt:.2f} deg")
             action = super()._infer(proprio, solution)
             if self.policy_calls % 50 == 0:
-                print(f"[V3 RL] calls={self.policy_calls} tilt={tilt:.2f}deg "
+                print(f"[V3 RL] t={time.monotonic() - self.rl_started:.2f}s "
+                      f"calls={self.policy_calls} tilt={tilt:.2f}deg "
                       f"action_max={np.max(np.abs(action)):.3f} "
                       f"arm_q={np.round(q[10:16], 3).tolist()}", flush=True)
             self.policy_calls += 1
@@ -176,6 +209,10 @@ def control(args):
     finally:
         print("[V3 RESULT] " + json.dumps(dict(completed=completed, error=error,
             arm_pose=args.arm_pose,
+            arm_test_requested=args.arm_test_joint is not None,
+            arm_sequence_started=getattr(controller, "arm_sequence_started", False),
+            arm_sequence_completed=getattr(controller, "arm_sequence_completed", False),
+            arm_sequence_aborted=getattr(controller, "arm_sequence_aborted", False),
             policy_calls=getattr(controller, "policy_calls", 0),
             peak_tilt_deg=getattr(controller, "peak_tilt", None))), flush=True)
         sys.stdout.flush()
@@ -194,14 +231,45 @@ def main():
     sim.add_argument("--sim-root", required=True)
     sim.add_argument("--arm-pose", choices=("configured", "folded"), default="configured")
     sim.add_argument("--headless", action="store_true")
+    sim.add_argument("--external-wrench", nargs=6, type=float)
+    sim.add_argument("--wrench-body", default="gripper_base_Link")
+    sim.add_argument("--wrench-frame", choices=("world", "body"), default="world")
+    sim.add_argument("--wrench-profile", choices=("step", "ramp", "sine"), default="ramp")
+    sim.add_argument("--wrench-start", type=float, default=7.)
+    sim.add_argument("--wrench-duration", type=float, default=2.)
+    sim.add_argument("--wrench-ramp-time", type=float, default=.5)
+    sim.add_argument("--wrench-frequency", type=float, default=1.)
     ctl = sub.add_parser("control")
     ctl.add_argument("--deploy-root", required=True)
     ctl.add_argument("--model-root", required=True, help="Parent of an SFYG_TRON2A model folder")
     ctl.add_argument("--command", nargs=3, type=float, default=[0., 0., 0.])
     ctl.add_argument("--duration", type=float, default=60.)
     ctl.add_argument("--arm-pose", choices=("configured", "folded"), default="configured")
+    ctl.add_argument("--arm-test-joint", choices=tuple(f"arm{i}" for i in range(1, 7)))
+    ctl.add_argument("--arm-test-delta", type=float)
+    ctl.add_argument("--arm-test-start-delay", type=float, default=5.)
+    ctl.add_argument("--arm-test-move-duration", type=float, default=3.)
+    ctl.add_argument("--arm-test-hold-duration", type=float, default=2.)
     args = parser.parse_args()
+    if args.mode == "sim" and args.external_wrench is not None:
+        if (any(not math.isfinite(v) for v in args.external_wrench)
+                or not math.isfinite(args.wrench_start) or args.wrench_start < 0
+                or any(not math.isfinite(v) or v <= 0 for v in (
+                    args.wrench_duration, args.wrench_ramp_time, args.wrench_frequency))):
+            parser.error("wrench must be finite; start nonnegative; duration/ramp/frequency positive")
     if args.mode == "control":
+        if (args.arm_test_joint is None) != (args.arm_test_delta is None):
+            parser.error("provide both --arm-test-joint and --arm-test-delta")
+        if args.arm_test_joint is not None:
+            values = (args.arm_test_delta, args.arm_test_start_delay,
+                      args.arm_test_move_duration, args.arm_test_hold_duration)
+            if (any(not math.isfinite(v) for v in values)
+                    or not 0 < abs(args.arm_test_delta) <= .15
+                    or args.arm_test_start_delay < 2. or args.arm_test_move_duration < 1.5
+                    or args.arm_test_hold_duration < .5):
+                parser.error("arm test requires |delta|<=.15, delay>=2, move>=1.5, hold>=.5 (finite)")
+            if args.duration < args.arm_test_start_delay + 2 * args.arm_test_move_duration + args.arm_test_hold_duration + 1:
+                parser.error("duration must cover the full arm sequence and at least 1s after return")
         if not math.isfinite(args.duration) or args.duration <= 0:
             parser.error("duration must be finite and positive")
         if any(not math.isfinite(v) or abs(v) > limit for v, limit in zip(args.command, (1., .5, 1.5))):
