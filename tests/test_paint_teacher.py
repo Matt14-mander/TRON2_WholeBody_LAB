@@ -239,6 +239,27 @@ class TeacherTests(unittest.TestCase):
         self.assertTrue((action.arm_history.data[0, :, 12:] == 0).all())
         handle.remove()
 
+    def test_wrench_units_order_and_reset_without_extra_physics_force(self):
+        env, action, interaction = self.make_env()
+        physical = torch.arange(60, dtype=torch.float32).reshape(2, 5, 6)
+        action.set_low_wrench_prediction(physical)
+        calls = []
+        handle = action.locomotion.actor.register_forward_pre_hook(lambda _, values: calls.append(values[0].clone()))
+        action.process_actions(torch.zeros(2, 9))
+        env._sim_step_counter += 1
+        action.apply_actions()
+        expected = (physical * torch.tensor([.01]*3+[.05]*3)).flatten(1)
+        torch.testing.assert_close(calls[0][:, 45:75], expected)
+        torch.testing.assert_close(env.scene["robot"].force[:, 0, :2], interaction.command[:, :2])
+        action.reset(torch.tensor([0]))
+        torch.testing.assert_close(action.low_wrench_prediction[0], torch.zeros(30))
+        torch.testing.assert_close(action.low_wrench_prediction[1], expected[1])
+        with self.assertRaises(ValueError):
+            action.set_low_wrench_prediction(torch.zeros(2, 30))
+        with self.assertRaises(ValueError):
+            action.set_low_wrench_prediction(torch.full((2, 5, 6), float("nan")))
+        handle.remove()
+
     def test_force_reset_warmup_and_reference_do_not_cross_envs(self):
         env, _, interaction = self.make_env()
         interaction.reference.fill_(.1)

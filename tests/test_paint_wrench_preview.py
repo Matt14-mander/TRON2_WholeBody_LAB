@@ -1,0 +1,55 @@
+"""Analytical force/moment checks independent of the Isaac runtime."""
+import sys
+from pathlib import Path
+import tempfile
+import unittest
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "exts/bipedal_locomotion/bipedal_locomotion/controllers"))
+from paint_wrench_preview import AddedBodyModel, TIMES
+
+
+class WrenchTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        path = Path(self.temp.name)
+        (path / "base.urdf").write_text('<robot name="base"><link name="base_Link"/></robot>')
+        (path / "arm.urdf").write_text('''<robot name="test"><link name="base_Link"/>
+          <link name="arm"><inertial><origin xyz="1 0 0"/>
+          <mass value="2"/><inertia ixx="0.1" ixy="0" ixz="0" iyy="0.1" iyz="0" izz="0.1"/>
+          </inertial></link><joint name="q" type="revolute"><parent link="base_Link"/>
+          <child link="arm"/><axis xyz="0 0 1"/></joint></robot>''')
+        self.model = AddedBodyModel(path / "arm.urdf", path / "base.urdf")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_weight_sign_and_moment_about_base_origin(self):
+        gravity = np.array([0., 0., -9.81])
+        np.testing.assert_allclose(self.model.gravity_wrench({"q": 0.}, gravity), [0, 0, -19.62, 0, 19.62, 0])
+        np.testing.assert_allclose(self.model.gravity_wrench({"q": np.pi/2}, gravity),
+                                   [0, 0, -19.62, -19.62, 0, 0], atol=1e-10)
+        static = self.model.preview(lambda t: {"q": 0.}, 0., gravity)
+        np.testing.assert_allclose(static, np.tile([0, 0, -19.62, 0, 19.62, 0], (5, 1)))
+
+    def test_centripetal_reaction(self):
+        preview = self.model.preview(lambda t: {"q": 2*t}, 0., np.zeros(3))
+        np.testing.assert_allclose(preview[0], [8, 0, 0, 0, 0, 0], atol=2e-5)
+
+    def test_angular_acceleration_includes_link_rotational_inertia(self):
+        preview = self.model.preview(lambda t: {"q": 1.5*t*t}, 0., np.zeros(3))
+        np.testing.assert_allclose(preview[0], [0, -6, 0, 0, 0, -6.3], atol=3e-5)
+        self.assertGreater(np.linalg.norm(preview[-1]-preview[0]), 1.)
+
+    def test_actual_robot_added_mass_and_static_horizon(self):
+        model = AddedBodyModel(ROOT / "robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf",
+            ROOT / "robot_description/tron2/SF_TRON2A/urdf/robot.urdf", .5)
+        q = {"arm2_Joint": np.pi/2, "arm3_Joint": np.deg2rad(-85)}
+        w = model.gravity_wrench(q, np.array([0, 0, -9.81]))
+        self.assertAlmostEqual(w[2], -sum(x[0] for x in model.bodies.values())*9.81)
+        np.testing.assert_allclose(model.preview(lambda t:q, 0., np.array([0, 0, -9.81])), np.tile(w, (5, 1)))
+
+
+if __name__ == "__main__":
+    unittest.main()

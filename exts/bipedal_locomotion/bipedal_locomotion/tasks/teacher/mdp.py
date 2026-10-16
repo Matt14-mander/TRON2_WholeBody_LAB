@@ -128,6 +128,7 @@ class FrozenLocomotionAction(ActionTerm):
         self.previous = self._processed.clone()
         self.delta = torch.zeros_like(self._processed)
         self.last_leg_action = torch.zeros(self.num_envs, 10, device=self.device)
+        self.low_wrench_prediction = torch.zeros(self.num_envs, 30, device=self.device)
         self.executed_arm_target = self.nominal.clone()
         self.leg_target = self._asset.data.default_joint_pos[:, self.leg_ids].clone()
         self.low_history = SampledHistory(self.num_envs, 10, 42, self.device)
@@ -209,12 +210,24 @@ class FrozenLocomotionAction(ActionTerm):
         self._substep = 0
 
     @torch.no_grad()
+    def set_low_wrench_prediction(self, prediction):
+        """Arm-on-base N/Nm, about base_Link origin, all samples in current base axes.
+
+        Observation only: this never applies an additional force to the asset.
+        """
+        prediction = torch.as_tensor(prediction, device=self.device, dtype=self._processed.dtype)
+        if prediction.shape != (self.num_envs, 5, 6) or not torch.isfinite(prediction).all():
+            raise ValueError("Expected finite physical base-wrench sequence (N,5,6).")
+        scale = prediction.new_tensor((.01, .01, .01, .05, .05, .05))
+        self.low_wrench_prediction.copy_((prediction * scale).flatten(1).clamp(-10, 10))
+
+    @torch.no_grad()
     def apply_actions(self):
         if self._substep % 4 == 0:
             tick = self._env._sim_step_counter - 1
             self.sample_histories(tick, self._substep * self._env.physics_dt)
             low_action = self.locomotion(self.proprioception(self._substep * self._env.physics_dt),
-                                         self.low_history.data, self._processed[:, :3])
+                                         self.low_history.data, self._processed[:, :3], self.low_wrench_prediction)
             if not torch.isfinite(low_action).all():
                 raise RuntimeError("Frozen locomotion produced a non-finite action.")
             self.last_leg_action.copy_(low_action)
@@ -241,6 +254,7 @@ class FrozenLocomotionAction(ActionTerm):
         self.previous[ids] = self._processed[ids]
         self.delta[ids] = 0
         self.last_leg_action[ids] = 0
+        self.low_wrench_prediction[ids] = 0
         self.executed_arm_target[ids] = self.nominal[ids]
         self.leg_target[ids] = self._asset.data.default_joint_pos[ids][:, self.leg_ids]
         self.low_history.reset(ids)

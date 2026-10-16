@@ -2,7 +2,7 @@
 
 Uses the actual teacher action term and a physical fixed payload. Native COM
 accelerations are sampled before each 200Hz physics interval, plus terminal state.
-All low-level future wrench inputs remain zero: this tests that explicit contract.
+Low-level input can be zero, static gravity, or a scripted inverse-dynamics preview.
 """
 import argparse
 from datetime import datetime
@@ -65,6 +65,10 @@ def summarize(rows, event_end, hold_s):
         arm_tracking_peak_rad=max(max(abs(a-b) for a,b in zip(r["arm_q"],r["arm_target"])) for r in rows),
         force_active_samples=sum(any(abs(x) > 1e-8 for x in r["force_payload_local"]) for r in rows),
         low_action_abs_max=max(r["low_action_abs_max"] for r in rows), recovery=None)
+    report["base_velocity_mean"] = np.mean([r["base_velocity"] for r in selected], axis=0).tolist()
+    report["base_velocity_std"] = np.std([r["base_velocity"] for r in selected], axis=0).tolist()
+    report["wrench_outside_repo_bounds_fraction"] = float(np.mean([
+        r.get("wrench_outside_repo_training_bounds", 0.) for r in selected]))
     baseline = (t >= 4.5) & (t < 6.5)
     if event_end is not None and baseline.sum() >= 20 and t[-1] >= event_end + hold_s:
         # Diagnostic restoration of pre-event RMS, not a task-specific pass/fail.
@@ -97,6 +101,7 @@ def make_parser():
                    help="Override nominal arm1..arm6 joint angles in radians with the actual PAINT hold pose")
     p.add_argument("--payload_mass", type=float, default=.5)
     p.add_argument("--payload_mode", choices=("attached", "none"), default="attached")
+    p.add_argument("--low_wrench", choices=("zero", "gravity", "plan"), default="zero")
     p.add_argument("--payload_dimensions", nargs=3, type=float, default=[.20, .12, .08])
     p.add_argument("--payload_offset", nargs=3, type=float, default=[.15, 0., 0.])
     p.add_argument("--velocity", nargs=3, type=float, default=[.15, 0., 0.])
@@ -116,6 +121,8 @@ def main(args, app):
     from bipedal_locomotion.controllers.paint_payload import create_payload_asset, create_unloaded_robot_asset
     from bipedal_locomotion.tasks.teacher import mdp
     from bipedal_locomotion.controllers.paint_teacher_core import admittance_step
+    from bipedal_locomotion.controllers.paint_wrench_preview import AddedBodyModel
+    from bipedal_locomotion.tasks.locomotion.mdp.commands.commands_cfg import WrenchSequenceCommandCfg
 
     numeric = [args.duration, args.payload_mass, args.recovery_window, *args.payload_dimensions,
                *args.payload_offset, *args.velocity, *args.arm_delta, *args.force, *(args.arm_joints or [])]
@@ -128,6 +135,8 @@ def main(args, app):
         raise ValueError("Force test requires a nonzero --force")
     if args.payload_mode == "none" and any(c in args.cases for c in ("force_hold", "force_walk", "coupled")):
         raise ValueError("Use attached payload mode for force acceptance")
+    if args.low_wrench != "zero" and any(c in args.cases for c in ("force_hold", "force_walk", "coupled")):
+        raise ValueError("Gravity/plan previews currently cover hold and arm-motion cases, not interaction forces")
     source = Path(args.checkpoint_path).expanduser().resolve()
     source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
     output = Path(args.output_dir or ROOT / "logs/paint" /
@@ -169,6 +178,12 @@ def main(args, app):
         test_force = (0., 0., 0.)
 
     cfg.commands.interaction = KnownPulseCfg()
+    model = AddedBodyModel(ROOT / "robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf",
+        ROOT / "robot_description/tron2/SF_TRON2A/urdf/robot.urdf",
+        args.payload_mass if args.payload_mode == "attached" else 0.,
+        args.payload_dimensions, args.payload_offset)
+    bounds_cfg = WrenchSequenceCommandCfg()
+    training_bounds = [*bounds_cfg.force_ranges, *bounds_cfg.torque_ranges]
 
     class AuditAction(mdp.FrozenLocomotionAction):
         def __init__(self, action_cfg, raw_env):
@@ -178,8 +193,62 @@ def main(args, app):
                 # No added body: track the real gripper and validate its existing mass.
                 action_cfg.payload_mass = float(asset.root_physx_view.get_masses()[0, ids[0]])
             super().__init__(action_cfg, raw_env)
+            self.preview_case = "hold"
+            self.physical_preview = torch.zeros(1, 5, 6, device=self.device)
+            self.preview_time = 0.
+            self.model_check = None
+
+        def update_preview(self, t):
+            import numpy as np
+            self.preview_time = t
+            if args.low_wrench == "zero":
+                self.physical_preview.zero_()
+            else:
+                q = dict(zip(self._asset.joint_names, self._asset.data.joint_pos[0].cpu().tolist()))
+                gravity = self._asset.data.projected_gravity_b[0].cpu().numpy() * np.linalg.norm(cfg.sim.gravity)
+                if self.model_check is None:
+                    # Compare URDF mass/COM with the actual spawned USD before
+                    # trusting its wrench. This also catches merged/missing links.
+                    names = self._asset.body_names
+                    states = model.states(q)
+                    masses = self._asset.root_physx_view.get_masses()[0].cpu().numpy()
+                    com_b = mdp.quat_apply_inverse(
+                        self._asset.data.root_quat_w[0].expand(len(names), -1),
+                        self._asset.data.body_com_pos_w[0]-self._asset.data.root_pos_w[0]).cpu().numpy()
+                    checks = []
+                    for name, (mass, _, _) in model.bodies.items():
+                        if name not in names:
+                            checks.append(dict(body=name, missing=True)); continue
+                        i = names.index(name)
+                        checks.append(dict(body=name, mass_error_kg=float(abs(masses[i]-mass)),
+                            com_error_m=float(np.linalg.norm(com_b[i]-states[name][:3, 3]))))
+                    valid = all(not r.get("missing") and r["mass_error_kg"] <= max(.001, model.bodies[r["body"]][0]*.05)
+                                and r["com_error_m"] <= .03 for r in checks)
+                    self.model_check = dict(valid=valid, checks=checks,
+                        tolerance="mass 5% or 1g; COM 3cm at initial pose")
+                    (output / "wrench_model_check.json").write_text(json.dumps(self.model_check, indent=2), encoding="utf-8")
+                    if not valid:
+                        raise ValueError("URDF/USD inertial or frame mismatch; inspect wrench_model_check.json before interpreting predictions")
+                if args.low_wrench == "gravity":
+                    physical = np.repeat(model.gravity_wrench(q, gravity)[None], 5, axis=0)
+                else:
+                    # Constant present tracking offset; future derivatives come
+                    # from the scripted arm plan. Base pose held at current pose.
+                    now = targets(t, self.preview_case, args.velocity, args.arm_delta)[1]
+                    def position_at(future):
+                        delta = targets(future, self.preview_case, args.velocity, args.arm_delta)[1]
+                        out = dict(q)
+                        for i in range(6):
+                            out[f"arm{i+1}_Joint"] += delta[i]-now[i]
+                        return out
+                    physical = model.preview(position_at, t, gravity)
+                self.physical_preview.copy_(torch.as_tensor(physical, device=self.device).unsqueeze(0))
+            self.set_low_wrench_prediction(self.physical_preview)
 
         def apply_actions(self):
+            t = float(self._env.episode_length_buf[0]) * self._env.step_dt + self._substep * self._env.physics_dt
+            if self._substep % 4 == 0:
+                self.update_preview(t)
             callback = getattr(self._env, "_acceptance_capture", None)
             if callback is not None:
                 callback(self._env, float(self._env.episode_length_buf[0]) * self._env.step_dt
@@ -214,7 +283,13 @@ def main(args, app):
         before = {k:v.clone() for k,v in term.locomotion.state_dict().items()}
         (output / "contract.json").write_text(json.dumps(dict(args=vars(args), task=task,
             checkpoint_sha256=source_hash, nominal_arm=term.nominal[0].tolist(),
-            low_wrench="zero 5x6", teacher_optimizer=False, intent_estimator=False,
+            low_wrench=args.low_wrench, teacher_optimizer=False, intent_estimator=False,
+            wrench_model=dict(source=model.source, bodies={n:b[0] for n,b in model.bodies.items()},
+                prediction_times_s=[0., .2, .4, .6, .8], about="base_Link origin", axes="current base",
+                sign="added subsystem ON base", normalization=[.01, .01, .01, .05, .05, .05],
+                training_bounds_current_repo=training_bounds,
+                bounds_note="Current repository defaults, not recovered checkpoint training parameters; physical predictions are not clipped to these bounds",
+                limitations="URDF inertias; base acceleration ignored; future arm follows script with constant measured position offset; no MPC and no arm feedforward"),
             added_payload_mass_kg=args.payload_mass if args.payload_mode == "attached" else 0.,
             tracked_body=cfg.actions.teacher.payload_body_name,
             torque_note="Isaac actuator buffers; implicit PD estimates are not measured joint reaction torques",
@@ -231,6 +306,10 @@ def main(args, app):
                     interaction = env.command_manager.get_term("interaction")
                     interaction.cfg.test_force = tuple(args.force) if case in ("force_hold", "force_walk", "coupled") else (0., 0., 0.)
                     env.reset(seed=args.seed + trial)
+                    term.preview_case = case
+                    term.update_preview(0.)
+                    if trial == 0:
+                        print(f"[WRENCH INPUT] mode={args.low_wrench} first={term.physical_preview[0, 0].tolist()}", flush=True)
                     term._asset.set_joint_position_target(term._asset.data.default_joint_pos)
                     rows = []
 
@@ -247,15 +326,22 @@ def main(args, app):
                             payload_velocity_world=data.body_com_lin_vel_w[0, body].tolist(),
                             payload_acc_world=data.body_com_lin_acc_w[0, body].tolist(),
                             base_velocity=data.root_lin_vel_b[0].tolist(),
+                            base_position_world=data.root_pos_w[0].tolist(),
                             base_command=term.processed_actions[0, :3].tolist(),
                             arm_q=data.joint_pos[0, term.arm_ids].tolist(),
                             arm_target=term.processed_actions[0, 3:].tolist(),
                             force_payload_local=interaction.command[0].tolist(),
+                            low_wrench_physical=term.physical_preview[0].flatten().tolist(),
+                            low_wrench_normalized=term.low_wrench_prediction[0].tolist(),
+                            low_wrench_time_s=term.preview_time,
                             low_action_abs_max=float(term.last_leg_action.abs().max()))
                         for name in ("computed_torque", "applied_torque", "joint_effort_limits"):
                             value = getattr(data, name, None)
                             if value is not None:
                                 row["arm_" + name] = value[0, term.arm_ids].tolist()
+                        bounds = term.physical_preview.new_tensor(training_bounds)
+                        row["wrench_outside_repo_training_bounds"] = float(((term.physical_preview < bounds[:, 0]) |
+                            (term.physical_preview > bounds[:, 1])).any())
                         if any(not math.isfinite(x) for value in row.values()
                                for x in (value if isinstance(value, list) else [value])):
                             raise RuntimeError("Non-finite support telemetry")
@@ -279,7 +365,7 @@ def main(args, app):
                         env._acceptance_capture = None
                     event_end = 15. if case in ("arm_hold", "arm_walk", "coupled") else (
                         12. if case in ("force_hold", "force_walk") else None)
-                    row = dict(case=case, trial=trial, completed=completed,
+                    row = dict(case=case, trial=trial, completed=completed, low_wrench=args.low_wrench,
                         **summarize(rows, event_end, args.recovery_window),
                         termination={name:bool(env.termination_manager.get_term(name)[0])
                                      for name in env.termination_manager.active_terms})

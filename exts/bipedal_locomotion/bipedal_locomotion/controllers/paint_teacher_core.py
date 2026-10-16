@@ -71,12 +71,14 @@ class FrozenLocomotion(nn.Module):
         self.to(device).eval()
 
     @torch.no_grad()
-    def forward(self, proprioception, history, base_command):
+    def forward(self, proprioception, history, base_command, normalized_wrench=None):
         # Original policy order: latent(3), proprioception(42), wrench(30), command(3).
         if proprioception.shape[1:] != (42,) or history.shape[1:] != (10, 42) or base_command.shape[1:] != (3,):
             raise ValueError("Frozen locomotion requires 42 / 10x42 / 3 observation widths.")
-        zeros = proprioception.new_zeros((len(proprioception), 30))
-        return self.actor(torch.cat((self.encoder(history.flatten(1)), proprioception, zeros, base_command), dim=-1))
+        wrench = proprioception.new_zeros((len(proprioception), 30)) if normalized_wrench is None else normalized_wrench
+        if wrench.shape != (len(proprioception), 30) or not torch.isfinite(wrench).all():
+            raise ValueError("Expected finite normalized base-wrench samples with shape (N,30).")
+        return self.actor(torch.cat((self.encoder(history.flatten(1)), proprioception, wrench, base_command), dim=-1))
 
 
 class SampledHistory:
