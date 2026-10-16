@@ -96,6 +96,7 @@ def make_parser():
     p.add_argument("--arm_joints", nargs=6, type=float,
                    help="Override nominal arm1..arm6 joint angles in radians with the actual PAINT hold pose")
     p.add_argument("--payload_mass", type=float, default=.5)
+    p.add_argument("--payload_mode", choices=("attached", "none"), default="attached")
     p.add_argument("--payload_dimensions", nargs=3, type=float, default=[.20, .12, .08])
     p.add_argument("--payload_offset", nargs=3, type=float, default=[.15, 0., 0.])
     p.add_argument("--velocity", nargs=3, type=float, default=[.15, 0., 0.])
@@ -112,7 +113,7 @@ def main(args, app):
     from isaaclab.envs import ManagerBasedRLEnv
     from isaaclab.utils import configclass
     from isaaclab_tasks.utils import parse_env_cfg
-    from bipedal_locomotion.controllers.paint_payload import create_payload_asset
+    from bipedal_locomotion.controllers.paint_payload import create_payload_asset, create_unloaded_robot_asset
     from bipedal_locomotion.tasks.teacher import mdp
     from bipedal_locomotion.controllers.paint_teacher_core import admittance_step
 
@@ -125,6 +126,8 @@ def main(args, app):
         raise ValueError("Duplicate test cases")
     if any(c in args.cases for c in ("force_hold", "force_walk", "coupled")) and not any(args.force):
         raise ValueError("Force test requires a nonzero --force")
+    if args.payload_mode == "none" and any(c in args.cases for c in ("force_hold", "force_walk", "coupled")):
+        raise ValueError("Use attached payload mode for force acceptance")
     source = Path(args.checkpoint_path).expanduser().resolve()
     source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
     output = Path(args.output_dir or ROOT / "logs/paint" /
@@ -140,8 +143,13 @@ def main(args, app):
     if args.arm_joints is not None:
         cfg.scene.robot.init_state.joint_pos.update(
             {f"arm{i+1}_Joint": q for i,q in enumerate(args.arm_joints)})
-    cfg.scene.robot.spawn.usd_path = create_payload_asset(cfg.scene.robot.spawn.usd_path,
-        output / "robot_payload.usdc", args.payload_mass, args.payload_dimensions, args.payload_offset)
+    if args.payload_mode == "attached":
+        cfg.scene.robot.spawn.usd_path = create_payload_asset(cfg.scene.robot.spawn.usd_path,
+            output / "robot_payload.usdc", args.payload_mass, args.payload_dimensions, args.payload_offset)
+    else:
+        cfg.scene.robot.spawn.usd_path = create_unloaded_robot_asset(
+            cfg.scene.robot.spawn.usd_path, output / "robot_unloaded.usdc")
+        cfg.actions.teacher.payload_body_name = "gripper_base_Link"
 
     class KnownPulse(mdp.PayloadInteraction):
         def _resample_command(self, env_ids):
@@ -163,6 +171,14 @@ def main(args, app):
     cfg.commands.interaction = KnownPulseCfg()
 
     class AuditAction(mdp.FrozenLocomotionAction):
+        def __init__(self, action_cfg, raw_env):
+            if args.payload_mode == "none":
+                asset = raw_env.scene[action_cfg.asset_name]
+                ids, _ = asset.find_bodies("gripper_base_Link", preserve_order=True)
+                # No added body: track the real gripper and validate its existing mass.
+                action_cfg.payload_mass = float(asset.root_physx_view.get_masses()[0, ids[0]])
+            super().__init__(action_cfg, raw_env)
+
         def apply_actions(self):
             callback = getattr(self._env, "_acceptance_capture", None)
             if callback is not None:
@@ -199,6 +215,9 @@ def main(args, app):
         (output / "contract.json").write_text(json.dumps(dict(args=vars(args), task=task,
             checkpoint_sha256=source_hash, nominal_arm=term.nominal[0].tolist(),
             low_wrench="zero 5x6", teacher_optimizer=False, intent_estimator=False,
+            added_payload_mass_kg=args.payload_mass if args.payload_mode == "attached" else 0.,
+            tracked_body=cfg.actions.teacher.payload_body_name,
+            torque_note="Isaac actuator buffers; implicit PD estimates are not measured joint reaction torques",
             force_contract="external on payload COM, payload-local Fx/Fy/Mz",
             sample_rate_hz=1/env.physics_dt, acceleration="native world-frame COM linear acceleration",
             event_schedule="walk ramp 3-4s; arm out 7-10, hold 10-12, return 12-15; force 10-12s",
@@ -233,6 +252,10 @@ def main(args, app):
                             arm_target=term.processed_actions[0, 3:].tolist(),
                             force_payload_local=interaction.command[0].tolist(),
                             low_action_abs_max=float(term.last_leg_action.abs().max()))
+                        for name in ("computed_torque", "applied_torque", "joint_effort_limits"):
+                            value = getattr(data, name, None)
+                            if value is not None:
+                                row["arm_" + name] = value[0, term.arm_ids].tolist()
                         if any(not math.isfinite(x) for value in row.values()
                                for x in (value if isinstance(value, list) else [value])):
                             raise RuntimeError("Non-finite support telemetry")

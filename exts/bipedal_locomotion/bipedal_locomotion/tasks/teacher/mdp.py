@@ -111,7 +111,7 @@ class FrozenLocomotionAction(ActionTerm):
             raise ValueError("Teacher v1 requires 200 Hz physics / 25 Hz high-level control.")
         self.arm_ids, arm_names = self._asset.find_joints(list(ARM_JOINT_NAMES), preserve_order=True)
         self.leg_ids, leg_names = self._asset.find_joints(list(LEG_JOINT_NAMES), preserve_order=True)
-        self.payload_ids, payload_names = self._asset.find_bodies("paint_payload_Link", preserve_order=True)
+        self.payload_ids, payload_names = self._asset.find_bodies(cfg.payload_body_name, preserve_order=True)
         if tuple(arm_names) != ARM_JOINT_NAMES or tuple(leg_names) != LEG_JOINT_NAMES or len(payload_names) != 1:
             raise ValueError("Teacher requires the ordered six-arm/ten-leg joints and one attached payload link.")
         imported_mass = self._asset.root_physx_view.get_masses()[:, self.payload_ids[0]]
@@ -253,6 +253,7 @@ class FrozenLocomotionActionCfg(ActionTermCfg):
     asset_name: str = "robot"
     locomotion_checkpoint: str = ""
     payload_mass: float = .5
+    payload_body_name: str = "paint_payload_Link"
     velocity_scale: tuple = (.35, .2, .4)
     arm_scale: float = .25
     # Base acceleration limits, followed by arm target slew limits (rad/s).
