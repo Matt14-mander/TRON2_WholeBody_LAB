@@ -167,6 +167,9 @@ def control(args):
             self.arm_sequence_completed = False
             self.arm_sequence_aborted = False
             super().__init__(*a, **kw)
+            if preview is not None:
+                print("[V3 PREVIEW JOINTS] " + json.dumps(
+                    preview.resolve_joint_names(self.config.wire_joint_names)), flush=True)
             self.config.action_clip = 5.
             if args.arm_pose == "folded":
                 if list(self.config.wire_joint_names[10:16]) != list(FOLDED_ARM):

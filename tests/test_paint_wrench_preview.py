@@ -84,6 +84,30 @@ class WrenchTests(unittest.TestCase):
         np.testing.assert_array_equal(live.qpos, before)
         with self.assertRaises(ValueError):
             preview.states({"unknown": 0})
+        np.testing.assert_allclose(preview.gravity_wrench({"q_Joint": 0}, gravity),
+                                   preview.gravity_wrench({"q": 0}, gravity))
+        with self.assertRaises(ValueError):
+            preview.states({"q": 0, "q_Joint": 0})
+
+    @unittest.skipUnless(importlib.util.find_spec("mujoco"), "MuJoCo not installed")
+    def test_full_sdk_joint_names_resolve_both_mujoco_asset_conventions(self):
+        import mujoco
+        names = [f"{part}_{side}_Joint" for side in ("L", "R")
+                 for part in ("proximal_pitch", "proximal_roll", "proximal_yaw", "knee", "ankle_pitch")]
+        names += [f"arm{i}_Joint" for i in range(1, 7)]+["gripper1_Joint", "gripper2_Joint"]
+        results = []
+        for short in (False, True):
+            bodies = []
+            for i, name in enumerate(names):
+                actual = name.removesuffix("_Joint") if short else name
+                bodies.append(f'<body name="part{i}" pos="{i*.01} 0 0"><joint name="{actual}"/>'
+                              '<inertial pos=".1 0 0" mass=".1" diaginertia=".01 .01 .01"/></body>')
+            model = mujoco.MjModel.from_xml_string('<mujoco><worldbody><body name="base_Link">'
+                + ''.join(bodies)+'</body></worldbody></mujoco>')
+            preview = MuJoCoAddedBodyModel(model, Path(self.temp.name)/"base.urdf")
+            self.assertEqual(len(preview.resolve_joint_names(names)), 18)
+            results.append(preview.gravity_wrench(dict.fromkeys(names, .1), np.array([0, 0, -9.81])))
+        np.testing.assert_allclose(results[0], results[1])
 
 
 if __name__ == "__main__":

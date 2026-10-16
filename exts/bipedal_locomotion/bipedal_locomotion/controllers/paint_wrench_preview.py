@@ -144,12 +144,28 @@ class MuJoCoAddedBodyModel(AddedBodyModel):
             if model.jnt_type[i] in (mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE):
                 self.addresses[mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, i)] = model.jnt_qposadr[i]
 
+    def resolve_joint_names(self, names):
+        """Resolve exact names first, then the explicit SDK '_Joint' suffix alias."""
+        result = {}
+        for name in names:
+            if name in self.addresses:
+                result[name] = name
+                continue
+            canonical = name.removesuffix("_Joint")
+            matches = [actual for actual in self.addresses if actual and actual.removesuffix("_Joint") == canonical]
+            if len(matches) != 1:
+                raise ValueError(f"MuJoCo preview joint not found or ambiguous: {name}; "
+                                 f"available={list(self.addresses)}")
+            result[name] = matches[0]
+        if len(set(result.values())) != len(result):
+            raise ValueError("Two supplied joint names resolve to the same MuJoCo joint")
+        return result
+
     def states(self, positions):
+        resolved = self.resolve_joint_names(positions)
         self.mj.mj_resetData(self.model, self.data)
         for name, value in positions.items():
-            if name not in self.addresses:
-                raise ValueError(f"MuJoCo preview joint not found: {name}")
-            self.data.qpos[self.addresses[name]] = value
+            self.data.qpos[self.addresses[resolved[name]]] = value
         self.mj.mj_forward(self.model, self.data)
         r = self.data.xmat[self.base_id].reshape(3, 3).T
         p = self.data.xpos[self.base_id]
