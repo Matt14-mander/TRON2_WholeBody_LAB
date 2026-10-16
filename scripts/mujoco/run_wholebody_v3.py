@@ -14,10 +14,30 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
+FOLDED_ARM = {f"arm{i}_Joint": 0. for i in range(1, 7)}
 
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def simulate(args):
+    root = Path(args.sim_root).expanduser().resolve()
+    if not (root / "simulator.py").is_file():
+        raise FileNotFoundError(root / "simulator.py")
+    sys.path.insert(0, str(root))
+    from tron2_sim.variants import sfyg
+    if args.arm_pose == "folded":
+        # Change only initial joint positions; preserve mass, PD and effort limits.
+        sfyg.INITIAL_ARM_AND_GRIPPER = {**sfyg.INITIAL_ARM_AND_GRIPPER, **FOLDED_ARM}
+    os.environ["ROBOT_TYPE"] = "SFYG_TRON2A"
+    simulator = importlib.import_module("simulator")
+    sys.argv = [str(root / "simulator.py")]
+    if args.headless:
+        sys.argv.append("--headless")
+    print(f"[V3 SIM] arm_pose={args.arm_pose}; initial arm="
+          f"{[sfyg.INITIAL_ARM_AND_GRIPPER[name] for name in FOLDED_ARM]}", flush=True)
+    simulator.main()
 
 
 def export(args):
@@ -105,10 +125,20 @@ def control(args):
             self.peak_tilt = 0.
             super().__init__(*a, **kw)
             self.config.action_clip = 5.
+            if args.arm_pose == "folded":
+                if list(self.config.wire_joint_names[10:16]) != list(FOLDED_ARM):
+                    raise ValueError("Unexpected SFYG arm joint order")
+                self.config.default_q[10:16] = list(FOLDED_ARM.values())
             if (not np.allclose(self.config.action_scale, .25)
                     or not np.allclose(self.config.gait, [.8, .5, .5, .2])
                     or abs(self.config.policy_frequency - 50.) > 1e-6):
                 raise ValueError("Expected action scale .25, gait .8/.5/.5/.2 and 50Hz policy")
+
+        def _move_to_default(self, start_q):
+            if args.arm_pose == "folded" and not np.allclose(
+                    np.asarray(start_q)[10:16], self.config.default_q[10:16], atol=.05):
+                raise ValueError("Arm initial pose mismatch: restart sim with --arm-pose folded")
+            return super()._move_to_default(start_q)
 
         def _infer(self, proprio, solution):
             q, _, quaternion, _ = self._snapshot()
@@ -136,6 +166,8 @@ def control(args):
                                           start_controller=True, base_command=args.command)
         print(f"[V3] checkpoint={manifest['checkpoint']} command={args.command}; "
               "articulated SFYG, predicted wrench=0, managed stance phase", flush=True)
+        print(f"[V3] arm_pose={args.arm_pose} target={controller.config.default_q[10:16].tolist()} "
+              f"kp={controller.config.kp[10:16].tolist()} kd={controller.config.kd[10:16].tolist()}", flush=True)
         completed = controller.run(duration=args.duration)
     except KeyboardInterrupt:
         error = "interrupted"
@@ -143,6 +175,7 @@ def control(args):
         error = f"{type(exc).__name__}: {exc}"
     finally:
         print("[V3 RESULT] " + json.dumps(dict(completed=completed, error=error,
+            arm_pose=args.arm_pose,
             policy_calls=getattr(controller, "policy_calls", 0),
             peak_tilt_deg=getattr(controller, "peak_tilt", None))), flush=True)
         sys.stdout.flush()
@@ -157,18 +190,23 @@ def main():
     exp = sub.add_parser("export")
     exp.add_argument("--checkpoint_path", required=True)
     exp.add_argument("--output_dir", required=True)
+    sim = sub.add_parser("sim")
+    sim.add_argument("--sim-root", required=True)
+    sim.add_argument("--arm-pose", choices=("configured", "folded"), default="configured")
+    sim.add_argument("--headless", action="store_true")
     ctl = sub.add_parser("control")
     ctl.add_argument("--deploy-root", required=True)
     ctl.add_argument("--model-root", required=True, help="Parent of an SFYG_TRON2A model folder")
     ctl.add_argument("--command", nargs=3, type=float, default=[0., 0., 0.])
     ctl.add_argument("--duration", type=float, default=60.)
+    ctl.add_argument("--arm-pose", choices=("configured", "folded"), default="configured")
     args = parser.parse_args()
     if args.mode == "control":
         if not math.isfinite(args.duration) or args.duration <= 0:
             parser.error("duration must be finite and positive")
         if any(not math.isfinite(v) or abs(v) > limit for v, limit in zip(args.command, (1., .5, 1.5))):
             parser.error("commands must be finite and within training ranges")
-    {"export": export, "control": control}[args.mode](args)
+    {"export": export, "sim": simulate, "control": control}[args.mode](args)
 
 
 if __name__ == "__main__":
