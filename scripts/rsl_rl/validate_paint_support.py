@@ -201,8 +201,10 @@ def main(args, app):
         test_force = (0., 0., 0.)
 
     cfg.commands.interaction = KnownPulseCfg()
-    model = AddedBodyModel(ROOT / "robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf",
-        ROOT / "robot_description/tron2/SF_TRON2A/urdf/robot.urdf",
+    # The simulation asset uses signed gripper2 coordinates from robot_rl.urdf.
+    # robot.urdf has the opposite axis/positive travel and a different arm6 inertia.
+    model = AddedBodyModel(ROOT / "robot_description/tron2/SFYG_TRON2A/urdf/robot_rl.urdf",
+        ROOT / "robot_description/tron2/SF_TRON2A/urdf/robot_rl.urdf",
         args.payload_mass if args.payload_mode == "attached" else 0.,
         args.payload_dimensions, args.payload_offset)
     bounds_cfg = WrenchSequenceCommandCfg()

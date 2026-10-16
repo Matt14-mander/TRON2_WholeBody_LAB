@@ -26,6 +26,12 @@ USD runs before using the first prediction. Missing bodies or differences above
 5%/1g mass or 3cm COM abort, leaving `wrench_model_check.json` for inspection.
 These tolerances are consistency checks, not evidence of accurate dynamics.
 
+Use `robot_rl.urdf` for both models. The SFYG simulation configuration commands
+negative gripper2 joint positions; its RL URDF reverses the gripper2 axis and
+uses [-0.05,0] travel. Using the original `robot.urdf` with the same negative
+coordinates produces a 9.75cm gripper2 COM mismatch at q=-0.04875m. The RL URDF
+also contains a different arm6 inertia. Keep the runtime consistency check active.
+
 `plan` evaluates the known quintic arm script over the horizon and sums
 Newton-Euler force/moment balances including translational acceleration, angular
 acceleration and gyroscopic terms. Present measured position offsets are held

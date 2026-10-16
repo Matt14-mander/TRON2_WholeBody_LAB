@@ -43,12 +43,25 @@ class WrenchTests(unittest.TestCase):
         self.assertGreater(np.linalg.norm(preview[-1]-preview[0]), 1.)
 
     def test_actual_robot_added_mass_and_static_horizon(self):
-        model = AddedBodyModel(ROOT / "robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf",
-            ROOT / "robot_description/tron2/SF_TRON2A/urdf/robot.urdf", .5)
+        model = AddedBodyModel(ROOT / "robot_description/tron2/SFYG_TRON2A/urdf/robot_rl.urdf",
+            ROOT / "robot_description/tron2/SF_TRON2A/urdf/robot_rl.urdf", .5)
         q = {"arm2_Joint": np.pi/2, "arm3_Joint": np.deg2rad(-85)}
         w = model.gravity_wrench(q, np.array([0, 0, -9.81]))
         self.assertAlmostEqual(w[2], -sum(x[0] for x in model.bodies.values())*9.81)
         np.testing.assert_allclose(model.preview(lambda t:q, 0., np.array([0, 0, -9.81])), np.tile(w, (5, 1)))
+
+    def test_simulation_gripper_sign_matches_negative_joint_coordinates(self):
+        root = ROOT / "robot_description/tron2"
+        reference = root / "SF_TRON2A/urdf/robot_rl.urdf"
+        simulation = AddedBodyModel(root / "SFYG_TRON2A/urdf/robot_rl.urdf", reference)
+        original = AddedBodyModel(root / "SFYG_TRON2A/urdf/robot.urdf", reference)
+        q = {"arm2_Joint": np.pi/2, "arm3_Joint": np.deg2rad(-85),
+             "gripper1_Joint": .04875, "gripper2_Joint": -.04875}
+        actual = simulation.states(q)["gripper2_Link"]
+        converted = dict(q, gripper2_Joint=.04875)
+        np.testing.assert_allclose(actual, original.states(converted)["gripper2_Link"], atol=1e-10)
+        wrong = original.states(q)["gripper2_Link"]
+        self.assertAlmostEqual(np.linalg.norm(actual[:3, 3]-wrong[:3, 3]), .0975)
 
 
 if __name__ == "__main__":
