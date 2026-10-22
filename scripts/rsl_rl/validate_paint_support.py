@@ -361,6 +361,8 @@ def main(args, app):
                             payload_acc_world=data.body_com_lin_acc_w[0, body].tolist(),
                             base_velocity=data.root_lin_vel_b[0].tolist(),
                             base_position_world=data.root_pos_w[0].tolist(),
+                            base_quaternion_world_wxyz=data.root_quat_w[0].tolist(),
+                            base_angular_velocity_body=data.root_ang_vel_b[0].tolist(),
                             base_command=term.processed_actions[0, :3].tolist(),
                             arm_q=data.joint_pos[0, term.arm_ids].tolist(),
                             arm_target=term.processed_actions[0, 3:].tolist(),

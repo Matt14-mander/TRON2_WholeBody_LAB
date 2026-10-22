@@ -24,6 +24,10 @@ io_flags=()
 if [[ "${POLICY_IO_AUDIT:-0}" == 1 ]]; then
   io_flags=(--record-policy-io)
 fi
+gravity_flags=()
+if [[ "${ARM_GRAVITY_COMPENSATION:-1}" == 1 ]]; then
+  gravity_flags=(--arm-gravity-compensation)
+fi
 mkdir -p "$run_root"
 case "$mode" in
   sim)
@@ -40,8 +44,9 @@ case "$mode" in
     python -u scripts/mujoco/run_wholebody_v3.py control \
       --deploy-root "$deploy_root" --sim-root "$sim_root" --model-root "$model_root" \
       --arm-pose configured "${payload[@]}" --command "${command[@]}" --duration 30 \
-      --low-wrench plan --preview-execution async --preview-max-age 0.15 \
-      --publish-frequency 100 --arm-gravity-compensation \
+      --command-profile "${COMMAND_PROFILE:-fixed}" \
+      --low-wrench "${LOW_WRENCH:-plan}" --preview-execution async --preview-max-age 0.15 \
+      --publish-frequency 100 "${gravity_flags[@]}" \
       --arm-gravity-ramp-time 2 --arm-gravity-max-effort 30 "${motion[@]}" \
       --record-dir "$run_root/$case_name/control" \
       "${io_flags[@]}" \

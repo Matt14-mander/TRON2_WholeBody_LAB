@@ -34,6 +34,12 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def paint_command_scale(elapsed):
+    """Match the continuous Isaac acceptance command reference: ramp 3--4 s."""
+    u = max(0., min(1., elapsed-3.))
+    return u**3*(10.-15.*u+6.*u*u)
+
+
 def simulate(args):
     root = Path(args.sim_root).expanduser().resolve()
     if not (root / "simulator.py").is_file():
@@ -372,6 +378,13 @@ def control(args):
                 raise ValueError("Arm initial pose mismatch: restart sim with --arm-pose folded")
             return super()._move_to_default(start_q)
 
+        def _safe_hold_solution(self, q):
+            solution = super()._safe_hold_solution(q)
+            if args.command_profile == "paint":
+                elapsed = 0. if self.rl_started is None else time.monotonic()-self.rl_started
+                solution = replace(solution, base_command=solution.base_command*paint_command_scale(elapsed))
+            return solution
+
         def _infer(self, proprio, solution):
             infer_start = time.monotonic()
             self.inference_starts.append(infer_start)
@@ -531,6 +544,8 @@ def main():
     ctl.add_argument("--deploy-root", required=True)
     ctl.add_argument("--model-root", required=True, help="Parent of an SFYG_TRON2A model folder")
     ctl.add_argument("--command", nargs=3, type=float, default=[0., 0., 0.])
+    ctl.add_argument("--command-profile", choices=("fixed", "paint"), default="fixed",
+                     help="paint: stand until 3s, quintic ramp to command at 4s; fixed-arm cross-backend diagnostic only")
     ctl.add_argument("--duration", type=float, default=60.)
     ctl.add_argument("--arm-pose", choices=("configured", "folded"), default="configured")
     ctl.add_argument("--low-wrench", choices=("zero", "gravity", "plan"), default="zero")
@@ -577,6 +592,9 @@ def main():
     if args.mode == "sim" and args.record_policy_io and not args.task_record_dir:
         parser.error("--record-policy-io requires --task-record-dir on sim")
     if args.mode == "control":
+        if args.command_profile == "paint" and (args.ocs2_trajectory or args.arm_test_joint or args.arm_test_offsets
+                                                 or args.record_policy_io):
+            parser.error("paint command profile requires fixed arm, no OCS2 and no fixed-command policy IO audit")
         if args.record_policy_io and (not args.record_dir or args.ocs2_trajectory):
             parser.error("Policy IO audit requires --record-dir and fixed-command diagnostic (no OCS2 replay)")
         if not math.isfinite(args.preview_max_age) or args.preview_max_age <= 0:
