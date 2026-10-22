@@ -20,7 +20,7 @@ class TaskSpaceRecorder:
     name = "v3_task_space_recorder"
     slider_control = False
 
-    def __init__(self, directory, up_axis=(0, 0, 1), metadata=None):
+    def __init__(self, directory, up_axis=(0, 0, 1), metadata=None, record_policy_io=False):
         self.directory = Path(directory).expanduser().resolve()
         self.directory.mkdir(parents=True, exist_ok=False)
         axis = np.asarray(up_axis, dtype=float)
@@ -28,6 +28,7 @@ class TaskSpaceRecorder:
             raise ValueError("Payload up axis must be a finite nonzero vector")
         self.up_axis = axis / np.linalg.norm(axis)
         self.rows, self.attached, self.error = [], False, None
+        self.record_policy_io = record_policy_io
         self.segment, self.next_time, self.previous = 0, 0., {}
         self.contract = dict(clock=clock_contract(), arguments=metadata,
             payload_up_axis=self.up_axis.tolist(), sample_hz=100,
@@ -54,8 +55,14 @@ class TaskSpaceRecorder:
                             if all(f"arm{i}_Joint" in ch.spec.joints for i in range(1, 7)))
         self.arm_indices = [self.channel.spec.joints.index(f"arm{i}_Joint") for i in range(1, 7)]
         self.jac = np.zeros((3, core.model.nv))
-        self.attached = True
         self.contract["payload_present"] = self.ids["payload"] >= 0
+        self.contract["wire_joint_names"] = list(self.channel.spec.joints)
+        if self.record_policy_io:
+            if self.channel.imu_ids is None:
+                raise ValueError("Policy IO audit requires native IMU sensors")
+            self.contract["native_imu_sensors"] = [mujoco.mj_id2name(core.model, mujoco.mjtObj.mjOBJ_SENSOR, i)
+                                                   for i in self.channel.imu_ids]
+        self.attached = True
         self._write_contract()
         print(f"[V3 TASK RECORD] simulator state -> {self.directory}", flush=True)
         return True
@@ -109,6 +116,17 @@ class TaskSpaceRecorder:
         row = dict(monotonic_s=float(stamp), sim_time_s=float(live.time), segment=self.segment,
             base_position_world_m=pb.tolist(), base_rotation_world=rb.reshape(-1).tolist(),
             base_tilt_deg=angle(rb[:, 2], np.array([0, 0, 1.])))
+        if self.record_policy_io:
+            quat, gyro, _ = self.channel._read_imu(live)
+            base_quat = np.zeros(4)
+            mj.mju_mat2Quat(base_quat, np.ascontiguousarray(rb.reshape(-1)))
+            jac_rotation = np.zeros((3, model.nv))
+            mj.mj_jacBody(model, actual, None, jac_rotation, base)
+            row["native_io"] = dict(q=[float(live.qpos[q]) for q, _, _ in self.channel.map],
+                dq=[float(live.qvel[v]) for _, v, _ in self.channel.map], received_q=list(command["q"]),
+                imu_quaternion_wxyz=list(quat), imu_gyro=list(gyro),
+                base_quaternion_wxyz=base_quat.tolist(),
+                base_gyro_body=(rb.T@jac_rotation@actual.qvel).tolist())
         for key in ("ee", "payload"):
             bid = self.ids[key]
             if bid < 0:

@@ -20,12 +20,17 @@ sim_root="${SIM_ROOT:-$HOME/workspace/limx_deploy/tron2_mujoco_sim}"
 deploy_root="${DEPLOY_ROOT:-$HOME/workspace/limx_deploy/tron2_rl_deploy_python}"
 model_root="${V3_MODEL_ROOT:-$deploy_root/controllers/model/v3_20000_20261016_181915}"
 payload=(--payload-mass 0.5 --payload-dimensions 0.20 0.12 0.08 --payload-offset 0.15 0 0)
+io_flags=()
+if [[ "${POLICY_IO_AUDIT:-0}" == 1 ]]; then
+  io_flags=(--record-policy-io)
+fi
 mkdir -p "$run_root"
 case "$mode" in
   sim)
     python -u scripts/mujoco/run_wholebody_v3.py sim --sim-root "$sim_root" \
       --arm-pose configured "${payload[@]}" \
       --task-record-dir "$run_root/$case_name/sim" \
+      "${io_flags[@]}" \
       2>&1 | tee "$run_root/${case_name}_sim.log"
     ;;
   control)
@@ -39,6 +44,7 @@ case "$mode" in
       --publish-frequency 100 --arm-gravity-compensation \
       --arm-gravity-ramp-time 2 --arm-gravity-max-effort 30 "${motion[@]}" \
       --record-dir "$run_root/$case_name/control" \
+      "${io_flags[@]}" \
       2>&1 | tee "$run_root/${case_name}_control.log"
     ;;
   analyze)
@@ -49,6 +55,12 @@ case "$mode" in
       --sim-record-dir "$run_root/$case_name/sim" \
       --arm-record-dir "$run_root/$case_name/control" \
       --output-dir "$run_root/$case_name/analysis"
+    ;;
+  audit)
+    python scripts/mujoco/policy_io_audit.py \
+      --control-dir "$run_root/$case_name/control" \
+      --sim-dir "$run_root/$case_name/sim" \
+      --output-dir "$run_root/$case_name/io_audit"
     ;;
   *) echo "Unknown mode: $mode" >&2; exit 2 ;;
 esac

@@ -44,7 +44,8 @@ def simulate(args):
         from task_space_telemetry import TaskSpaceRecorder
         from tron2_sim.variants import BASE_REGISTRY
         from tron2_sim.core import SimCore
-        recorder = TaskSpaceRecorder(args.task_record_dir, args.payload_up_axis, vars(args))
+        recorder = TaskSpaceRecorder(args.task_record_dir, args.payload_up_axis, vars(args),
+                                     record_policy_io=args.record_policy_io)
         original_build, original_run = BASE_REGISTRY["SFYG"], SimCore.run
 
         def build_with_recorder(*a, **kw):
@@ -159,9 +160,10 @@ def control(args):
 
     original = deployment.build_proprio_observation
     gait_index = 0.
+    last_observation_source = None
 
     def v3_observation(config, q, dq, gyro, quaternion, last_action, command, elapsed):
-        nonlocal gait_index
+        nonlocal gait_index, last_observation_source
         observation = original(config, q, dq, gyro, quaternion, last_action, command, elapsed)
         # V3 GaitCommand holds stance at zero and advances only while moving.
         if np.linalg.norm(command) <= 1e-3:
@@ -170,6 +172,11 @@ def control(args):
             gait_index = (gait_index + config.gait[0] / config.policy_frequency) % 1.
         angle = 2 * math.pi * gait_index
         observation[36:38] = (math.sin(angle), math.cos(angle))
+        if args.record_policy_io:
+            last_observation_source = dict(stamp=time.monotonic(), q=np.array(q, copy=True),
+                dq=np.array(dq, copy=True), gyro=np.array(gyro, copy=True),
+                quaternion=np.array(quaternion, copy=True), last_action=np.array(last_action, copy=True),
+                command=np.array(command, copy=True))
         return observation
 
     deployment.build_proprio_observation = v3_observation
@@ -242,6 +249,7 @@ def control(args):
             self.worker_cost_ms = []
             self.prediction_age_ms = []
             self.arm_recorder = None
+            self.policy_io = None
             self._record_policy_publish = False
             self._record_phase = "hold"
             self._gravity_context = None
@@ -295,6 +303,16 @@ def control(args):
                     sampling="One row per policy target publication; feedback predates outgoing command. Not physics-rate peaks or joint reaction torque.",
                     torque_limits="Not inferred from SDK feedback; saturation is not certified by this log."))
                 print(f"[V3 ARM RECORD] {self.arm_recorder.directory}", flush=True)
+            if args.record_policy_io:
+                from policy_io_audit import PolicyIORecorder, SessionTap
+                self.policy_io = PolicyIORecorder(self.arm_recorder.directory, dict(
+                    clock=clock_contract(), manifest=manifest, wire_joint_names=self.config.wire_joint_names,
+                    default_q=self.config.default_q, action_scale=self.config.action_scale,
+                    ang_vel_scale=self.config.ang_vel_scale, dof_pos_scale=self.config.dof_pos_scale,
+                    dof_vel_scale=self.config.dof_vel_scale, observation_clip=self.config.observation_clip,
+                    gait=self.config.gait, requested_command=args.command))
+                self.encoder_session = SessionTap(self.encoder_session, self.policy_io, "encoder")
+                self.policy_session = SessionTap(self.policy_session, self.policy_io, "policy")
 
         def _publish_policy_targets(self, targets, solution):
             self._record_phase = ("aborted" if arm_requested and self.arm_test is None else
@@ -342,6 +360,8 @@ def control(args):
                     state_age_s=now-stamp, state_count=count, monotonic_s=now,
                     diagnostics=self._gravity_context)
             result = super()._publish(q, dq=dq, tau=tau, kp=kp, kd=kd)
+            if self._record_policy_publish and self.policy_io is not None:
+                self.policy_io.publish(q)
             if record is not None:
                 self.arm_recorder.append(**record)
             return result
@@ -393,6 +413,8 @@ def control(args):
             self.peak_tilt = max(self.peak_tilt, tilt)
             if not math.isfinite(tilt) or tilt > 35.:
                 raise RuntimeError(f"Tilt limit exceeded: {tilt:.2f} deg")
+            if self.policy_io is not None:
+                self.policy_io.begin(last_observation_source, proprio, solution)
             action = super()._infer(proprio, solution)
             self.inference_cost_ms.append((time.monotonic()-infer_start)*1000.)
             if self.policy_calls % 50 == 0:
@@ -453,6 +475,15 @@ def control(args):
                 print(f"[V3 ARM RECORD] saved {len(recorder.rows)} samples to {recorder.directory}", flush=True)
             except Exception as exc:
                 error = f"Arm record save failed: {type(exc).__name__}: {exc}; control error={error}"
+                completed = False
+        io_recorder = getattr(controller, "policy_io", None)
+        if io_recorder is not None:
+            try:
+                io_recorder.save(dict(completed=completed, error=error,
+                    timing=controller.timing_report()))
+                print(f"[V3 POLICY IO] saved {len(io_recorder.rows)} inference records", flush=True)
+            except Exception as exc:
+                error = f"Policy IO save failed: {type(exc).__name__}: {exc}; control error={error}"
                 completed = False
         print("[V3 RESULT] " + json.dumps(dict(completed=completed, error=error,
             requested_test_completed=bool(completed and (not arm_requested or (
@@ -524,6 +555,7 @@ def main():
     ctl.add_argument("--arm-test-move-duration", type=float, default=3.)
     ctl.add_argument("--arm-test-hold-duration", type=float, default=2.)
     for p in (sim, ctl):
+        p.add_argument("--record-policy-io", action="store_true", help="Buffer native sensors/received targets (sim) or exact ONNX inputs/outputs and published targets (control)")
         p.add_argument("--payload-mass", type=float, help="Same physical payload parameters in both terminals; omit for no payload")
         p.add_argument("--payload-dimensions", nargs=3, type=float, default=[.20, .12, .08])
         p.add_argument("--payload-offset", nargs=3, type=float, default=[.15, 0., 0.])
@@ -542,7 +574,11 @@ def main():
     if args.mode == "sim" and (any(not math.isfinite(x) for x in args.payload_up_axis)
                               or sum(x*x for x in args.payload_up_axis) < 1e-18):
         parser.error("Payload up axis must be finite and nonzero")
+    if args.mode == "sim" and args.record_policy_io and not args.task_record_dir:
+        parser.error("--record-policy-io requires --task-record-dir on sim")
     if args.mode == "control":
+        if args.record_policy_io and (not args.record_dir or args.ocs2_trajectory):
+            parser.error("Policy IO audit requires --record-dir and fixed-command diagnostic (no OCS2 replay)")
         if not math.isfinite(args.preview_max_age) or args.preview_max_age <= 0:
             parser.error("--preview-max-age must be finite and positive")
         if args.arm_gravity_compensation:
