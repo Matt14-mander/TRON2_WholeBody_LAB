@@ -58,3 +58,35 @@ Outputs per case:
 - `analysis/task_report.json`: per-axis means/RMS/std/peaks, vector-norm RMS and phase summaries.
 
 Review arm outcome and alignment coverage first. Compare after-2-second and matching phase windows rather than startup-inclusive peaks. These are diagnostic metrics, not a formal PAINT acceptance gate. Local tests cover world/base rotation, payload COM, common base translation invariance, net acceleration and reset handling, missing payload, phase alignment and rejection of old logs. The full local SFYG/0.5 kg model capture took about 0.11 ms/sample; actual server timing still requires verification.
+
+## Reuse existing logs to inspect heading drift and inclination
+
+Sync the additional `scripts/mujoco/analyze_task_heading.py` to the server. No simulator/controller rerun or change to existing records is needed. The script reads `analysis/task_aligned.jsonl` and its sibling `task_report.json` (for the selected normal axis). New output directories are required.
+
+```bash
+conda activate limx
+cd ~/workspace/isaaclab_tron2/TRON2_WholeBody_LAB
+set -o pipefail
+export HEADING_ANALYSIS="$PWD/logs/paint/task_heading_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$HEADING_ANALYSIS"
+
+for case_name in walk_hold arm_walk; do
+  python -u scripts/mujoco/analyze_task_heading.py \
+    --steps "$PWD/logs/paint/task_space_v1/$case_name/analysis/task_aligned.jsonl" \
+    --output-dir "$HEADING_ANALYSIS/$case_name" \
+    --settle-s 2 --plot \
+    2>&1 | tee "$HEADING_ANALYSIS/${case_name}.log"
+done
+```
+
+Each case produces `heading_report.json`, `heading_steps.jsonl` and `heading_payload.png`. Plotting uses matplotlib and can be omitted with no `--plot`.
+
+- Heading is unwrapped ZYX yaw of the base forward axis, with net change, fitted slope and heading rate using simulator time. Rate is not the same quantity as body-frame gyroscope z at nonzero roll/pitch.
+- Absolute chosen-normal inclination to world vertical is reported with mean, standard deviation and peak-to-peak variation. An RMS near 90° is the horizontal initial axis, not an oscillation amplitude.
+- `normal_from_first_control_deg` preserves the old startup reference. `normal_from_settled_deg` and both frame-removed changes share the first sample after settling as their reference.
+- `heading_removed_normal_from_settled_deg` removes only Rz(base yaw). Base roll/pitch, intended arm motion and arm tracking error remain.
+- `base_relative_normal_from_settled_deg` removes the complete measured base orientation. Commanded arm motion still remains; this is not a tracking error.
+- `normal_error_to_command_deg` measures the selected normal against received arm-target FK. `tilt_error_to_command_deg` is signed actual-minus-command inclination; a pure azimuth error may have zero inclination error but nonzero normal error.
+- Angles do not decompose additively. Do not subtract these values or turn their ratios into percentages of error attributed to yaw.
+
+The primary comparison is `settled` for both runs, then matching phase windows. Inspect straight-walk heading drift (commanded yaw is zero in these two runs), base roll/pitch and inclination variation before deciding whether to change locomotion or arm dynamic control. A phase summary of normal change retains the global settled reference; it is not re-zeroed at every phase. Intended arm motion and different phase lengths must be considered when comparing it.
