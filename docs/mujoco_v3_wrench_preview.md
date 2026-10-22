@@ -56,3 +56,19 @@ On the local asset, median static-plan time changed from about 11ms to 0.19ms,
 and moving-plan time from about 9ms to 3ms. Server timing must be measured.
 The numeric preview is also checked against MuJoCo mj_rne at nonzero joint
 position, velocity and acceleration on an independent small-model fixture.
+
+The default `--preview-execution async` moves prediction to one daemon worker
+owning the private MjData. SDK snapshots and ONNX remain on the control thread.
+One pending request is replaced by the newest snapshot rather than queued.
+The first observation is seeded with gravity from the first measured pose.
+Published results carry the submission timestamp and source base quaternion;
+their horizon is interpolated forward by age and vectors rotated into current
+base axes. The shifted horizon tail is held at its last value. This still
+neglects base acceleration and uses a co-moving base origin.
+
+`--preview-max-age 0.10` rejects old results instead of silently feeding stale
+data or zeros. Worker errors and cancelled trajectory generations also stop
+control. Original tilt and arm motion guards stay active. Sync calculation is
+available with `--preview-execution sync` for comparison. No background worker is
+started by `--preview-only`. A worker does not guarantee 50Hz; inspect measured
+timing on the server, including worker cost and prediction age P95.

@@ -5,10 +5,96 @@ the added subsystem acting ON the base. All moments are about base_Link origin.
 URDF link inertias include their inertial-frame rotations. No simulator imports.
 """
 from pathlib import Path
+import threading
+import time
 import xml.etree.ElementTree as ET
 import numpy as np
 
 TIMES = np.array([0., .2, .4, .6, .8])
+
+
+class LatestPreviewWorker:
+    """One worker owns the private model; one pending request, no unbounded queue."""
+    def __init__(self, compute, seed, seed_request):
+        self.compute = compute
+        self.condition = threading.Condition()
+        self.pending = None
+        self.result = (self._checked(seed), seed_request, 0.)
+        self.error = None
+        self.stopping = False
+        self.thread = threading.Thread(target=self._run, name="wrench-preview", daemon=True)
+        self.thread.start()
+
+    @staticmethod
+    def _checked(value):
+        value = np.asarray(value, dtype=float)
+        if value.shape != (5, 6) or not np.isfinite(value).all():
+            raise ValueError("Preview worker requires a finite 5x6 wrench")
+        return value.copy()
+
+    def submit(self, request):
+        with self.condition:
+            if self.stopping:
+                raise RuntimeError("Preview worker has stopped")
+            self.pending = request
+            self.condition.notify()
+
+    def read(self, now, max_age):
+        with self.condition:
+            if self.error is not None:
+                raise RuntimeError(f"Preview worker failed: {self.error}")
+            result = self.result
+        age = now - result[1]["stamp"]
+        if age < 0 or age > max_age:
+            raise RuntimeError(f"Stale wrench preview: age={age:.3f}s limit={max_age:.3f}s")
+        return result, age
+
+    def _run(self):
+        while True:
+            with self.condition:
+                self.condition.wait_for(lambda: self.stopping or self.pending is not None)
+                if self.stopping:
+                    return
+                request, self.pending = self.pending, None
+            started = time.monotonic()
+            try:
+                prediction = self._checked(self.compute(request))
+            except Exception as error:
+                with self.condition:
+                    self.error = f"{type(error).__name__}: {error}"
+                    self.condition.notify_all()
+                return
+            with self.condition:
+                self.result = (prediction, request, (time.monotonic()-started)*1000.)
+                self.condition.notify_all()
+
+    def close(self):
+        with self.condition:
+            self.stopping = True
+            self.condition.notify()
+        self.thread.join(timeout=.2)
+
+
+def current_frame_preview(prediction, source_quaternion, current_quaternion, age):
+    """Shift the horizon by its age; rotate vectors into current base axes.
+
+    The model neglects base acceleration and expresses moments about a co-moving
+    base origin. The last predicted sample is held when the shifted tail ends.
+    """
+    if not np.isfinite(age) or age < 0:
+        raise ValueError("Invalid prediction age")
+    def matrix(q):
+        q = np.asarray(q, dtype=float)
+        if q.shape != (4,) or not np.isfinite(q).all() or np.linalg.norm(q) < 1e-8:
+            raise ValueError("Invalid preview frame quaternion")
+        w, x, y, z = q / np.linalg.norm(q)
+        return np.array([[1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w)],
+                         [2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w)],
+                         [2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)]])
+    prediction = LatestPreviewWorker._checked(prediction)
+    shifted = np.stack([np.interp(TIMES+age, TIMES, prediction[:, i]) for i in range(6)], axis=1)
+    transform = matrix(source_quaternion).T @ matrix(current_quaternion)
+    return np.c_[shifted[:, :3] @ transform, shifted[:, 3:] @ transform]
 
 
 def rotation(axis, angle):

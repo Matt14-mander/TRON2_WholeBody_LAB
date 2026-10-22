@@ -151,7 +151,7 @@ def control(args):
         sys.path.insert(0, str(sim_root))
         sys.path.insert(0, str(ROOT / "exts/bipedal_locomotion/bipedal_locomotion/controllers"))
         from tron2_sim.model_loader import load_mujoco_model, load_payload_model
-        from paint_wrench_preview import MuJoCoAddedBodyModel
+        from paint_wrench_preview import MuJoCoAddedBodyModel, LatestPreviewWorker, current_frame_preview
         shadow = (load_payload_model(preview_path, args.payload_mass, args.payload_dimensions, args.payload_offset)
                   if args.payload_mass is not None else load_mujoco_model(preview_path))
         preview = MuJoCoAddedBodyModel(shadow, ROOT / "robot_description/tron2/SF_TRON2A/urdf/robot_rl.urdf")
@@ -168,6 +168,20 @@ def control(args):
             print("[V3 PREVIEW CHECK] passed; no SDK connection started", flush=True)
             return
 
+    def compute_preview(request):
+        positions, g, test = request["positions"], request["gravity"], request["arm_test"]
+        if args.low_wrench == "gravity" or test is None:
+            return np.repeat(preview.gravity_wrench(positions, g)[None], 5, axis=0)
+        t, command, names = request["time"], request["command"], request["arm_names"]
+        now = test.sample(t, command).arm_position
+        def position_at(future):
+            delta = test.sample(max(0., future), command).arm_position-now
+            out = dict(positions)
+            for i, name in enumerate(names):
+                out[name] += delta[i]
+            return out
+        return preview.preview(position_at, t, g)
+
     class DiagnosticController(deployment.SFYGController):
         def __init__(self, *a, **kw):
             self.policy_calls = 0
@@ -179,6 +193,9 @@ def control(args):
             self.inference_starts = []
             self.preview_cost_ms = []
             self.inference_cost_ms = []
+            self.preview_worker = None
+            self.worker_cost_ms = []
+            self.prediction_age_ms = []
             super().__init__(*a, **kw)
             if preview is not None:
                 print("[V3 PREVIEW JOINTS] " + json.dumps(
@@ -233,18 +250,23 @@ def control(args):
             if preview is not None:
                 positions = dict(zip(self.config.wire_joint_names, q))
                 g = gravity * np.linalg.norm(preview.model.opt.gravity)
-                if args.low_wrench == "gravity" or self.arm_test is None:
-                    prediction = np.repeat(preview.gravity_wrench(positions, g)[None], 5, axis=0)
+                request = dict(positions=positions, gravity=g, arm_test=self.arm_test,
+                    time=solution.time, command=solution.base_command.copy(),
+                    arm_names=tuple(self.config.wire_joint_names[10:16]),
+                    quaternion=np.array(quaternion, copy=True), stamp=time.monotonic())
+                if args.preview_execution == "async":
+                    if self.preview_worker is None:
+                        seed = np.repeat(preview.gravity_wrench(positions, g)[None], 5, axis=0)
+                        self.preview_worker = LatestPreviewWorker(compute_preview, seed, request)
+                    self.preview_worker.submit(request)
+                    (raw, source, cost_ms), age = self.preview_worker.read(time.monotonic(), args.preview_max_age)
+                    if source["arm_test"] is not request["arm_test"]:
+                        raise RuntimeError("Arm trajectory changed; stale plan preview rejected")
+                    prediction = current_frame_preview(raw, source["quaternion"], quaternion, age)
+                    self.worker_cost_ms.append(cost_ms)
+                    self.prediction_age_ms.append(age*1000)
                 else:
-                    test = self.arm_test
-                    now = test.sample(solution.time, solution.base_command).arm_position
-                    def position_at(future):
-                        delta = test.sample(max(0., future), solution.base_command).arm_position-now
-                        out = dict(positions)
-                        for i, name in enumerate(self.config.wire_joint_names[10:16]):
-                            out[name] += delta[i]
-                        return out
-                    prediction = preview.preview(position_at, solution.time, g)
+                    prediction = compute_preview(request)
                 solution = replace(solution, wrench_prediction=prediction)
             self.preview_cost_ms.append((time.monotonic()-preview_start)*1000.)
             tilt = float(np.degrees(np.arccos(np.clip(-gravity[2], -1., 1.))))
@@ -270,6 +292,8 @@ def control(args):
                 observed_hz=float(1/intervals.mean()) if len(intervals) else None,
                 interval_p95_ms=float(np.percentile(intervals, 95)*1000) if len(intervals) else None,
                 preview_p95_ms=float(np.percentile(self.preview_cost_ms, 95)) if self.preview_cost_ms else None,
+                worker_compute_p95_ms=float(np.percentile(self.worker_cost_ms, 95)) if self.worker_cost_ms else None,
+                prediction_age_p95_ms=float(np.percentile(self.prediction_age_ms, 95)) if self.prediction_age_ms else None,
                 infer_p95_ms=float(np.percentile(self.inference_cost_ms, 95)) if self.inference_cost_ms else None)
 
     controller = None
@@ -296,12 +320,15 @@ def control(args):
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
     finally:
+        if controller is not None and controller.preview_worker is not None:
+            controller.preview_worker.close()
         print("[V3 RESULT] " + json.dumps(dict(completed=completed, error=error,
             requested_test_completed=bool(completed and (not arm_requested or (
                 getattr(controller, "arm_sequence_completed", False) and not getattr(controller, "arm_sequence_aborted", False)))),
             timing=controller.timing_report() if controller is not None else None,
             arm_pose=args.arm_pose,
             low_wrench=args.low_wrench, payload_mass=args.payload_mass,
+            preview_execution=args.preview_execution,
             ocs2_trajectory=args.ocs2_trajectory,
             arm_test_requested=arm_requested,
             arm_sequence_started=getattr(controller, "arm_sequence_started", False),
@@ -342,6 +369,8 @@ def main():
     ctl.add_argument("--low-wrench", choices=("zero", "gravity", "plan"), default="zero")
     ctl.add_argument("--sim-root", help="Same simulator root as terminal A; required for gravity/plan")
     ctl.add_argument("--preview-only", action="store_true", help="Validate model, 18 joints and gravity without connecting to SDK")
+    ctl.add_argument("--preview-execution", choices=("async", "sync"), default="async")
+    ctl.add_argument("--preview-max-age", type=float, default=.10, help="Stop if asynchronous prediction is older than this many seconds")
     motion = ctl.add_mutually_exclusive_group()
     motion.add_argument("--arm-test-joint", choices=tuple(f"arm{i}" for i in range(1, 7)))
     motion.add_argument("--arm-test-offsets", nargs=6, type=float)
@@ -369,6 +398,8 @@ def main():
                     args.wrench_duration, args.wrench_ramp_time, args.wrench_frequency))):
             parser.error("wrench must be finite; start nonnegative; duration/ramp/frequency positive")
     if args.mode == "control":
+        if not math.isfinite(args.preview_max_age) or args.preview_max_age <= 0:
+            parser.error("--preview-max-age must be finite and positive")
         if args.preview_only and args.low_wrench == "zero":
             parser.error("--preview-only requires --low-wrench gravity or plan")
         if args.low_wrench != "zero":

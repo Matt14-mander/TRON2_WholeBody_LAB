@@ -4,13 +4,16 @@ from pathlib import Path
 import tempfile
 import unittest
 import importlib.util
+import threading
+import time
 from unittest.mock import patch
 from types import SimpleNamespace
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "exts/bipedal_locomotion/bipedal_locomotion/controllers"))
-from paint_wrench_preview import AddedBodyModel, MuJoCoAddedBodyModel, TIMES
+from paint_wrench_preview import (AddedBodyModel, MuJoCoAddedBodyModel, TIMES,
+                                 LatestPreviewWorker, current_frame_preview)
 
 
 class WrenchTests(unittest.TestCase):
@@ -125,6 +128,62 @@ class WrenchTests(unittest.TestCase):
             self.assertEqual(len(preview.resolve_joint_names(names)), 18)
             results.append(preview.gravity_wrench(dict.fromkeys(names, .1), np.array([0, 0, -9.81])))
         np.testing.assert_allclose(results[0], results[1])
+
+
+class WorkerTests(unittest.TestCase):
+    def test_nonblocking_read_and_latest_request_replaces_backlog(self):
+        entered, release = threading.Event(), threading.Event()
+        calls = []
+        def compute(request):
+            calls.append(request["id"])
+            if request["id"] == 1:
+                entered.set()
+                if not release.wait(2):
+                    raise RuntimeError("test release timed out")
+            return np.full((5, 6), request["id"])
+        worker = LatestPreviewWorker(compute, np.zeros((5, 6)), dict(id=0, stamp=time.monotonic()))
+        try:
+            worker.submit(dict(id=1, stamp=time.monotonic()))
+            self.assertTrue(entered.wait(1))
+            # A slow model does not block this read of the seeded prediction.
+            result, _ = worker.read(time.monotonic(), 2)
+            self.assertEqual(result[1]["id"], 0)
+            worker.submit(dict(id=2, stamp=time.monotonic()))
+            worker.submit(dict(id=3, stamp=time.monotonic()))
+            release.set()
+            with worker.condition:
+                self.assertTrue(worker.condition.wait_for(lambda: worker.result[1]["id"] == 3, timeout=2))
+            result, _ = worker.read(time.monotonic(), 2)
+            np.testing.assert_array_equal(result[0], np.full((5, 6), 3))
+            self.assertEqual(calls, [1, 3])
+        finally:
+            release.set()
+            worker.close()
+
+    def test_stale_prediction_and_worker_failure_are_rejected(self):
+        def fail(_):
+            raise ValueError("bad dynamics")
+        stamp = time.monotonic()
+        worker = LatestPreviewWorker(fail, np.zeros((5, 6)), dict(stamp=stamp))
+        try:
+            with self.assertRaisesRegex(RuntimeError, "Stale"):
+                worker.read(stamp+1, .1)
+            worker.submit(dict(stamp=time.monotonic()))
+            with worker.condition:
+                self.assertTrue(worker.condition.wait_for(lambda: worker.error is not None, timeout=2))
+            with self.assertRaisesRegex(RuntimeError, "bad dynamics"):
+                worker.read(time.monotonic(), 2)
+        finally:
+            worker.close()
+
+    def test_delayed_preview_is_retimed_and_rebased(self):
+        prediction = np.tile([1., 0, 0, 2., 0, 0], (5, 1))
+        prediction[:, 2] = TIMES
+        out = current_frame_preview(prediction, [1, 0, 0, 0],
+                                    [np.sqrt(.5), 0, 0, np.sqrt(.5)], .1)
+        np.testing.assert_allclose(out[:, :2], np.tile([0., -1.], (5, 1)), atol=1e-12)
+        np.testing.assert_allclose(out[:, 3:5], np.tile([0., -2.], (5, 1)), atol=1e-12)
+        np.testing.assert_allclose(out[:, 2], [.1, .3, .5, .7, .8], atol=1e-12)
 
 
 if __name__ == "__main__":
