@@ -207,6 +207,9 @@ def control(args):
             self.preview_worker = None
             self.worker_cost_ms = []
             self.prediction_age_ms = []
+            self.arm_recorder = None
+            self._record_policy_publish = False
+            self._record_phase = "hold"
             super().__init__(*a, **kw)
             if preview is not None:
                 print("[V3 PREVIEW JOINTS] " + json.dumps(
@@ -240,6 +243,56 @@ def control(args):
             print(f"[V3 CLOCK] publish={self.config.loop_frequency:g}Hz "
                   f"policy={self.config.policy_frequency:g}Hz decimation={self.config.decimation}; "
                   "MuJoCo MIT PD still runs at its physics rate", flush=True)
+            if args.record_dir:
+                from arm_telemetry import ArmTelemetry
+                self.arm_recorder = ArmTelemetry(args.record_dir, dict(
+                    joints=list(self.config.wire_joint_names[10:16]),
+                    arguments=vars(args), checkpoint=manifest["checkpoint"],
+                    publish_hz=self.config.loop_frequency,
+                    policy_hz=self.config.policy_frequency,
+                    position_error="measured minus commanded, rad; velocity rad/s; effort Nm",
+                    feedback_source="SDK RobotState.tau; SFYG simulator publishes actuator_force (unit gear)",
+                    estimate="Kp*(q_target-q)+Kd*(dq_target-dq)+feedforward; latest received state, not physics-synchronous",
+                    sampling="One row per policy target publication; feedback predates outgoing command. Not physics-rate peaks or joint reaction torque.",
+                    torque_limits="Not inferred from SDK feedback; saturation is not certified by this log."))
+                print(f"[V3 ARM RECORD] {self.arm_recorder.directory}", flush=True)
+
+        def _publish_policy_targets(self, targets, solution):
+            self._record_phase = ("aborted" if arm_requested and self.arm_test is None else
+                self.arm_test.phase(solution.time) if self.arm_test is not None else
+                "trajectory" if self.trajectory is not None else "hold")
+            self._record_policy_publish = True
+            try:
+                return super()._publish_policy_targets(targets, solution)
+            finally:
+                self._record_policy_publish = False
+
+        def _publish(self, q, dq=None, tau=None, kp=None, kd=None):
+            record = None
+            if self._record_policy_publish and self.arm_recorder is not None and self.rl_started is not None:
+                now = time.monotonic()
+                with self._state_lock:
+                    state, stamp, count = self.state, self._state_stamp, self._state_count
+                # Callback already orders q/dq, but leaves tau in SDK motor_names order.
+                feedback = getattr(state, "tau", None)
+                try:
+                    feedback = (self._ordered_state(feedback, getattr(state, "motor_names", None))
+                                if feedback is not None else None)
+                except (ValueError, IndexError, TypeError):
+                    feedback = None
+                record = dict(time_s=now-self.rl_started, phase=self._record_phase,
+                    q=np.asarray(state.q)[10:16], dq=np.asarray(state.dq)[10:16],
+                    target=np.asarray(q)[10:16],
+                    velocity_target=np.zeros(6) if dq is None else np.asarray(dq)[10:16],
+                    effort=np.zeros(6) if tau is None else np.asarray(tau)[10:16],
+                    kp=self.config.kp[10:16] if kp is None else np.asarray(kp)[10:16],
+                    kd=self.config.kd[10:16] if kd is None else np.asarray(kd)[10:16],
+                    feedback=None if feedback is None else np.asarray(feedback)[10:16],
+                    state_age_s=now-stamp, state_count=count)
+            result = super()._publish(q, dq=dq, tau=tau, kp=kp, kd=kd)
+            if record is not None:
+                self.arm_recorder.append(**record)
+            return result
 
         def _move_to_default(self, start_q):
             if args.arm_pose == "folded" and not np.allclose(
@@ -338,6 +391,17 @@ def control(args):
     finally:
         if controller is not None and controller.preview_worker is not None:
             controller.preview_worker.close()
+        recorder = getattr(controller, "arm_recorder", None)
+        if recorder is not None:
+            try:
+                recorder.save(dict(completed=completed, error=error,
+                    arm_sequence_completed=controller.arm_sequence_completed,
+                    arm_sequence_aborted=controller.arm_sequence_aborted,
+                    timing=controller.timing_report()))
+                print(f"[V3 ARM RECORD] saved {len(recorder.rows)} samples to {recorder.directory}", flush=True)
+            except Exception as exc:
+                error = f"Arm record save failed: {type(exc).__name__}: {exc}; control error={error}"
+                completed = False
         print("[V3 RESULT] " + json.dumps(dict(completed=completed, error=error,
             requested_test_completed=bool(completed and (not arm_requested or (
                 getattr(controller, "arm_sequence_completed", False) and not getattr(controller, "arm_sequence_aborted", False)))),
@@ -345,6 +409,7 @@ def control(args):
             arm_pose=args.arm_pose,
             low_wrench=args.low_wrench, payload_mass=args.payload_mass,
             preview_execution=args.preview_execution,
+            record_dir=str(recorder.directory) if recorder is not None else None,
             ocs2_trajectory=args.ocs2_trajectory,
             arm_test_requested=arm_requested,
             arm_sequence_started=getattr(controller, "arm_sequence_started", False),
@@ -385,6 +450,7 @@ def main():
     ctl.add_argument("--low-wrench", choices=("zero", "gravity", "plan"), default="zero")
     ctl.add_argument("--sim-root", help="Same simulator root as terminal A; required for gravity/plan")
     ctl.add_argument("--preview-only", action="store_true", help="Validate model, 18 joints and gravity without connecting to SDK")
+    ctl.add_argument("--record-dir", help="New directory for buffered arm errors, torque telemetry and phase summaries")
     ctl.add_argument("--preview-execution", choices=("async", "sync"), default="async")
     ctl.add_argument("--preview-max-age", type=float, default=.10, help="Stop if asynchronous prediction is older than this many seconds")
     ctl.add_argument("--publish-frequency", type=int, choices=(100, 500), default=500,
