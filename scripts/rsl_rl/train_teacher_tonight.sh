@@ -30,7 +30,10 @@ if sys.argv[2] != "train":
     r = json.loads((p / "evaluation.json").read_text())
     assert r["steps"] == 1500 and r["failures"] == 0 and r["timeouts"] >= 64, r
     assert r["peak_base_tilt_deg"] < 15 and r["peak_payload_tilt_from_reset_deg"] < 35, r
-    assert r["tracking_mse"] < .01, r
+    # Preserve all-transient MSE for diagnosis, but gate tracking only after
+    # the gravity feedforward ramp and settling interval of EACH episode.
+    assert r["settled_responses"] > 0 and r["metric_settle_s"] == 4., r
+    assert r["settled_tracking_mse"] < .01, r
     if sys.argv[2] == "force":
         assert r["force_active_samples"] > 0, r
 print("[TEACHER GATE] PASS", p)

@@ -38,6 +38,8 @@ def build_parser():
                         help="25 Hz teacher steps, shared across environments, not PPO iterations.")
     parser.add_argument("--velocity_scale", type=float, nargs=3, default=(.15, .08, .25))
     parser.add_argument("--arm_scale", type=float, default=.1)
+    parser.add_argument("--metric_settle_s", type=float, default=4.,
+                        help="Exclude this interval after EVERY reset from settled tracking metrics only.")
     return parser
 
 
@@ -83,6 +85,8 @@ def main(args, app):
         raise ValueError("Payload and force/torque amplitudes must be finite and positive.")
     if not 0 < args.initial_force_scale <= 1 or args.curriculum_steps < 1:
         raise ValueError("Invalid force curriculum scale/steps")
+    if not math.isfinite(args.metric_settle_s) or not 0 <= args.metric_settle_s < 20:
+        raise ValueError("metric_settle_s must be finite and in [0,20)")
     if args.mode == "play" and not args.teacher_checkpoint:
         raise ValueError("--mode play requires --teacher_checkpoint.")
     if args.mode != "play" and args.teacher_checkpoint:
@@ -187,6 +191,8 @@ def main(args, app):
             peaks = torch.zeros(3, device=raw.device)
             tracking_sum = 0.
             valid_responses = 0
+            settled_tracking_sum = 0.
+            settled_responses = 0
             force_active_samples = 0
             steps = 0
             with torch.no_grad(), (output / "rollout.jsonl").open("w", encoding="utf-8") as stream:
@@ -198,6 +204,9 @@ def main(args, app):
                     force = raw.command_manager.get_command("interaction").clone()
                     force_active_samples += int((force.abs().amax(-1) > 1e-6).sum())
                     reference = raw.command_manager.get_term("interaction").reference.clone()
+                    # Capture per-environment age BEFORE step, which may reset
+                    # individual environments. A global step cutoff is incorrect.
+                    settled_age = raw.episode_length_buf * raw.step_dt >= args.metric_settle_s
                     obs, reward, dones, infos = env.step(action)
                     timeout = infos["time_outs"].bool()
                     failures += int((dones.bool() & ~timeout).sum())
@@ -208,6 +217,9 @@ def main(args, app):
                     # Post-reset rows cannot be used as pre-terminal response measurements.
                     valid = ~dones.bool()
                     error = (torch.cat((lin[:, :2], ang[:, 2:3]), dim=-1) - reference).square().sum(-1)
+                    settled = valid & settled_age
+                    settled_tracking_sum += float(error[settled].sum())
+                    settled_responses += int(settled.sum())
                     if valid.any():
                         base_angle = torch.acos((-raw.scene["robot"].data.projected_gravity_b[valid, 2]).clamp(-1, 1))
                         payload_angle = torch.acos((gravity[valid] * term.payload_gravity_reference[valid]).sum(-1).clamp(-1, 1))
@@ -218,6 +230,8 @@ def main(args, app):
                     stream.write(json.dumps({"step": step, "force_env0": force[0].tolist(),
                         "reference_env0": reference[0].tolist(), "action_env0": action[0].tolist(),
                         "response_valid_env0": bool(valid[0]), "reward_mean": float(reward.mean()),
+                        "settled_response_env0": bool(settled[0]),
+                        "tracking_error_sq_env0": float(error[0]) if bool(valid[0]) else None,
                         "failures": failures, "timeouts": timeouts}) + "\n")
                     steps += 1
             result = {"mode": args.mode, "steps": steps, "failures": failures, "timeouts": timeouts,
@@ -225,6 +239,9 @@ def main(args, app):
                       "peak_payload_tilt_from_reset_deg": math.degrees(float(peaks[1])),
                       "peak_target_change": float(peaks[2]), "valid_responses": valid_responses,
                       "force_active_samples": force_active_samples,
+                      "metric_settle_s": args.metric_settle_s,
+                      "settled_responses": settled_responses,
+                      "settled_tracking_mse": settled_tracking_sum / settled_responses if settled_responses else None,
                       "tracking_mse": tracking_sum / max(1, valid_responses)}
             (output / "evaluation.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
             print(json.dumps(result, indent=2), flush=True)
