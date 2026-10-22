@@ -10,9 +10,42 @@ Teacher 直接观察真实负载交互 `[Fx,Fy,Mz]`，没有 intent estimator，
 本机当前 Python 环境只有 Isaac Lab 源码，没有 Isaac Sim runtime，且没有正式低层 checkpoint。
 需要在已有 Linux Isaac 环境中先完成下述 smoke 和基线，才能评价带负载的稳定性。
 
-2026-10-13 服务器诊断补充：旧 checkpoint 的零速回合在约 0.35 s 失败；`-0.25 m/s` 行走在无负载/
-有负载下均完成 3 个 20 s 回合。当前先按 [低层站立与起停微调方案](locomotion_standwalk_finetune.md)
-补齐低层能力，使用通过验收的新 checkpoint 后再执行本页训练流程。不能把稳定行走等同于稳定零速支撑。
+2026-10-22：主线恢复 teacher，使用 paper v3 的 `2026-10-15_16-38-03/model_20000.pt`。
+本次补齐正式训练入口的支撑 wrench 与臂部重力补偿。下述自动流水线仍须在服务器通过 PhysX 检查，
+不能把此前 MuJoCo 中的通过结果等同于新 teacher 任务通过。
+
+## 今晚启动（当前推荐入口）
+
+先将本次修改同步到服务器。在普通终端执行 `tmux new -s paint_teacher`，进入后：
+
+```bash
+conda activate limx
+cd ~/workspace/isaaclab_tron2/TRON2_WholeBody_LAB
+export TEACHER_DEVICE=cuda:1
+export TEACHER_ENVS=1024
+export TEACHER_ITERATIONS=3000
+bash scripts/rsl_rl/train_teacher_tonight.sh
+```
+
+`Ctrl+B` 再按 `D` 离开；`tmux attach -t paint_teacher` 返回。外部查看：
+
+```bash
+cd ~/workspace/isaaclab_tron2/TRON2_WholeBody_LAB
+RUN=$(cat logs/rsl_rl/latest_teacher_run.txt)
+tail -n 60 "$RUN/train.log"
+```
+
+流水线：64 环境零力带载 60 s → 64 环境弱扰动 60 s → 2 轮 PPO → 1024 环境 3000 轮 → 同幅值零动作基线与 teacher 各 60 s 评估。
+前两项要求无失败、产生正常 timeout、底座峰值倾角 <15°、负载相对初始倾角 <35°、跟随 MSE <0.01；弱扰动还必须实际出现。
+这些是本轮启动的保守诊断门槛，不是正式任务验收标准。任一预检查失败就停止，保留该阶段日志。
+额外要求 `completion.json` 和冻结权重确认，防止 Isaac 关闭时的异常退出码掩盖执行失败。
+2 轮 PPO 只验证优化链路，不验收学习能力。长训后比较 `eval_baseline/evaluation.json` 与 `eval_play/evaluation.json`。
+
+本轮动作范围为底座 `(±0.15, ±0.08, ±0.25)`、臂部名义姿态附近 `±0.1 rad`，臂部目标限速 `0.15 rad/s`。
+扰动上限为 `3 N / 0.2 Nm`，从 20% 增长，25,000 个高层步约对应 782 轮 PPO。
+这是固定 0.5 kg 负载、小范围顺应原型；不把偏航精度、广范围摆臂或大扰动的验收作为已完成。
+3000 轮用于观察初步学习，不承诺一夜收敛，也不建议直接以 20000 轮替代诊断。
+当前不支持 teacher 断点续训；每个启动目录必须为空，模型每 100 轮保存一次。
 
 | 阶段 | 优化对象 | 力输入 | 动作 |
 |---|---|---|---|
@@ -28,16 +61,20 @@ Teacher 直接观察真实负载交互 `[Fx,Fy,Mz]`，没有 intent estimator，
 - 低层输入顺序保持 `latent(3), proprioception(42), future wrench(30), base command(3)`。
   十帧低层历史保持 50 Hz、最旧帧在前；不以高层九维 action 替代低层十维 last action。
 - 高层原始动作九维：`[vx, vy, wz, arm1..arm6]`。前三维缩放为机身坐标速度，后三维为
-  `q_nominal + 0.25 * clip(action, -1, 1)`，不是累积关节增量；施加软限位及目标变化率限制。
-  初始速度上限 `0.35/0.20/0.40 m/s,m/s,rad/s`，初始臂部目标变化率 `0.5 rad/s`。
-- 臂部用固定 PD `Kp=60,Kd=6`，速度目标和前馈为零。固定夹爪与负载连接；第一版无 OCS2/IK。
+  `q_nominal + arm_scale * clip(action, -1, 1)`，不是累积关节增量；施加软限位及目标变化率限制。
+  当前启动入口的默认范围见上文，可用 `--velocity_scale`、`--arm_scale` 修改。
+- 臂部用固定 PD `Kp=60,Kd=6`，速度目标为零，叠加仅重力的关节前馈，2 s 渐入，且限制于额定力矩和 ±30 Nm。
+  不抵消交互外力。固定夹爪与负载连接；本轮无 OCS2/IK。
 - 负载复用独立生成的 USD：`0.5 kg, 0.20×0.12×0.08 m`，夹爪局部偏移 `(+0.15,0,0)`。
   启动时检查负载确实成为 articulation link 且导入质量匹配，源机器人 USD 不修改。
 - 外力定义为**外部作用于负载 COM，以负载自身坐标表示**。每个高层区间保持常值，施力与 teacher
   所见三维力一致。观测时给出即将执行区间的当前已知力，不给出未来曲线、下次幅值或持续时间。
   后续 estimator 通常有延迟，不拥有这一特权；student 阶段需要显式处理这个差异。
-- 三维交互力不转换或重复填入低层 30 维接口。第一版低层 future wrench 为零，并且完全移除原
-  synthetic arm-wrench command；真实臂/负载的反作用由物理引擎传递，避免重复施力。
+- 专用训练入口开启 GPU 批量准静态模型：以实际关节角、底座重力方向，计算新增机械臂/附件/负载的
+  重力 wrench，再加当前已知负载外力对底座原点的等效力与力矩。当前估计保持为 5×6 后按原比例归一化。
+  这不是未来臂轨迹的惯性预测，也不暴露未来外力。只作为低层观测；物理引擎中只向负载施一次外力，
+  不向底座重复施力。启动核对 URDF 与原生质量/COM，误差超过质量 5%（至少 1 g）或 COM 3 cm 即停止。
+  原有 support 验证脚本仍保留其显式指定的 preview/零前馈行为，便于复现历史对照。
 
 Teacher policy 为 99 维；runner 拼接三维导纳参考后，actor 输入为 102 维：
 
@@ -59,7 +96,7 @@ Critic 另加负载 COM 的局部线/角速度及世界高度，含 commands 共
 ## 目标、奖励与终止
 
 顺应参考使用 `M dv/dt + D v = wrench` 的精确离散更新，三轴初始参数：
-`M=(4,4,0.5), D=(20,20,2)`，参考速度上限 `(0.35,0.20,0.40)`。
+`M=(4,4,0.5), D=(20,20,2)`，参考速度限幅随 `--velocity_scale` 设置。
 这些是虚拟导纳参数，不是识别得到的机器人惯量；后续根据期望响应调整。
 跟踪奖励比较负载实际局部平面速度/局部 z 角速度与参考，不能仅评价输出的底座指令。
 
@@ -86,7 +123,7 @@ carry 姿态倾斜超过 45°。20 s 是正常 timeout，与失败分开统计�
 conda activate limx
 cd ~/workspace/isaaclab_tron2/TRON2_WholeBody_LAB
 python -m pip install -e exts/bipedal_locomotion -e rsl_rl
-export PAINT_CHECKPOINT="$PWD/logs/rsl_rl/sfyg_tron_2a_wholebody_flat/2026-09-10_22-16-15/model_20000.pt"
+export PAINT_CHECKPOINT="$PWD/logs/rsl_rl/sfyg_tron_2a_wholebody_paper_v3_flat/2026-10-15_16-38-03/model_20000.pt"
 test -f "$PAINT_CHECKPOINT"
 python -m unittest discover -s tests -p test_paint_teacher.py -v
 ```

@@ -33,6 +33,11 @@ def build_parser():
     parser.add_argument("--force_amplitude", type=float, default=5.)
     parser.add_argument("--torque_amplitude", type=float, default=.5)
     parser.add_argument("--zero_force", action="store_true", help="Support diagnostic without interaction forces.")
+    parser.add_argument("--initial_force_scale", type=float, default=.2)
+    parser.add_argument("--curriculum_steps", type=int, default=25000,
+                        help="25 Hz teacher steps, shared across environments, not PPO iterations.")
+    parser.add_argument("--velocity_scale", type=float, nargs=3, default=(.15, .08, .25))
+    parser.add_argument("--arm_scale", type=float, default=.1)
     return parser
 
 
@@ -74,8 +79,10 @@ def main(args, app):
     if args.num_envs < 1 or args.steps < 1 or args.max_iterations < 1:
         raise ValueError("Environment, step and iteration counts must be positive.")
     if any(not math.isfinite(x) or x <= 0 for x in
-           (args.payload_mass, args.force_amplitude, args.torque_amplitude)):
+           (args.payload_mass, args.force_amplitude, args.torque_amplitude, args.arm_scale, *args.velocity_scale)):
         raise ValueError("Payload and force/torque amplitudes must be finite and positive.")
+    if not 0 < args.initial_force_scale <= 1 or args.curriculum_steps < 1:
+        raise ValueError("Invalid force curriculum scale/steps")
     if args.mode == "play" and not args.teacher_checkpoint:
         raise ValueError("--mode play requires --teacher_checkpoint.")
     if args.mode != "play" and args.teacher_checkpoint:
@@ -92,7 +99,14 @@ def main(args, app):
     cfg.seed = args.seed
     cfg.actions.teacher.locomotion_checkpoint = str(checkpoint)
     cfg.actions.teacher.payload_mass = args.payload_mass
+    cfg.actions.teacher.native_support = True
+    cfg.actions.teacher.velocity_scale = tuple(args.velocity_scale)
+    cfg.actions.teacher.arm_scale = args.arm_scale
+    cfg.actions.teacher.slew_rate = (.3, .2, .5, .15, .15, .15, .15, .15, .15)
     cfg.commands.interaction.max_wrench = (args.force_amplitude, args.force_amplitude, args.torque_amplitude)
+    cfg.commands.interaction.initial_scale = args.initial_force_scale
+    cfg.commands.interaction.ramp_steps = args.curriculum_steps
+    cfg.commands.interaction.velocity_limits = tuple(args.velocity_scale)
     if args.zero_force:
         cfg.commands.interaction.zero_probability = 1.
     if args.mode in ("play", "baseline"):
@@ -117,6 +131,9 @@ def main(args, app):
         with torch.no_grad():
             runner.alg.actor_critic.logstd.fill_(math.log(.3))
         obs = env.get_observations()
+        term.update_support()
+        (output / "wrench_model_check.json").write_text(
+            json.dumps(term.support_check, indent=2) + "\n", encoding="utf-8")
         if obs["policy"].shape[1] != 99 or obs["critic"].shape[1] != 106 or env.num_actions != 9:
             raise RuntimeError("Teacher observation/action contract mismatch.")
         if runner.alg.extra_optimizer is not None or any(p.requires_grad for p in term.locomotion.parameters()):
@@ -133,7 +150,13 @@ def main(args, app):
             "arm_history_row": ["q_minus_nominal(6)", "dq_times_0.1(6)", "preceding_executed_q_target_minus_nominal(6)"],
             "force_semantics": "external_on_payload; frame=payload_local; point=payload_COM",
             "force_timing": "current known force held over the upcoming teacher interval; no future profile given",
-            "low_wrench_input": "zero_5x6; no synthetic arm-on-base force", "intent_estimator": False,
+            "support_version": "quasistatic_gravity_external_v1",
+            "low_wrench_input": "added-body gravity + current known external payload wrench; held 5x6; base axes, base origin; observation only",
+            "arm_gravity_compensation": {"enabled": True, "ramp_s": cfg.actions.teacher.gravity_ramp_s,
+                "limit_Nm": cfg.actions.teacher.gravity_effort_limit, "external_force_compensated": False},
+            "nominal_arm": term.nominal[0].tolist(),
+            "initial_low_wrench_normalized": term.low_wrench_prediction[0].tolist(),
+            "intent_estimator": False,
             "velocity_scale": list(cfg.actions.teacher.velocity_scale), "arm_scale": cfg.actions.teacher.arm_scale,
             "slew_rate": list(cfg.actions.teacher.slew_rate),
             "interaction": cfg.commands.interaction.to_dict(), "rewards": cfg.rewards.to_dict(),
@@ -141,14 +164,22 @@ def main(args, app):
         }
         (output / "contract.json").write_text(json.dumps(contract, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
         if args.mode == "train":
+            teacher_before = {k: v.clone() for k, v in runner.alg.actor_critic.actor.state_dict().items()}
             runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=False)
+            teacher_after = runner.alg.actor_critic.actor.state_dict()
+            if (not all(torch.isfinite(v).all() for v in teacher_after.values())
+                    or not any(not torch.equal(v, teacher_after[k]) for k, v in teacher_before.items())):
+                raise RuntimeError("Teacher actor did not update or produced non-finite weights")
             torch.jit.script(runner.alg.actor_critic.actor.cpu().eval()).save(str(output / "teacher_actor.pt"))
         else:
             if args.mode == "play":
                 saved = torch.load(args.teacher_checkpoint, map_location=args.device, weights_only=False)
                 source_contract = Path(args.teacher_checkpoint).resolve().parent / "contract.json"
                 metadata = json.loads(source_contract.read_text(encoding="utf-8"))
-                if metadata["schema"] != SCHEMA or metadata["locomotion_sha256"] != checkpoint_hash:
+                if (metadata["schema"] != SCHEMA or metadata["locomotion_sha256"] != checkpoint_hash
+                        or metadata.get("support_version") != contract["support_version"]
+                        or metadata["velocity_scale"] != contract["velocity_scale"]
+                        or metadata["arm_scale"] != contract["arm_scale"]):
                     raise ValueError("Teacher checkpoint must use the same schema and frozen locomotion weights.")
                 runner.alg.actor_critic.load_state_dict(saved["model_state_dict"], strict=True)
             runner.alg.actor_critic.eval()
@@ -156,6 +187,7 @@ def main(args, app):
             peaks = torch.zeros(3, device=raw.device)
             tracking_sum = 0.
             valid_responses = 0
+            force_active_samples = 0
             steps = 0
             with torch.no_grad(), (output / "rollout.jsonl").open("w", encoding="utf-8") as stream:
                 for step in range(args.steps):
@@ -164,6 +196,7 @@ def main(args, app):
                     action = (runner.alg.actor_critic.act_inference(torch.cat((obs["policy"], obs["commands"]), dim=-1))
                               if args.mode == "play" else torch.zeros(raw.num_envs, 9, device=raw.device))
                     force = raw.command_manager.get_command("interaction").clone()
+                    force_active_samples += int((force.abs().amax(-1) > 1e-6).sum())
                     reference = raw.command_manager.get_term("interaction").reference.clone()
                     obs, reward, dones, infos = env.step(action)
                     timeout = infos["time_outs"].bool()
@@ -191,11 +224,14 @@ def main(args, app):
                       "peak_base_tilt_deg": math.degrees(float(peaks[0])),
                       "peak_payload_tilt_from_reset_deg": math.degrees(float(peaks[1])),
                       "peak_target_change": float(peaks[2]), "valid_responses": valid_responses,
+                      "force_active_samples": force_active_samples,
                       "tracking_mse": tracking_sum / max(1, valid_responses)}
             (output / "evaluation.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
             print(json.dumps(result, indent=2), flush=True)
         if any(not torch.equal(value, term.locomotion.state_dict()[key]) for key, value in frozen_before.items()):
             raise RuntimeError("Frozen locomotion weights changed during teacher execution.")
+        (output / "completion.json").write_text(json.dumps({"mode": args.mode,
+            "frozen_weights_verified": True, "support_version": contract["support_version"]}) + "\n", encoding="utf-8")
         print(f"[TEACHER] complete; frozen weights verified; output={output}", flush=True)
     finally:
         if "runner" in locals() and runner.writer is not None:

@@ -260,6 +260,34 @@ class TeacherTests(unittest.TestCase):
             action.set_low_wrench_prediction(torch.full((2, 5, 6), float("nan")))
         handle.remove()
 
+    def test_support_runs_before_low_inference_and_effort_resets_per_env(self):
+        env, action, interaction = self.make_env()
+        action.cfg.native_support = True
+        calls, efforts, observed = [], [], []
+        def update():
+            calls.append(env._sim_step_counter)
+            action.set_low_wrench_prediction(torch.ones(2, 5, 6))
+            action.arm_feedforward.fill_(2.)
+        action.update_support = update
+        env.scene["robot"].set_joint_effort_target = lambda value, joint_ids: efforts.append(value.clone())
+        hook = action.locomotion.actor.register_forward_pre_hook(
+            lambda _, values: observed.append(values[0][:, 45:75].clone()))
+        action.process_actions(torch.zeros(2, 9))
+        for _ in range(8):
+            env._sim_step_counter += 1
+            action.apply_actions()
+        self.assertEqual(calls, [1, 5])
+        self.assertEqual(len(efforts), 8)
+        self.assertTrue(all(torch.all(x == 2.) for x in efforts))
+        expected = torch.tensor([.01]*3 + [.05]*3).repeat(5).expand(2, -1)
+        self.assertTrue(all(torch.allclose(x, expected) for x in observed))
+        # Only the payload receives the physical external force.
+        torch.testing.assert_close(env.scene["robot"].force[:, 0, :2], interaction.command[:, :2])
+        action.reset(torch.tensor([0]))
+        torch.testing.assert_close(action.arm_feedforward[0], torch.zeros(6))
+        torch.testing.assert_close(action.arm_feedforward[1], torch.full((6,), 2.))
+        hook.remove()
+
     def test_force_reset_warmup_and_reference_do_not_cross_envs(self):
         env, _, interaction = self.make_env()
         interaction.reference.fill_(.1)

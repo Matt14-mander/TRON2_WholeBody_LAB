@@ -139,6 +139,48 @@ class FrozenLocomotionAction(ActionTerm):
         self.velocity_scale = torch.tensor(cfg.velocity_scale, device=self.device)
         self.slew_rate = torch.tensor(cfg.slew_rate, device=self.device)
         self._substep = 0
+        self.support_model = None
+        self.support_check = None
+        self.arm_feedforward = torch.zeros_like(self.nominal)
+
+    @torch.no_grad()
+    def update_support(self):
+        # Lazy setup: native reset joint/body states must be available before
+        # comparing the URDF frames with the imported articulation.
+        if self.support_model is None:
+            from pathlib import Path
+            from bipedal_locomotion.controllers.paint_wrench_preview import AddedBodyModel
+            from bipedal_locomotion.controllers.paint_teacher_support import BatchedSupport
+            root = Path(__file__).resolve().parents[5]
+            description = root / "robot_description/tron2"
+            model = AddedBodyModel(description / "SFYG_TRON2A/urdf/robot_rl.urdf",
+                description / "SF_TRON2A/urdf/robot_rl.urdf", self.cfg.payload_mass)
+            self.support_model = BatchedSupport(model, self._asset.joint_names, ARM_JOINT_NAMES, self.device)
+        data = self._asset.data
+        wrench, effort, poses = self.support_model.compute(data.joint_pos,
+            data.projected_gravity_b * 9.81, self._env.command_manager.get_command("interaction"))
+        if self.support_check is None:
+            ids = [self._asset.body_names.index(n) for n in self.support_model.names]
+            native_mass = self._asset.root_physx_view.get_masses()[0, ids].to(self.device)
+            native_com = quat_apply_inverse(data.root_quat_w[0].expand(len(ids), 4),
+                data.body_com_pos_w[0, ids] - data.root_pos_w[0])
+            errors = (native_com - poses[0, :, :3, 3]).norm(dim=-1)
+            mass_errors = (native_mass - self.support_model.mass).abs()
+            valid = bool(((mass_errors <= torch.maximum(native_mass * .05,
+                torch.full_like(native_mass, .001))) & (errors <= .03)).all())
+            self.support_check = {"valid": valid, "bodies": self.support_model.names,
+                "com_error_m": errors.tolist(), "mass_error_kg": mass_errors.tolist()}
+            if not valid:
+                raise RuntimeError(f"Teacher support inertial/frame validation failed: {self.support_check}")
+        if not torch.isfinite(wrench).all() or not torch.isfinite(effort).all():
+            raise RuntimeError("Teacher support produced NaN/Inf")
+        # A held current estimate fills the five samples. This is explicitly
+        # quasi-static support, not the arm-plan inverse-dynamics preview.
+        self.set_low_wrench_prediction(wrench[:, None].expand(-1, 5, -1))
+        age = self._env.episode_length_buf * self._env.step_dt + self._substep * self._env.physics_dt
+        ramp = (age / self.cfg.gravity_ramp_s).clamp(0, 1)
+        limit = data.joint_effort_limits[:, self.arm_ids].clamp(max=self.cfg.gravity_effort_limit)
+        self.arm_feedforward.copy_(effort.clamp(-limit, limit) * ramp[:, None])
 
     @property
     def action_dim(self):
@@ -224,6 +266,8 @@ class FrozenLocomotionAction(ActionTerm):
     @torch.no_grad()
     def apply_actions(self):
         if self._substep % 4 == 0:
+            if self.cfg.native_support:
+                self.update_support()
             tick = self._env._sim_step_counter - 1
             self.sample_histories(tick, self._substep * self._env.physics_dt)
             low_action = self.locomotion(self.proprioception(self._substep * self._env.physics_dt),
@@ -236,7 +280,7 @@ class FrozenLocomotionAction(ActionTerm):
         self._asset.set_joint_position_target(self._processed[:, 3:], joint_ids=self.arm_ids)
         zeros = torch.zeros_like(self.nominal)
         self._asset.set_joint_velocity_target(zeros, joint_ids=self.arm_ids)
-        self._asset.set_joint_effort_target(zeros, joint_ids=self.arm_ids)
+        self._asset.set_joint_effort_target(self.arm_feedforward, joint_ids=self.arm_ids)
         self.executed_arm_target.copy_(self._processed[:, 3:])
         planar = self._env.command_manager.get_command("interaction")
         force = torch.zeros(self.num_envs, 1, 3, device=self.device)
@@ -255,6 +299,7 @@ class FrozenLocomotionAction(ActionTerm):
         self.delta[ids] = 0
         self.last_leg_action[ids] = 0
         self.low_wrench_prediction[ids] = 0
+        self.arm_feedforward[ids] = 0
         self.executed_arm_target[ids] = self.nominal[ids]
         self.leg_target[ids] = self._asset.data.default_joint_pos[ids][:, self.leg_ids]
         self.low_history.reset(ids)
@@ -268,6 +313,11 @@ class FrozenLocomotionActionCfg(ActionTermCfg):
     locomotion_checkpoint: str = ""
     payload_mass: float = .5
     payload_body_name: str = "paint_payload_Link"
+    # The dedicated training entry enables this; legacy support audits retain
+    # their explicitly supplied preview and zero effort for reproducibility.
+    native_support: bool = False
+    gravity_ramp_s: float = 2.
+    gravity_effort_limit: float = 30.
     velocity_scale: tuple = (.35, .2, .4)
     arm_scale: float = .25
     # Base acceleration limits, followed by arm target slew limits (rad/s).
