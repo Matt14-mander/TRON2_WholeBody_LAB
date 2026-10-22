@@ -15,7 +15,7 @@ class ArmTelemetry:
             json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def append(self, *, time_s, phase, q, dq, target, velocity_target, effort,
-               kp, kd, feedback, state_age_s, state_count):
+               kp, kd, feedback, state_age_s, state_count, diagnostics=None):
         q, dq, target, velocity_target, effort, kp, kd = (
             np.array(x, dtype=float, copy=True) for x in
             (q, dq, target, velocity_target, effort, kp, kd))
@@ -31,13 +31,16 @@ class ArmTelemetry:
                 estimated_total_effort=pd + effort, actuator_feedback=feedback).items():
             row[key] = None if value is None else np.asarray(value, dtype=float).tolist()
         self.rows.append(row)
+        if diagnostics is not None:
+            row.update(diagnostics)
 
     @staticmethod
     def summarize(rows):
         result = dict(samples=len(rows))
         for key in ("position_error", "velocity_error", "feedforward_effort",
-                    "estimated_pd_effort", "estimated_total_effort", "actuator_feedback"):
-            valid = [r[key] for r in rows if r[key] is not None]
+                    "estimated_pd_effort", "estimated_total_effort", "actuator_feedback",
+                    "gravity_raw_effort", "gravity_applied_effort"):
+            valid = [r[key] for r in rows if r.get(key) is not None]
             if not valid:
                 result[key] = None
                 continue
@@ -49,6 +52,8 @@ class ArmTelemetry:
             result["state_age_p95_ms"] = float(np.percentile(
                 [r["state_age_s"] for r in rows], 95) * 1000)
             result["unique_state_samples"] = len({r["state_count"] for r in rows})
+            clipped = [r["gravity_clipped"] for r in rows if "gravity_clipped" in r]
+            result["gravity_clipped_fraction"] = np.mean(clipped, axis=0).tolist() if clipped else None
         return result
 
     def save(self, outcome):

@@ -152,7 +152,8 @@ def control(args):
     deployment.build_proprio_observation = v3_observation
     preview = None
     preview_path = None
-    if args.low_wrench != "zero":
+    arm_gravity = None
+    if args.low_wrench != "zero" or args.arm_gravity_compensation:
         sim_root = Path(args.sim_root).expanduser().resolve()
         candidates = [sim_root / "robot-description" / folder / "SFYG_TRON2A/xml/robot.xml"
                       for folder in ("tron2a", "tron2")]
@@ -173,8 +174,18 @@ def control(args):
                                         np.array([0., 0., -np.linalg.norm(shadow.opt.gravity)]))
         print(f"[V3 PREVIEW] source={preview_path}; mode={args.low_wrench}; "
               f"added_mass={sum(b[0] for b in preview.bodies.values()):.6f}kg; "
-              f"payload_mass={args.payload_mass}; private model, observation only", flush=True)
+              f"payload_mass={args.payload_mass}; private model; arm gravity feedforward={args.arm_gravity_compensation}", flush=True)
         print(f"[V3 PREVIEW CHECK] joints={len(mapping)} gravity={initial.tolist()}", flush=True)
+        if args.arm_gravity_compensation:
+            from arm_gravity_compensation import ArmGravityCompensation
+            arm_gravity = ArmGravityCompensation(shadow, mapping, config_check.wire_joint_names[10:16],
+                args.arm_gravity_max_effort, args.arm_gravity_ramp_time)
+            initial_positions = dict(zip(config_check.wire_joint_names, config_check.default_q))
+            if args.arm_pose == "folded":
+                initial_positions.update(FOLDED_ARM)
+            initial_effort = arm_gravity.compute(initial_positions, [0., 0., -np.linalg.norm(shadow.opt.gravity)])
+            print(f"[V3 ARM GRAVITY CHECK] raw_Nm={initial_effort.tolist()} "
+                  f"limits_Nm={arm_gravity.limits.tolist()}; ramp={arm_gravity.ramp_time}s", flush=True)
         if args.preview_only:
             print("[V3 PREVIEW CHECK] passed; no SDK connection started", flush=True)
             return
@@ -210,6 +221,7 @@ def control(args):
             self.arm_recorder = None
             self._record_policy_publish = False
             self._record_phase = "hold"
+            self._gravity_context = None
             super().__init__(*a, **kw)
             if preview is not None:
                 print("[V3 PREVIEW JOINTS] " + json.dumps(
@@ -250,6 +262,8 @@ def control(args):
                     arguments=vars(args), checkpoint=manifest["checkpoint"],
                     publish_hz=self.config.loop_frequency,
                     policy_hz=self.config.policy_frequency,
+                    arm_gravity_compensation=args.arm_gravity_compensation,
+                    gravity_effort_limits=None if arm_gravity is None else arm_gravity.limits.tolist(),
                     position_error="measured minus commanded, rad; velocity rad/s; effort Nm",
                     feedback_source="SDK RobotState.tau; SFYG simulator publishes actuator_force (unit gear)",
                     estimate="Kp*(q_target-q)+Kd*(dq_target-dq)+feedforward; latest received state, not physics-synchronous",
@@ -261,6 +275,18 @@ def control(args):
             self._record_phase = ("aborted" if arm_requested and self.arm_test is None else
                 self.arm_test.phase(solution.time) if self.arm_test is not None else
                 "trajectory" if self.trajectory is not None else "hold")
+            if arm_gravity is not None:
+                q, _, quaternion, _ = self._snapshot()
+                positions = dict(zip(self.config.wire_joint_names, q))
+                gravity = projected_gravity_from_wxyz(quaternion) * np.linalg.norm(arm_gravity.model.opt.gravity)
+                raw = arm_gravity.compute(positions, gravity)
+                elapsed = max(0., time.monotonic()-self.rl_started) if self.rl_started is not None else 0.
+                applied, weight = arm_gravity.command(raw, elapsed)
+                self._gravity_context = dict(gravity_raw_effort=raw.tolist(),
+                    gravity_applied_effort=applied.tolist(), gravity_weight=weight,
+                    gravity_clipped=(np.abs(raw) > arm_gravity.limits).tolist())
+                # Replace the solution passed to publication, not just inference.
+                solution = replace(solution, arm_effort=np.asarray(solution.arm_effort)+applied)
             self._record_policy_publish = True
             try:
                 return super()._publish_policy_targets(targets, solution)
@@ -288,7 +314,8 @@ def control(args):
                     kp=self.config.kp[10:16] if kp is None else np.asarray(kp)[10:16],
                     kd=self.config.kd[10:16] if kd is None else np.asarray(kd)[10:16],
                     feedback=None if feedback is None else np.asarray(feedback)[10:16],
-                    state_age_s=now-stamp, state_count=count)
+                    state_age_s=now-stamp, state_count=count,
+                    diagnostics=self._gravity_context)
             result = super()._publish(q, dq=dq, tau=tau, kp=kp, kd=kd)
             if record is not None:
                 self.arm_recorder.append(**record)
@@ -315,7 +342,7 @@ def control(args):
                     self.arm_sequence_completed |= stage == "complete" and self.arm_sequence_started
             gravity = projected_gravity_from_wxyz(quaternion)
             preview_start = time.monotonic()
-            if preview is not None:
+            if preview is not None and args.low_wrench != "zero":
                 positions = dict(zip(self.config.wire_joint_names, q))
                 g = gravity * np.linalg.norm(preview.model.opt.gravity)
                 request = dict(positions=positions, gravity=g, arm_test=self.arm_test,
@@ -409,6 +436,7 @@ def control(args):
             arm_pose=args.arm_pose,
             low_wrench=args.low_wrench, payload_mass=args.payload_mass,
             preview_execution=args.preview_execution,
+            arm_gravity_compensation=args.arm_gravity_compensation,
             record_dir=str(recorder.directory) if recorder is not None else None,
             ocs2_trajectory=args.ocs2_trajectory,
             arm_test_requested=arm_requested,
@@ -451,6 +479,9 @@ def main():
     ctl.add_argument("--sim-root", help="Same simulator root as terminal A; required for gravity/plan")
     ctl.add_argument("--preview-only", action="store_true", help="Validate model, 18 joints and gravity without connecting to SDK")
     ctl.add_argument("--record-dir", help="New directory for buffered arm errors, torque telemetry and phase summaries")
+    ctl.add_argument("--arm-gravity-compensation", action="store_true", help="Add model-based gravity effort to actual arm SDK commands (simulation only)")
+    ctl.add_argument("--arm-gravity-ramp-time", type=float, default=2.)
+    ctl.add_argument("--arm-gravity-max-effort", type=float, default=30., help="Symmetric per-joint gravity feedforward cap, additionally bounded by native motor limits (Nm)")
     ctl.add_argument("--preview-execution", choices=("async", "sync"), default="async")
     ctl.add_argument("--preview-max-age", type=float, default=.10, help="Stop if asynchronous prediction is older than this many seconds")
     ctl.add_argument("--publish-frequency", type=int, choices=(100, 500), default=500,
@@ -484,9 +515,15 @@ def main():
     if args.mode == "control":
         if not math.isfinite(args.preview_max_age) or args.preview_max_age <= 0:
             parser.error("--preview-max-age must be finite and positive")
-        if args.preview_only and args.low_wrench == "zero":
+        if args.arm_gravity_compensation:
+            if any(not math.isfinite(x) or x <= 0 for x in
+                   (args.arm_gravity_ramp_time, args.arm_gravity_max_effort)):
+                parser.error("Gravity compensation ramp time and effort cap must be positive and finite")
+            if args.ocs2_trajectory:
+                parser.error("Do not add arm gravity compensation to OCS2 effort; it may already include gravity")
+        if args.preview_only and args.low_wrench == "zero" and not args.arm_gravity_compensation:
             parser.error("--preview-only requires --low-wrench gravity or plan")
-        if args.low_wrench != "zero":
+        if args.low_wrench != "zero" or args.arm_gravity_compensation:
             if args.sim_root is None or not Path(args.sim_root).expanduser().is_dir():
                 parser.error("gravity/plan requires an existing --sim-root")
             if args.ocs2_trajectory:

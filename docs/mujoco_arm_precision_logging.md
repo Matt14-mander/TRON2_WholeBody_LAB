@@ -64,3 +64,42 @@ run_arm_record arm_walk --command 0.15 0 0 \
 ```
 
 Review `arm_report.json` for each case and `[V3 RESULT]` timing. Preserve approximately 50 Hz inference before comparing tracking. Share the three reports first; retain JSONL for time-series plots and signed arm2/arm3 load-error analysis.
+
+## Gravity feedforward A/B
+
+The new opt-in `--arm-gravity-compensation` adds gravity compensation to **published arm SDK efforts**, leaving the frozen policy and PD gains unchanged. Baseline commands without this option retain zero added gravity effort. This implementation is for the loopback MuJoCo diagnostic; it does not modify Isaac Lab teacher actions or hardware deployment.
+
+The calculator uses its own MjData and the same compiled full SFYG/payload model as the preview. It reads all measured joints and projected gravity in base axes, evaluates COM Jacobians, and computes `-sum(J_com.T @ mass @ gravity)` for the six arm DoFs. Thus it includes the articulated arm, gripper and payload gravity at their measured poses. It does not cancel contact forces, acceleration, Coriolis or friction. It does not use the base-reaction wrench as a joint torque. Native gravity-compensated assets and non-unit-gear arm motors are rejected; OCS2 efforts cannot be combined with this option because they may already include compensation.
+
+`--arm-gravity-ramp-time 2` smoothly introduces the effort over the first two policy seconds; `--arm-gravity-max-effort 30` caps each gravity feedforward component at 30 Nm (also constrained by native actuator control/force ranges). This cap applies to added gravity effort, not total PD+feedforward motor effort. Shutdown damping and pose preparation receive no added effort. Logs additionally contain raw/applied gravity efforts, ramp weight, and per-joint clipping flags; summaries include clipping fractions. Clipping fractions describe the feedforward cap, not total actuator saturation.
+
+Local full-asset check with 0.5 kg, dimensions 0.20/0.12/0.08 m and offset 0.15/0/0 m:
+
+- Nominal arm, vertical gravity: `[0, -8.94533, -7.79026, -1.79584, 0, 0.00037]` Nm.
+- Approximate recorded sagged pose and tilt: `[0.00337, -9.86673, -7.51159, -1.58466, -0.00030, 0.00066]` Nm. This agrees closely with the previous static SDK torque averages. It is a local model check, not a new server rollout.
+- COM-Jacobian calculation agrees with independent MuJoCo recursive Newton–Euler inverse dynamics at the checked pose within 2e-15 Nm. Local mean compute time was about 0.15 ms; recheck actual server control timing.
+
+After defining `run_arm_record` above, restart simulator A before each command. Use new case names/directories:
+
+```bash
+# First inspect the dry-run torque before any SDK connection (add the usual
+# deploy/model/sim/payload arguments from run_arm_record):
+# ... control ... --low-wrench plan --arm-gravity-compensation --preview-only
+
+run_arm_record hold_gravity_ff --command 0 0 0 \
+  --arm-gravity-compensation --arm-gravity-ramp-time 2 --arm-gravity-max-effort 30
+
+# Restart A after hold completes. Then:
+run_arm_record arm_stand_gravity_ff --command 0 0 0 \
+  --arm-gravity-compensation \
+  --arm-test-offsets 0 0.1 0 -0.05 0 0 \
+  --arm-test-start-delay 7 --arm-test-move-duration 3 --arm-test-hold-duration 2
+
+# Restart A again. Then:
+run_arm_record arm_walk_gravity_ff --command 0.15 0 0 \
+  --arm-gravity-compensation \
+  --arm-test-offsets 0 0.1 0 -0.05 0 0 \
+  --arm-test-start-delay 7 --arm-test-move-duration 3 --arm-test-hold-duration 2
+```
+
+First assess static last-5-second errors, PD effort versus gravity feedforward, and cap clipping. A useful initial diagnostic target is arm2/arm3 absolute mean position error below 0.02 rad, with stable base tilt, no abort and policy timing near 50 Hz; this is an engineering target, not a proven PAINT acceptance threshold. Inspect moving-phase error RMS separately before considering dynamic inverse-dynamics feedforward.
