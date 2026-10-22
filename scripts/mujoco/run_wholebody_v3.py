@@ -40,6 +40,29 @@ def simulate(args):
         raise FileNotFoundError(root / "simulator.py")
     sys.path.insert(0, str(root))
     from tron2_sim.variants import sfyg
+    if args.task_record_dir:
+        from task_space_telemetry import TaskSpaceRecorder
+        from tron2_sim.variants import BASE_REGISTRY
+        from tron2_sim.core import SimCore
+        recorder = TaskSpaceRecorder(args.task_record_dir, args.payload_up_axis, vars(args))
+        original_build, original_run = BASE_REGISTRY["SFYG"], SimCore.run
+
+        def build_with_recorder(*a, **kw):
+            spec = original_build(*a, **kw)
+            spec.modules.append(recorder)
+            return spec
+
+        def run_with_recorder(self, *a, **kw):
+            try:
+                return original_run(self, *a, **kw)
+            finally:
+                # simulator.main exits via os._exit after run; save before that.
+                recorder.save()
+                if not recorder.attached or recorder.error:
+                    raise RuntimeError(f"Task-space recording invalid: {recorder.error}")
+
+        BASE_REGISTRY["SFYG"] = build_with_recorder
+        SimCore.run = run_with_recorder
     if args.arm_pose == "folded":
         # Change only initial joint positions; preserve mass, PD and effort limits.
         sfyg.INITIAL_ARM_AND_GRIPPER = {**sfyg.INITIAL_ARM_AND_GRIPPER, **FOLDED_ARM}
@@ -257,7 +280,9 @@ def control(args):
                   "MuJoCo MIT PD still runs at its physics rate", flush=True)
             if args.record_dir:
                 from arm_telemetry import ArmTelemetry
+                from task_space_telemetry import clock_contract
                 self.arm_recorder = ArmTelemetry(args.record_dir, dict(
+                    clock=clock_contract(),
                     joints=list(self.config.wire_joint_names[10:16]),
                     arguments=vars(args), checkpoint=manifest["checkpoint"],
                     publish_hz=self.config.loop_frequency,
@@ -314,7 +339,7 @@ def control(args):
                     kp=self.config.kp[10:16] if kp is None else np.asarray(kp)[10:16],
                     kd=self.config.kd[10:16] if kd is None else np.asarray(kd)[10:16],
                     feedback=None if feedback is None else np.asarray(feedback)[10:16],
-                    state_age_s=now-stamp, state_count=count,
+                    state_age_s=now-stamp, state_count=count, monotonic_s=now,
                     diagnostics=self._gravity_context)
             result = super()._publish(q, dq=dq, tau=tau, kp=kp, kd=kd)
             if record is not None:
@@ -461,6 +486,8 @@ def main():
     sim.add_argument("--sim-root", required=True)
     sim.add_argument("--arm-pose", choices=("configured", "folded"), default="configured")
     sim.add_argument("--headless", action="store_true")
+    sim.add_argument("--task-record-dir", help="New simulator-side directory; save task-space truth on normal exit/Ctrl+C, then align offline with control logs")
+    sim.add_argument("--payload-up-axis", nargs=3, type=float, default=[0., 0., 1.], help="Payload body-frame normal used for tilt; default local +Z (may not be vertical at reset)")
     sim.add_argument("--external-wrench", nargs=6, type=float)
     sim.add_argument("--wrench-body", default="gripper_base_Link")
     sim.add_argument("--wrench-frame", choices=("world", "body"), default="world")
@@ -512,6 +539,9 @@ def main():
                 or any(not math.isfinite(v) or v <= 0 for v in (
                     args.wrench_duration, args.wrench_ramp_time, args.wrench_frequency))):
             parser.error("wrench must be finite; start nonnegative; duration/ramp/frequency positive")
+    if args.mode == "sim" and (any(not math.isfinite(x) for x in args.payload_up_axis)
+                              or sum(x*x for x in args.payload_up_axis) < 1e-18):
+        parser.error("Payload up axis must be finite and nonzero")
     if args.mode == "control":
         if not math.isfinite(args.preview_max_age) or args.preview_max_age <= 0:
             parser.error("--preview-max-age must be finite and positive")

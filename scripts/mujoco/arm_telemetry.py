@@ -15,7 +15,7 @@ class ArmTelemetry:
             json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def append(self, *, time_s, phase, q, dq, target, velocity_target, effort,
-               kp, kd, feedback, state_age_s, state_count, diagnostics=None):
+               kp, kd, feedback, state_age_s, state_count, diagnostics=None, monotonic_s=None):
         q, dq, target, velocity_target, effort, kp, kd = (
             np.array(x, dtype=float, copy=True) for x in
             (q, dq, target, velocity_target, effort, kp, kd))
@@ -23,6 +23,7 @@ class ArmTelemetry:
         velocity_error = dq - velocity_target
         pd = -kp * position_error - kd * velocity_error
         row = dict(time_s=float(time_s), phase=phase,
+                   monotonic_s=monotonic_s,
                    state_age_s=float(state_age_s), state_count=int(state_count))
         for key, value in dict(q=q, dq=dq, target=target,
                 velocity_target=velocity_target, position_error=position_error,
