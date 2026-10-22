@@ -39,3 +39,20 @@ Verified offline: compile the real payload XML, compare gravity to the static
 five-point preview, and check analytical forces/torques with a small MuJoCo
 fixture. The fixture also verifies that preview computation leaves a separate
 live MjData untouched. Full SDK/viewer operation must be verified on the server.
+
+## Timing and aborted tests
+
+`completed` still means the controller loop reached its requested duration. An
+arm test that aborts can therefore have completed=true. Use the added
+`requested_test_completed` together with the arm started/completed/aborted flags.
+`timing` reports observed inference-start frequency and P95 inference intervals,
+preview costs, and inference costs. The target remains 50Hz. These are wall-clock
+measurements and do not establish simulator real-time performance.
+
+The preview now short-circuits a constant horizon to its equivalent gravity
+sequence, vectorizes body balances, and uses mj_kinematics instead of mj_forward
+for the private model. The predicted dynamics and safety thresholds are retained.
+On the local asset, median static-plan time changed from about 11ms to 0.19ms,
+and moving-plan time from about 9ms to 3ms. Server timing must be measured.
+The numeric preview is also checked against MuJoCo mj_rne at nonzero joint
+position, velocity and acceleration on an independent small-model fixture.

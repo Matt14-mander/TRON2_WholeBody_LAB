@@ -29,7 +29,8 @@ def origin(element):
 
 
 def vee(skew):
-    return np.array([skew[2, 1]-skew[1, 2], skew[0, 2]-skew[2, 0], skew[1, 0]-skew[0, 1]])*.5
+    return np.stack([skew[..., 2, 1]-skew[..., 1, 2], skew[..., 0, 2]-skew[..., 2, 0],
+                     skew[..., 1, 0]-skew[..., 0, 1]], axis=-1)*.5
 
 
 def body_reaction(mass, com, gravity, acceleration, inertia, omega, alpha):
@@ -89,26 +90,36 @@ class AddedBodyModel:
 
     def gravity_wrench(self, positions, gravity):
         states = self.states(positions)
-        return sum((body_reaction(m, states[name][:3, 3], gravity, np.zeros(3),
-                    np.zeros((3, 3)), np.zeros(3), np.zeros(3))
-                    for name, (m, _, _) in self.bodies.items()), np.zeros(6))
+        if not self.bodies:
+            return np.zeros(6)
+        force = np.array([b[0] for b in self.bodies.values()])[:, None] * np.asarray(gravity)
+        com = np.array([states[name][:3, 3] for name in self.bodies])
+        return np.r_[force.sum(axis=0), np.cross(com, force).sum(axis=0)]
 
     def preview(self, position_at, time_s, gravity, h=.002):
+        positions = [[dict(position_at(time_s+offset+d)) for d in (-h, 0., h)] for offset in TIMES]
+        first = positions[0][0]
+        if all(q == first for triple in positions for q in triple):
+            return np.repeat(self.gravity_wrench(first, gravity)[None], len(TIMES), axis=0)
+        if not self.bodies:
+            return np.zeros((len(TIMES), 6))
+        masses = np.array([b[0] for b in self.bodies.values()])[:, None]
+        inertias = np.array([b[2] for b in self.bodies.values()])
         result = []
-        for offset in TIMES:
-            t = time_s + offset
-            minus, now, plus = [self.states(position_at(t+d)) for d in (-h, 0., h)]
-            wrench = np.zeros(6)
-            for name, (mass, _, inertia_local) in self.bodies.items():
-                a, b, c = minus[name], now[name], plus[name]
-                rotation_now = b[:3, :3]
-                rd = (c[:3, :3]-a[:3, :3])/(2*h)
-                rdd = (c[:3, :3]-2*rotation_now+a[:3, :3])/(h*h)
-                acceleration = (c[:3, 3]-2*b[:3, 3]+a[:3, 3])/(h*h)
-                omega, alpha = vee(rd @ rotation_now.T), vee(rdd @ rotation_now.T)
-                inertia = rotation_now @ inertia_local @ rotation_now.T
-                wrench += body_reaction(mass, b[:3, 3], gravity, acceleration, inertia, omega, alpha)
-            result.append(wrench)
+        for triple in positions:
+            state = [self.states(q) for q in triple]
+            a, b, c = [np.array([s[name] for name in self.bodies]) for s in state]
+            r = b[:, :3, :3]
+            rt = r.swapaxes(-1, -2)
+            rd = (c[:, :3, :3]-a[:, :3, :3])/(2*h)
+            rdd = (c[:, :3, :3]-2*r+a[:, :3, :3])/(h*h)
+            acceleration = (c[:, :3, 3]-2*b[:, :3, 3]+a[:, :3, 3])/(h*h)
+            omega, alpha = vee(rd @ rt), vee(rdd @ rt)
+            inertia = r @ inertias @ rt
+            force = masses * (gravity-acceleration)
+            moment = (np.cross(b[:, :3, 3], force)-np.einsum('nij,nj->ni', inertia, alpha)
+                      -np.cross(omega, np.einsum('nij,nj->ni', inertia, omega)))
+            result.append(np.r_[force.sum(axis=0), moment.sum(axis=0)])
         result = np.asarray(result)
         if not np.isfinite(result).all():
             raise ValueError("Non-finite inverse-dynamics preview")
@@ -176,7 +187,9 @@ class MuJoCoAddedBodyModel(AddedBodyModel):
         self.mj.mj_resetData(self.model, self.data)
         for name, value in positions.items():
             self.data.qpos[self.addresses[resolved[name]]] = value
-        self.mj.mj_forward(self.model, self.data)
+        # Only poses/COM/inertial-frame rotations are needed. Full mj_forward
+        # also runs dynamics, collision and constraints in this private model.
+        self.mj.mj_kinematics(self.model, self.data)
         r = self.data.xmat[self.base_id].reshape(3, 3).T
         p = self.data.xpos[self.base_id]
         out = {}

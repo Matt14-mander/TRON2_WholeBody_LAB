@@ -93,6 +93,18 @@ class WrenchTests(unittest.TestCase):
                                    preview.gravity_wrench({"q": 0}, gravity))
         with self.assertRaises(ValueError):
             preview.states({"q": 0, "q_Joint": 0})
+        # Independent MuJoCo inverse dynamics oracle at nonzero q, dq, ddq.
+        dynamic = preview.preview(lambda t:{"q":.3+.2*t+.2*t*t}, 0., gravity)[0]
+        live.qpos[-1] = .3
+        live.qvel[:] = 0
+        live.qvel[-1] = .2
+        mujoco.mj_forward(model, live)
+        live.qacc[:] = 0
+        live.qacc[-1] = .4
+        required = np.zeros(model.nv)
+        mujoco.mj_rne(model, live, 1, required)
+        expected = -required[:6] - np.r_[gravity, np.zeros(3)]  # remove 1kg base weight
+        np.testing.assert_allclose(dynamic, expected, atol=3e-5)
 
     @unittest.skipUnless(importlib.util.find_spec("mujoco"), "MuJoCo not installed")
     def test_full_sdk_joint_names_resolve_both_mujoco_asset_conventions(self):

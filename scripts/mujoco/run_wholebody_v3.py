@@ -176,6 +176,9 @@ def control(args):
             self.arm_sequence_started = False
             self.arm_sequence_completed = False
             self.arm_sequence_aborted = False
+            self.inference_starts = []
+            self.preview_cost_ms = []
+            self.inference_cost_ms = []
             super().__init__(*a, **kw)
             if preview is not None:
                 print("[V3 PREVIEW JOINTS] " + json.dumps(
@@ -213,6 +216,8 @@ def control(args):
             return super()._move_to_default(start_q)
 
         def _infer(self, proprio, solution):
+            infer_start = time.monotonic()
+            self.inference_starts.append(infer_start)
             if self.rl_started is None:
                 self.rl_started = time.monotonic()
             q, _, quaternion, _ = self._snapshot()
@@ -224,6 +229,7 @@ def control(args):
                     self.arm_sequence_started |= stage in ("outbound", "hold", "return")
                     self.arm_sequence_completed |= stage == "complete" and self.arm_sequence_started
             gravity = projected_gravity_from_wxyz(quaternion)
+            preview_start = time.monotonic()
             if preview is not None:
                 positions = dict(zip(self.config.wire_joint_names, q))
                 g = gravity * np.linalg.norm(preview.model.opt.gravity)
@@ -240,20 +246,31 @@ def control(args):
                         return out
                     prediction = preview.preview(position_at, solution.time, g)
                 solution = replace(solution, wrench_prediction=prediction)
+            self.preview_cost_ms.append((time.monotonic()-preview_start)*1000.)
             tilt = float(np.degrees(np.arccos(np.clip(-gravity[2], -1., 1.))))
             self.peak_tilt = max(self.peak_tilt, tilt)
             if not math.isfinite(tilt) or tilt > 35.:
                 raise RuntimeError(f"Tilt limit exceeded: {tilt:.2f} deg")
             action = super()._infer(proprio, solution)
+            self.inference_cost_ms.append((time.monotonic()-infer_start)*1000.)
             if self.policy_calls % 50 == 0:
                 print(f"[V3 RL] t={time.monotonic() - self.rl_started:.2f}s "
                       f"calls={self.policy_calls} tilt={tilt:.2f}deg "
                       f"action_max={np.max(np.abs(action)):.3f} "
                       f"arm_q={np.round(q[10:16], 3).tolist()} "
                       f"arm_target={np.round(solution.arm_position, 3).tolist()} "
-                      f"wrench0={np.round(solution.wrench_prediction[0], 3).tolist()}", flush=True)
+                      f"wrench0={np.round(solution.wrench_prediction[0], 3).tolist()} "
+                      f"preview_ms={self.preview_cost_ms[-1]:.2f} infer_ms={self.inference_cost_ms[-1]:.2f}", flush=True)
             self.policy_calls += 1
             return action
+
+        def timing_report(self):
+            intervals = np.diff(self.inference_starts)
+            return dict(target_hz=self.config.policy_frequency,
+                observed_hz=float(1/intervals.mean()) if len(intervals) else None,
+                interval_p95_ms=float(np.percentile(intervals, 95)*1000) if len(intervals) else None,
+                preview_p95_ms=float(np.percentile(self.preview_cost_ms, 95)) if self.preview_cost_ms else None,
+                infer_p95_ms=float(np.percentile(self.inference_cost_ms, 95)) if self.inference_cost_ms else None)
 
     controller = None
     completed = False
@@ -280,6 +297,9 @@ def control(args):
         error = f"{type(exc).__name__}: {exc}"
     finally:
         print("[V3 RESULT] " + json.dumps(dict(completed=completed, error=error,
+            requested_test_completed=bool(completed and (not arm_requested or (
+                getattr(controller, "arm_sequence_completed", False) and not getattr(controller, "arm_sequence_aborted", False)))),
+            timing=controller.timing_report() if controller is not None else None,
             arm_pose=args.arm_pose,
             low_wrench=args.low_wrench, payload_mass=args.payload_mass,
             ocs2_trajectory=args.ocs2_trajectory,
