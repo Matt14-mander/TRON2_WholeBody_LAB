@@ -19,6 +19,17 @@ ROOT = Path(__file__).resolve().parents[2]
 FOLDED_ARM = {f"arm{i}_Joint": 0. for i in range(1, 7)}
 
 
+def configure_publish_rate(config, publish_hz):
+    """Preserve the 50Hz policy while changing SDK target republication only."""
+    policy_hz = float(config.policy_frequency)
+    ratio = publish_hz / policy_hz
+    if (not math.isfinite(publish_hz) or not math.isclose(policy_hz, 50., abs_tol=1e-6)
+            or ratio < 1 or not math.isclose(ratio, round(ratio), abs_tol=1e-6)):
+        raise ValueError("SDK publication must be an integer multiple of the 50Hz policy")
+    config.loop_frequency = float(publish_hz)
+    config.decimation = int(round(ratio))
+
+
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -225,6 +236,10 @@ def control(args):
                     or not np.allclose(self.config.gait, [.8, .5, .5, .2])
                     or abs(self.config.policy_frequency - 50.) > 1e-6):
                 raise ValueError("Expected action scale .25, gait .8/.5/.5/.2 and 50Hz policy")
+            configure_publish_rate(self.config, args.publish_frequency)
+            print(f"[V3 CLOCK] publish={self.config.loop_frequency:g}Hz "
+                  f"policy={self.config.policy_frequency:g}Hz decimation={self.config.decimation}; "
+                  "MuJoCo MIT PD still runs at its physics rate", flush=True)
 
         def _move_to_default(self, start_q):
             if args.arm_pose == "folded" and not np.allclose(
@@ -289,6 +304,7 @@ def control(args):
         def timing_report(self):
             intervals = np.diff(self.inference_starts)
             return dict(target_hz=self.config.policy_frequency,
+                configured_publish_hz=self.config.loop_frequency,
                 observed_hz=float(1/intervals.mean()) if len(intervals) else None,
                 interval_p95_ms=float(np.percentile(intervals, 95)*1000) if len(intervals) else None,
                 preview_p95_ms=float(np.percentile(self.preview_cost_ms, 95)) if self.preview_cost_ms else None,
@@ -371,6 +387,8 @@ def main():
     ctl.add_argument("--preview-only", action="store_true", help="Validate model, 18 joints and gravity without connecting to SDK")
     ctl.add_argument("--preview-execution", choices=("async", "sync"), default="async")
     ctl.add_argument("--preview-max-age", type=float, default=.10, help="Stop if asynchronous prediction is older than this many seconds")
+    ctl.add_argument("--publish-frequency", type=int, choices=(100, 500), default=500,
+                     help="SDK target publication rate; policy stays 50Hz. Use 100 for a larger per-tick compute budget")
     motion = ctl.add_mutually_exclusive_group()
     motion.add_argument("--arm-test-joint", choices=tuple(f"arm{i}" for i in range(1, 7)))
     motion.add_argument("--arm-test-offsets", nargs=6, type=float)

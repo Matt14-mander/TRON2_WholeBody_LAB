@@ -72,3 +72,13 @@ control. Original tilt and arm motion guards stay active. Sync calculation is
 available with `--preview-execution sync` for comparison. No background worker is
 started by `--preview-only`. A worker does not guarantee 50Hz; inspect measured
 timing on the server, including worker cost and prediction age P95.
+
+The parent SDK loop triggers inference by publication-loop count. With 500Hz
+publication, a 3-6ms inference exceeds its 2ms tick and can reset the scheduler
+deadline even when inference takes less than the 20ms policy period. The optional
+`--publish-frequency 100` gives each publication tick 10ms and sets decimation=2,
+preserving the requested policy rate of 50Hz. Default remains 500Hz/decimation=10
+for comparison. This changes SDK target republication timing; it does not change
+the simulator physics step, the per-physics-step MIT PD computation, network
+weights, gains or wrench scales. The server must verify the actual inference
+rate and motion behavior at the new publication rate.
