@@ -165,6 +165,24 @@ class TeacherTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             core.admittance_step(velocity, force, .04, (0, 4, .5), (20, 20, 2), (.35, .2, .4))
 
+    def test_deadzone_and_released_hold_are_not_a_force_override(self):
+        env, action, interaction = self.make_env()
+        action.cfg.base_deadzone = .15
+        action.process_actions(torch.full((2, 9), .1))
+        torch.testing.assert_close(action.processed_actions[:, :3], torch.zeros(2, 3))
+        action.process_actions(torch.ones(2, 9))
+        self.assertTrue((action.processed_actions[:, :3] > 0).all())
+        interaction._command.zero_()
+        interaction.reference.zero_()
+        env.scene["robot"].data.root_lin_vel_b[:, 1] = .2
+        self.assertTrue((self.native.released_hold(env) > 0).all())
+        interaction.reference.fill_(.05)  # force released but admittance still decaying
+        torch.testing.assert_close(self.native.released_hold(env), torch.zeros(2))
+        self.assertTrue((self.native.target_magnitude(env) > 0).all())
+        action.cfg.require_bounded_actions = True
+        with self.assertRaises(ValueError):
+            action.process_actions(torch.full((2, 9), 2.))
+
     def test_force_envelope_has_zero_release(self):
         phase = torch.tensor([-.1, 0., .05, .5, .95, 1., 1.1])
         torch.testing.assert_close(core.force_envelope(phase, torch.zeros(7, dtype=torch.bool)),
@@ -337,7 +355,8 @@ class TeacherTests(unittest.TestCase):
         low_before = {k: v.clone() for k, v in action.locomotion.state_dict().items()}
         with contextlib.redirect_stdout(io.StringIO()):
             encoder = MLP_Encoder(num_input_dim=1, num_output_dim=0, hidden_dims=[1])
-            teacher = ActorCritic(102, 109, 9, actor_hidden_dims=[16], critic_hidden_dims=[16])
+            teacher = ActorCritic(102, 109, 9, actor_hidden_dims=[16], critic_hidden_dims=[16],
+                                  bounded_distribution=True, init_noise_std=.08)
         ppo = PPO(2, encoder, teacher, num_learning_epochs=1, num_mini_batches=1, device="cpu")
         self.assertIsNone(ppo.extra_optimizer)
         ppo.init_storage(2, 4, [99], [109], [1], [3], [9])
@@ -347,6 +366,7 @@ class TeacherTests(unittest.TestCase):
                 obs = self.native.teacher_observation(env)
                 critic = self.native.critic_observation(env)
                 high = ppo.act(obs, torch.zeros(2, 1), torch.zeros(2, 3), critic)
+                self.assertTrue((high.abs() < 1).all())
                 ppo.process_env_step(torch.tensor([1., -.2]), torch.zeros(2, dtype=torch.long), {}, obs)
             ppo.compute_returns(torch.cat((critic, torch.zeros(2, 3)), -1))
         losses = ppo.update()

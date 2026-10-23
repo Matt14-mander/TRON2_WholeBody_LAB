@@ -228,6 +228,8 @@ class FrozenLocomotionAction(ActionTerm):
     def process_actions(self, actions):
         if not torch.isfinite(actions).all():
             raise ValueError("Teacher action contains NaN/Inf.")
+        if self.cfg.require_bounded_actions and (actions.abs() > 1 + 1e-6).any():
+            raise ValueError("Teacher v2 requires bounded policy samples, not hard-clipped unbounded actions")
         # Capture the preceding executed arm target before accepting a new target.
         self.sample_histories(self._env._sim_step_counter)
         self._raw.copy_(actions)
@@ -235,7 +237,7 @@ class FrozenLocomotionAction(ActionTerm):
         self._processed.copy_(bounded_targets(actions, self.previous, self.nominal,
                                               self.limits[..., 0], self.limits[..., 1],
                                               self.velocity_scale, self.cfg.arm_scale,
-                                              self.slew_rate, self._env.step_dt))
+                                              self.slew_rate, self._env.step_dt, self.cfg.base_deadzone))
         self.delta.copy_(self._processed - self.previous)
         self._env.command_manager.get_command("base_velocity").copy_(self._processed[:, :3])
         # Initial settling is a stand/hold interval, not a chance to exploit reset motion.
@@ -316,6 +318,8 @@ class FrozenLocomotionActionCfg(ActionTermCfg):
     # The dedicated training entry enables this; legacy support audits retain
     # their explicitly supplied preview and zero effort for reproducibility.
     native_support: bool = False
+    base_deadzone: float = 0.  # legacy audits; dedicated teacher entry sets .15
+    require_bounded_actions: bool = False
     gravity_ramp_s: float = 2.
     gravity_effort_limit: float = 30.
     velocity_scale: tuple = (.35, .2, .4)
@@ -408,6 +412,25 @@ def arm_recentering(env):
     term = controller(env)
     released = torch.linalg.vector_norm(env.command_manager.get_command("interaction"), dim=-1) < .05
     return released * (term._asset.data.joint_pos[:, term.arm_ids] - term.nominal).square().sum(-1)
+
+
+def target_magnitude(env):
+    term = controller(env)
+    normalized = torch.cat((term.processed_actions[:, :3] / term.velocity_scale,
+        (term.processed_actions[:, 3:] - term.nominal) / term.cfg.arm_scale), -1)
+    return normalized.square().mean(-1)
+
+
+def released_hold(env):
+    """Penalize real base motion and requested motion only after reference decays."""
+    term = controller(env)
+    force = env.command_manager.get_command("interaction")
+    quiet = ((force[:, :2].abs().amax(-1) < .05) & (force[:, 2].abs() < .005)
+             & (reference_observation(env).abs().amax(-1) < .01))
+    data = term._asset.data
+    actual = torch.cat((data.root_lin_vel_b[:, :2] / .05, data.root_ang_vel_b[:, 2:3] / .1), -1)
+    requested = term.processed_actions[:, :3] / term.velocity_scale
+    return quiet * (actual.square().clamp(max=25).mean(-1) + requested.square().mean(-1))
 
 
 def tilted_or_low(env, max_tilt_deg=35., min_height=.45):

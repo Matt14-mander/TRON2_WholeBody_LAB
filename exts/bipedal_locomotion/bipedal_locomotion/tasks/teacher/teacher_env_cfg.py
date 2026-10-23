@@ -68,6 +68,8 @@ class TeacherRewardsCfg:
     base_vertical_motion = RewTerm(func=locomotion_mdp.lin_vel_z_l2, weight=-.5)
     base_roll_pitch_velocity = RewTerm(func=locomotion_mdp.ang_vel_xy_l2, weight=-.05)
     target_rate = RewTerm(func=mdp.target_rate, weight=-.1)
+    target_magnitude = RewTerm(func=mdp.target_magnitude, weight=-.1)
+    released_hold = RewTerm(func=mdp.released_hold, weight=-1.)
     arm_recentering = RewTerm(func=mdp.arm_recentering, weight=-.2)
     arm_joint_limits = RewTerm(func=locomotion_mdp.joint_pos_limits, weight=-2.,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=list(ARM_JOINT_NAMES), preserve_order=True)})

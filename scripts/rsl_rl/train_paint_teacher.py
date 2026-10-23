@@ -67,6 +67,18 @@ def main(args, app):
             # The repository runner only updates current_learning_iteration at
             # the end of learn(). Preserve the actual progress in periodic files.
             self.completed_iteration = locs["it"] + 1
+            with torch.no_grad():
+                self.alg.actor_critic.logstd.clamp_(math.log(.02), math.log(.2))
+                raw = self.env.unwrapped
+                term = controller(raw)
+                snapshots = {
+                    "policy_near_boundary_fraction": (term.raw_actions.abs() > .95).float().mean(),
+                    "base_target_rms": term.processed_actions[:, :3].square().mean().sqrt(),
+                    "base_planar_speed_rms": raw.scene["robot"].data.root_lin_vel_b[:, :2].square().sum(-1).mean().sqrt(),
+                    "normalized_target_magnitude": term.processed_actions[:, :3].div(term.velocity_scale).square().mean(),
+                }
+                for key, value in snapshots.items():
+                    self.writer.add_scalar("ControlSnapshot/" + key, float(value), locs["it"])
             return super().log(locs, *positional, **kwargs)
 
         def save(self, path, infos=None):
@@ -104,6 +116,8 @@ def main(args, app):
     cfg.actions.teacher.locomotion_checkpoint = str(checkpoint)
     cfg.actions.teacher.payload_mass = args.payload_mass
     cfg.actions.teacher.native_support = True
+    cfg.actions.teacher.base_deadzone = .15
+    cfg.actions.teacher.require_bounded_actions = True
     cfg.actions.teacher.velocity_scale = tuple(args.velocity_scale)
     cfg.actions.teacher.arm_scale = args.arm_scale
     cfg.actions.teacher.slew_rate = (.3, .2, .5, .15, .15, .15, .15, .15, .15)
@@ -131,9 +145,15 @@ def main(args, app):
         frozen_before = {k: v.clone() for k, v in term.locomotion.state_dict().items()}
         runner = TeacherRunner(env, agent_cfg.to_dict(), log_dir=str(output), device=args.device)
         runner.alg.encoder.requires_grad_(False)
-        # The repository ActorCritic currently ignores init_noise_std.
+        # Cold start from the validated zero-action support baseline. This is
+        # done before optional strict loading for play, never after loading.
         with torch.no_grad():
-            runner.alg.actor_critic.logstd.fill_(math.log(.3))
+            head = [m for m in runner.alg.actor_critic.actor.modules() if isinstance(m, torch.nn.Linear)][-1]
+            head.weight.zero_()
+            head.bias.zero_()
+            runner.alg.actor_critic.logstd.fill_(math.log(.08))
+        if not runner.alg.actor_critic.bounded_distribution or runner.clip_actions is not None:
+            raise RuntimeError("Teacher v2 requires a squashed Normal and no runner action clipping")
         obs = env.get_observations()
         term.update_support()
         (output / "wrench_model_check.json").write_text(
@@ -155,6 +175,8 @@ def main(args, app):
             "force_semantics": "external_on_payload; frame=payload_local; point=payload_COM",
             "force_timing": "current known force held over the upcoming teacher interval; no future profile given",
             "support_version": "quasistatic_gravity_external_v1",
+            "action_interface": "teacher_squashed_normal_v2",
+            "base_deadzone": cfg.actions.teacher.base_deadzone,
             "low_wrench_input": "added-body gravity + current known external payload wrench; held 5x6; base axes, base origin; observation only",
             "arm_gravity_compensation": {"enabled": True, "ramp_s": cfg.actions.teacher.gravity_ramp_s,
                 "limit_Nm": cfg.actions.teacher.gravity_effort_limit, "external_force_compensated": False},
@@ -182,9 +204,11 @@ def main(args, app):
                 metadata = json.loads(source_contract.read_text(encoding="utf-8"))
                 if (metadata["schema"] != SCHEMA or metadata["locomotion_sha256"] != checkpoint_hash
                         or metadata.get("support_version") != contract["support_version"]
+                        or metadata.get("action_interface") != contract["action_interface"]
+                        or metadata.get("base_deadzone") != contract["base_deadzone"]
                         or metadata["velocity_scale"] != contract["velocity_scale"]
                         or metadata["arm_scale"] != contract["arm_scale"]):
-                    raise ValueError("Teacher checkpoint must use the same schema and frozen locomotion weights.")
+                    raise ValueError("Teacher action/control contract or frozen weights mismatch; old unbounded teachers cannot be loaded as v2.")
                 runner.alg.actor_critic.load_state_dict(saved["model_state_dict"], strict=True)
             runner.alg.actor_critic.eval()
             failures = timeouts = 0
@@ -193,6 +217,10 @@ def main(args, app):
             valid_responses = 0
             settled_tracking_sum = 0.
             settled_responses = 0
+            phase_counts = torch.zeros(3, device=raw.device)
+            phase_errors = torch.zeros(3, 3, device=raw.device)
+            phase_actions = torch.zeros(3, 9, device=raw.device)
+            phase_targets = torch.zeros_like(phase_actions)
             force_active_samples = 0
             steps = 0
             with torch.no_grad(), (output / "rollout.jsonl").open("w", encoding="utf-8") as stream:
@@ -220,6 +248,17 @@ def main(args, app):
                     settled = valid & settled_age
                     settled_tracking_sum += float(error[settled].sum())
                     settled_responses += int(settled.sum())
+                    active = force.abs().amax(-1) > 1e-6
+                    recovering = ~active & (reference.abs().amax(-1) >= .01)
+                    normalized_target = torch.cat((term.processed_actions[:, :3] / term.velocity_scale,
+                        (term.processed_actions[:, 3:] - term.nominal) / term.cfg.arm_scale), -1)
+                    response_error = torch.cat((lin[:, :2], ang[:, 2:3]), -1) - reference
+                    for phase, mask in enumerate((active, recovering, ~active & ~recovering)):
+                        mask = mask & settled
+                        phase_counts[phase] += mask.sum()
+                        phase_errors[phase] += response_error[mask].square().sum(0)
+                        phase_actions[phase] += action[mask].square().sum(0)
+                        phase_targets[phase] += normalized_target[mask].square().sum(0)
                     if valid.any():
                         base_angle = torch.acos((-raw.scene["robot"].data.projected_gravity_b[valid, 2]).clamp(-1, 1))
                         payload_angle = torch.acos((gravity[valid] * term.payload_gravity_reference[valid]).sum(-1).clamp(-1, 1))
@@ -232,6 +271,11 @@ def main(args, app):
                         "response_valid_env0": bool(valid[0]), "reward_mean": float(reward.mean()),
                         "settled_response_env0": bool(settled[0]),
                         "tracking_error_sq_env0": float(error[0]) if bool(valid[0]) else None,
+                        "processed_targets_env0": term.processed_actions[0].tolist(),
+                        "base_velocity_env0": raw.scene["robot"].data.root_lin_vel_b[0].tolist(),
+                        "base_yaw_rate_env0": float(raw.scene["robot"].data.root_ang_vel_b[0, 2]),
+                        "payload_velocity_local_env0": torch.cat((lin[0, :2], ang[0, 2:3])).tolist(),
+                        "near_boundary_fraction": float((action.abs() > .95).float().mean()),
                         "failures": failures, "timeouts": timeouts}) + "\n")
                     steps += 1
             result = {"mode": args.mode, "steps": steps, "failures": failures, "timeouts": timeouts,
@@ -243,6 +287,14 @@ def main(args, app):
                       "settled_responses": settled_responses,
                       "settled_tracking_mse": settled_tracking_sum / settled_responses if settled_responses else None,
                       "tracking_mse": tracking_sum / max(1, valid_responses)}
+            result["phases"] = {}
+            for i, name in enumerate(("force_active", "release_recovery", "quiet")):
+                count = int(phase_counts[i])
+                result["phases"][name] = {"samples": count,
+                    "tracking_mse": float(phase_errors[i].sum() / count) if count else None,
+                    "component_mse": (phase_errors[i] / count).tolist() if count else None,
+                    "policy_action_rms": (phase_actions[i] / count).sqrt().tolist() if count else None,
+                    "executed_target_normalized_rms": (phase_targets[i] / count).sqrt().tolist() if count else None}
             (output / "evaluation.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
             print(json.dumps(result, indent=2), flush=True)
         if any(not torch.equal(value, term.locomotion.state_dict()[key]) for key, value in frozen_before.items()):

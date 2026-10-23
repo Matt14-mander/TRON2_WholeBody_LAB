@@ -75,6 +75,7 @@ class ActorCritic(nn.Module):
         init_noise_std=1.0,
         squash_action=False,
         squash_action_scale=1.0,
+        bounded_distribution=False,
         **kwargs,
     ):
         if kwargs:
@@ -87,6 +88,9 @@ class ActorCritic(nn.Module):
         self.orthogonal_init = orthogonal_init
         self.num_actor_obs = num_actor_obs
         self.num_critic_obs = num_critic_obs
+        self.bounded_distribution = bounded_distribution
+        if bounded_distribution and squash_action:
+            raise ValueError("Choose bounded_distribution or legacy squash_action, not both")
 
         activation = get_activation(activation)
 
@@ -113,6 +117,10 @@ class ActorCritic(nn.Module):
                 # actor_layers.append(torch.nn.LayerNorm(actor_hidden_dims[l + 1]))
         if squash_action:
             actor_layers.append(ScaledTanh(squash_action_scale))
+        if bounded_distribution:
+            # Bound latent means as well: prevents a drift to an effectively
+            # irreversible tanh saturation. The exported actor includes tanh.
+            actor_layers.extend((ScaledTanh(3.), nn.Tanh()))
         self.actor = nn.Sequential(*actor_layers)
 
         # Value function
@@ -179,17 +187,30 @@ class ActorCritic(nn.Module):
 
     @property
     def entropy(self):
+        if self.bounded_distribution:
+            z = self.distribution.rsample()
+            log_jac = 2 * (np.log(2.) - z - torch.nn.functional.softplus(-2*z))
+            return (self.distribution.entropy() + log_jac).sum(-1)
         return self.distribution.entropy().sum(dim=-1)
 
     def update_distribution(self, observations):
-        mean = self.actor(observations)
-        self.distribution = Normal(mean, mean * 0.0 + torch.exp(self.logstd))
+        # action_mean/std intentionally remain LATENT Normal parameters: PPO's
+        # existing analytic KL is exact under a common invertible tanh transform.
+        mean = self.actor[:-1](observations) if self.bounded_distribution else self.actor(observations)
+        logstd = self.logstd.clamp(np.log(.02), np.log(.2)) if self.bounded_distribution else self.logstd
+        self.distribution = Normal(mean, mean * 0.0 + torch.exp(logstd))
 
     def act(self, observations, **kwargs):
         self.update_distribution(observations)
-        return self.distribution.sample()
+        sample = self.distribution.sample()
+        return sample.tanh() if self.bounded_distribution else sample
 
     def get_actions_log_prob(self, actions):
+        if self.bounded_distribution:
+            a = actions.clamp(-1 + 1e-6, 1 - 1e-6)
+            z = torch.atanh(a)
+            log_jac = 2 * (np.log(2.) - z - torch.nn.functional.softplus(-2*z))
+            return (self.distribution.log_prob(z) - log_jac).sum(-1)
         return self.distribution.log_prob(actions).sum(dim=-1)
 
     def act_inference(self, observations):

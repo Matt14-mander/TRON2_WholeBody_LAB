@@ -6,15 +6,30 @@
 Teacher 直接观察真实负载交互 `[Fx,Fy,Mz]`，没有 intent estimator，也不训练力预测网络。
 这是独立 Isaac Lab manager-based 任务，不改变原 WholeBody/PAINT 数据采集入口。
 
-本地已检查 Torch 控制契约、原 PPO 更新以及语法；**尚未执行 Isaac Sim/PhysX 闭环、未开始正式训练**。
-本机当前 Python 环境只有 Isaac Lab 源码，没有 Isaac Sim runtime，且没有正式低层 checkpoint。
-需要在已有 Linux Isaac 环境中先完成下述 smoke 和基线，才能评价带负载的稳定性。
+服务器上一轮无界 teacher 已完成训练，但零力和施力跟踪均劣于固定基线，并发现严重动作饱和。
+本次 v2 已在本地检查概率密度、PPO 更新与控制契约；尚未在服务器执行新版 PhysX 闭环。
 
 2026-10-22：主线恢复 teacher，使用 paper v3 的 `2026-10-15_16-38-03/model_20000.pt`。
 本次补齐正式训练入口的支撑 wrench 与臂部重力补偿。下述自动流水线仍须在服务器通过 PhysX 检查，
 不能把此前 MuJoCo 中的通过结果等同于新 teacher 任务通过。
 
-## 今晚启动（当前推荐入口）
+## 动作接口 v2（2026-10-23）
+
+- 仅 teacher 启用 tanh-Normal：采样、log-prob（含 Jacobian）、PPO 更新使用同一有界动作。
+  原 locomotion 的 Normal/ScaledTanh 路径默认不变。PPO KL 仍使用 latent Normal 参数，公共可逆变换下 KL 不变；
+  熵使用重参数化单样本估计。latent 均值由 `3*tanh(z/3)` 限制，标准差限制为 `[0.02,0.2]`。
+- actor 最后一层线性权重/偏置均为零，初始探索标准差 0.08；确定性初始策略恰好输出零。
+  导出的 actor 已包含最终 tanh，部署端不能再次 tanh。
+- runner 不再裁剪 teacher 动作，执行端拒绝超出 `[-1,1]` 的输入；安全限位和限速继续保留。
+  底座三个通道采用连续死区 `sign(a)*max((abs(a)-0.15)/0.85,0)`，随后才进行物理缩放与限速。
+  不按外力强制切换动作；非零指令仍可起步。
+- 新增全阶段实际目标幅值惩罚（-0.1）和释放静止惩罚（-1.0）。后者仅在力接近零、导纳参考衰减至
+  0.01 以下启用，约束真实底座速度及请求速度，不会强制把释放后的恢复瞬态判为静止。
+- 学习率改为 `1e-4`、熵系数 `0.001`。低层权重与支撑 wrench 模型不变。
+- `contract.json` 新增 `action_interface=teacher_squashed_normal_v2` 与死区；旧 teacher 会被拒绝加载。
+  使用新目录冷启动，不续训旧的饱和 teacher。
+
+## 新版短训启动（当前推荐入口）
 
 先将本次修改同步到服务器。在普通终端执行 `tmux new -s paint_teacher`，进入后：
 
@@ -23,7 +38,8 @@ conda activate limx
 cd ~/workspace/isaaclab_tron2/TRON2_WholeBody_LAB
 export TEACHER_DEVICE=cuda:1
 export TEACHER_ENVS=1024
-export TEACHER_ITERATIONS=3000
+unset TEACHER_RUN
+export TEACHER_ITERATIONS=500
 bash scripts/rsl_rl/train_teacher_tonight.sh
 ```
 
@@ -35,18 +51,26 @@ RUN=$(cat logs/rsl_rl/latest_teacher_run.txt)
 tail -n 60 "$RUN/train.log"
 ```
 
-流水线：64 环境零力带载 60 s → 64 环境弱扰动 60 s → 2 轮 PPO → 1024 环境 3000 轮 → 同幅值零动作基线与 teacher 各 60 s 评估。
+流水线：64 环境零力带载 60 s → 64 环境弱扰动 60 s → 2 轮 PPO → 1024 环境 500 轮 → 零力/施力下的基线与 teacher 四组评估。
 前两项要求无失败、产生正常 timeout、底座峰值倾角 <15°、负载相对初始倾角 <35°、每次复位后排除前 4 s 的跟随 MSE <0.01；弱扰动还必须实际出现。
 `tracking_mse` 保留全时段统计，门槛使用 `settled_tracking_mse`，并要求存在有效稳定期样本。
 这只改变诊断统计；训练奖励、终止判断以及峰值倾角仍覆盖启动和渐入过程。
 这些是本轮启动的保守诊断门槛，不是正式任务验收标准。任一预检查失败就停止，保留该阶段日志。
 额外要求 `completion.json` 和冻结权重确认，防止 Isaac 关闭时的异常退出码掩盖执行失败。
-2 轮 PPO 只验证优化链路，不验收学习能力。长训后比较 `eval_baseline/evaluation.json` 与 `eval_play/evaluation.json`。
+2 轮 PPO 只验证优化链路，不验收学习能力。短训后比较 `eval_zero_baseline`、`eval_zero_play`、
+`eval_force_baseline`、`eval_force_play` 中的 `evaluation.json`。
+`comparison.json` 记录是否建议长训：无失败，零力 MSE <max(0.001,3×基线)，施力活跃期 MSE 优于基线，倾角保持在上述诊断界限。
+门槛用于短训诊断，不等同于正式任务验收。500 轮尚未完成全部课程，完整难度测试未通过时先分析记录。
+
+`evaluation.json/phases` 分别给出 force_active、release_recovery、quiet 的样本数、跟踪误差分量、策略动作
+RMS 和实际执行目标的归一化 RMS。所有分阶段统计排除每次复位后的前 4 s 与终止/复位帧。
+`rollout.jsonl` 增加环境0实际目标、真实底座速度/yaw rate、负载局部响应和边界附近动作比例。
+TensorBoard 的 `ControlSnapshot/*` 是每轮末的控制快照，不是整轮平均。
 
 本轮动作范围为底座 `(±0.15, ±0.08, ±0.25)`、臂部名义姿态附近 `±0.1 rad`，臂部目标限速 `0.15 rad/s`。
 扰动上限为 `3 N / 0.2 Nm`，从 20% 增长，25,000 个高层步约对应 782 轮 PPO。
 这是固定 0.5 kg 负载、小范围顺应原型；不把偏航精度、广范围摆臂或大扰动的验收作为已完成。
-3000 轮用于观察初步学习，不承诺一夜收敛，也不建议直接以 20000 轮替代诊断。
+500 轮先验证新接口是否改善零力保持与施力响应，再决定长训；不以加轮数替代诊断。
 当前不支持 teacher 断点续训；每个启动目录必须为空，模型每 100 轮保存一次。
 
 | 阶段 | 优化对象 | 力输入 | 动作 |

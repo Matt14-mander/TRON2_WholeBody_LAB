@@ -121,9 +121,11 @@ def admittance_step(velocity, wrench, dt, mass, damping, limits):
     return torch.clamp(decay * velocity + (1 - decay) * wrench / damping, -limits, limits)
 
 
-def bounded_targets(actions, previous, nominal, lower, upper, velocity_scale, arm_scale, slew_rate, dt):
+def bounded_targets(actions, previous, nominal, lower, upper, velocity_scale, arm_scale, slew_rate, dt, deadzone=0.):
     """Return physical vx/vy/wz and absolute q targets with slew/soft limits."""
-    desired = torch.cat((actions[:, :3].clamp(-1, 1) * velocity_scale,
+    base = actions[:, :3].clamp(-1, 1)
+    base = base.sign() * ((base.abs() - deadzone) / (1-deadzone)).clamp_min(0)
+    desired = torch.cat((base * velocity_scale,
                          nominal + actions[:, 3:].clamp(-1, 1) * arm_scale), dim=-1)
     limited = previous + (desired - previous).clamp(-slew_rate * dt, slew_rate * dt)
     limited[:, 3:] = torch.maximum(torch.minimum(limited[:, 3:], upper), lower)
