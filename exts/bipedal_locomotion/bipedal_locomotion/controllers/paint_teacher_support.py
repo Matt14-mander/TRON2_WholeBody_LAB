@@ -86,6 +86,9 @@ class BatchedSupport:
         local_force[:, :2] = external_payload[:, :2]
         local_torque = torch.zeros_like(local_force)
         local_torque[:, 2] = external_payload[:, 2]
+        if external_payload.shape[-1] == 6:
+            local_force = external_payload[:, :3]
+            local_torque = external_payload[:, 3:]
         applied_force = (payload[:, :3, :3] @ local_force[..., None]).squeeze(-1)
         applied_torque = (payload[:, :3, :3] @ local_torque[..., None]).squeeze(-1)
         wrench[:, :3] += applied_force
