@@ -2,6 +2,28 @@
 
 ## Guide 核心对齐版本（2026-10-23，当前默认）
 
+### 短训失败后的低层隔离探针
+
+`teacher_guide_v1_20261023_171322`：固定臂零力基线稳定（线速度误差0.00155m/s），
+但 teacher 零力误差0.213m/s；施力直接速度参考基线误差0.201m/s、yaw误差0.144rad/s，
+teacher施力误差0.218m/s。两种运动方法的横向分量误差显著，尚不能归因到某个实现错误。
+这不支持直接长训，也不支持以静止稳定代替小速度行走能力验证。
+
+新增 probe 在同一 guide teacher 环境、同一支撑模型和PD下保持名义臂姿、关闭物理外力，
+分别输入零速、±0.04m/s纵向、±0.03m/s横向、±0.04rad/s转向；不调用训练策略或优化器。
+
+```bash
+conda activate limx
+export TEACHER_DEVICE=cuda:1
+bash scripts/rsl_rl/probe_teacher_support.sh
+```
+
+输出新目录内 `probe_summary.json`：每例同时记录请求指令、实际执行指令均值、
+实际vx/vy/wz均值、误差及失败次数；比较响应方向、增益与轴间耦合。
+`--mode probe` 必须指定 `--zero_force` 和范围内的 `--probe_command`，不会静默裁剪输入。
+probe 的跟踪目标是探针指令，奖励仍来自训练任务，仅作日志而非学习效果评价。
+探针不自动判定支撑已通过；需查看完整方向/速度统计，避免只看全局MSE。
+
 `train_paint_teacher.py` 默认 `--teacher_contract guide`；旧导纳任务可通过
 `--teacher_contract legacy` 保留复现。以下旧 v2 章节为历史说明，不能当作 guide 的接口。
 

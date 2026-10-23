@@ -20,7 +20,8 @@ sys.path.insert(0, str(ROOT / "exts/bipedal_locomotion"))
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("train", "play", "baseline", "baseline_reference", "smoke"), default="train")
+    parser.add_argument("--mode", choices=("train", "play", "baseline", "baseline_reference", "probe", "smoke"), default="train")
+    parser.add_argument("--probe_command", type=float, nargs=3, help="Probe only: constant base vx/vy/wz, fixed nominal arm, zero physical force.")
     parser.add_argument("--teacher_contract", choices=("guide", "legacy"), default="guide")
     parser.add_argument("--task", default="Isaac-Limx-SFYG-TRON2A-Paint-Teacher-Flat-v0")
     parser.add_argument("--checkpoint_path", required=True, help="Frozen flat WholeBody locomotion checkpoint.")
@@ -52,7 +53,18 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def validate_probe(args):
+    if args.mode == "probe":
+        if args.teacher_contract != "guide" or not args.zero_force or args.probe_command is None:
+            raise ValueError("Probe requires guide, --zero_force and --probe_command vx vy wz.")
+        if any(not math.isfinite(x) or abs(x) > limit for x, limit in zip(args.probe_command, args.velocity_scale)):
+            raise ValueError("Probe command must be finite and inside velocity_scale; no silent clipping.")
+    elif args.probe_command is not None:
+        raise ValueError("--probe_command is only supported in probe mode.")
+
+
 def main(args, app):
+    validate_probe(args)
     import gymnasium as gym
     import torch
     from isaaclab_tasks.utils import parse_env_cfg, load_cfg_from_registry
@@ -257,6 +269,8 @@ def main(args, app):
             phase_absolute_errors = torch.zeros(3, 2, device=raw.device)
             phase_actions = torch.zeros(3, 9, device=raw.device)
             phase_targets = torch.zeros_like(phase_actions)
+            settled_velocity_sum = torch.zeros(3, device=raw.device)
+            settled_command_sum = torch.zeros(3, device=raw.device)
             force_active_samples = 0
             steps = 0
             with torch.no_grad(), (output / "rollout.jsonl").open("w", encoding="utf-8") as stream:
@@ -268,9 +282,14 @@ def main(args, app):
                     if args.mode == "baseline_reference":
                         ref = raw.command_manager.get_term("interaction").reference
                         action = reference_baseline_action(ref, term.velocity_scale, term.cfg.base_deadzone)
+                    if args.mode == "probe":
+                        ref = term.velocity_scale.new_tensor(args.probe_command).expand(raw.num_envs, -1)
+                        action = reference_baseline_action(ref, term.velocity_scale, term.cfg.base_deadzone)
                     force = raw.command_manager.get_command("interaction").clone()
                     force_active_samples += int((force.abs().amax(-1) > 1e-6).sum())
                     reference = raw.command_manager.get_term("interaction").reference.clone()
+                    if args.mode == "probe":
+                        reference = ref.clone()
                     # Capture per-environment age BEFORE step, which may reset
                     # individual environments. A global step cutoff is incorrect.
                     settled_age = raw.episode_length_buf * raw.step_dt >= args.metric_settle_s
@@ -291,7 +310,12 @@ def main(args, app):
                     settled = valid & settled_age
                     settled_tracking_sum += float(error[settled].sum())
                     settled_responses += int(settled.sum())
+                    measured = torch.cat((lin[:, :2], ang[:, 2:3]), -1)
+                    settled_velocity_sum += measured[settled].sum(0)
+                    settled_command_sum += term.processed_actions[settled, :3].sum(0)
                     active = force.abs().amax(-1) > 1e-6
+                    if args.mode == "probe":
+                        active = reference.abs().amax(-1) > 1e-6
                     recovering = ~active & (reference.abs().amax(-1) >= .01)
                     normalized_target = torch.cat((term.processed_actions[:, :3] / term.velocity_scale,
                         (term.processed_actions[:, 3:] - term.nominal) / term.cfg.arm_scale), -1)
@@ -331,11 +355,15 @@ def main(args, app):
                       "metric_settle_s": args.metric_settle_s,
                       "tracking_frame": "base" if aligned else "payload_local",
                       "teacher_contract": contract.get("teacher_contract", "legacy"),
+                      "tracking_target": "constant_probe_command" if args.mode == "probe" else "interaction_reference",
+                      "probe_command": args.probe_command,
+                      "settled_mean_base_vx_vy_wz": (settled_velocity_sum / settled_responses).tolist() if settled_responses else None,
+                      "settled_mean_executed_base_command": (settled_command_sum / settled_responses).tolist() if settled_responses else None,
                       "settled_responses": settled_responses,
                       "settled_tracking_mse": settled_tracking_sum / settled_responses if settled_responses else None,
                       "tracking_mse": tracking_sum / max(1, valid_responses)}
             result["phases"] = {}
-            for i, name in enumerate(("force_active", "release_recovery", "quiet")):
+            for i, name in enumerate(("command_active" if args.mode == "probe" else "force_active", "release_recovery", "quiet")):
                 count = int(phase_counts[i])
                 result["phases"][name] = {"samples": count,
                     "tracking_mse": float(phase_errors[i].sum() / count) if count else None,

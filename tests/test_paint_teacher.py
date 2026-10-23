@@ -117,6 +117,25 @@ class RobotDouble:
 
 
 class TeacherTests(unittest.TestCase):
+    def test_probe_requires_zero_force_and_rejects_silent_command_clipping(self):
+        spec = importlib.util.spec_from_file_location("teacher_probe_cli", ROOT / "scripts/rsl_rl/train_paint_teacher.py")
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        args = entry.build_parser().parse_args(["--mode","probe","--checkpoint_path","unused.pt",
+            "--zero_force","--probe_command","0","-.03","0"])
+        entry.validate_probe(args)
+        args.zero_force = False
+        with self.assertRaises(ValueError):
+            entry.validate_probe(args)
+        args.zero_force = True
+        args.probe_command = [0., -.5, 0.]
+        with self.assertRaises(ValueError):
+            entry.validate_probe(args)
+        args.probe_command = [0., -.03, 0.]
+        args.mode = "play"
+        with self.assertRaises(ValueError):
+            entry.validate_probe(args)
+
     def test_reference_baseline_is_exact_before_slew_and_keeps_arm_nominal(self):
         reference = torch.tensor([[.1,-.04,0.],[0.,0.,.1]])
         scale = torch.tensor([.15,.08,.25])
