@@ -62,8 +62,11 @@ class PayloadInteraction(CommandTerm):
         envelope = force_envelope(self.elapsed / self.duration, self.sine)
         settled = self._env.episode_length_buf * self._env.step_dt >= self.cfg.warmup_s
         self._command.copy_(self.amplitude * envelope[:, None] * settled[:, None])
-        self.reference.copy_(admittance_step(self.reference, self._command, self._env.step_dt,
-                                             self.cfg.virtual_mass, self.cfg.damping, self.cfg.velocity_limits))
+        if self.cfg.guide_aligned:
+            self.reference.copy_(self._command / self._command.new_tensor(self.cfg.wrench_scale))
+        else:
+            self.reference.copy_(admittance_step(self.reference, self._command, self._env.step_dt,
+                                                 self.cfg.virtual_mass, self.cfg.damping, self.cfg.velocity_limits))
         # Hold the resampled profile at t=0 until the per-environment warmup ends.
         self.elapsed += self._env.step_dt * settled
 
@@ -89,6 +92,8 @@ class PayloadInteraction(CommandTerm):
 
 @configclass
 class PayloadInteractionCfg(CommandTermCfg):
+    guide_aligned: bool = False
+    wrench_scale: tuple = (40., 40., 10.)
     class_type: type = PayloadInteraction
     resampling_time_range: tuple = (5., 7.)
     max_wrench: tuple = (5., 5., .5)
@@ -107,7 +112,7 @@ class FrozenLocomotionAction(ActionTerm):
     """Nine high-level outputs; actor+encoder inference at 50 Hz, physics 200 Hz."""
     def __init__(self, cfg, env):
         super().__init__(cfg, env)
-        if not math.isclose(env.physics_dt, .005, abs_tol=1e-9) or env.cfg.decimation != 8:
+        if not math.isclose(env.physics_dt, .005, abs_tol=1e-9) or env.cfg.decimation != (4 if cfg.guide_aligned else 8):
             raise ValueError("Teacher v1 requires 200 Hz physics / 25 Hz high-level control.")
         self.arm_ids, arm_names = self._asset.find_joints(list(ARM_JOINT_NAMES), preserve_order=True)
         self.leg_ids, leg_names = self._asset.find_joints(list(LEG_JOINT_NAMES), preserve_order=True)
@@ -132,7 +137,8 @@ class FrozenLocomotionAction(ActionTerm):
         self.executed_arm_target = self.nominal.clone()
         self.leg_target = self._asset.data.default_joint_pos[:, self.leg_ids].clone()
         self.low_history = SampledHistory(self.num_envs, 10, 42, self.device)
-        self.arm_history = SampledHistory(self.num_envs, 4, 18, self.device)
+        self.arm_history = SampledHistory(self.num_envs, 8 if cfg.guide_aligned else 4, 18, self.device,
+                                          repeat_first=not cfg.guide_aligned)
         self.payload_gravity_reference = torch.zeros(self.num_envs, 3, device=self.device)
         self.payload_gravity_reference[:, 2] = -1
         self.payload_height_reference = torch.zeros(self.num_envs, device=self.device)
@@ -157,8 +163,12 @@ class FrozenLocomotionAction(ActionTerm):
                 description / "SF_TRON2A/urdf/robot_rl.urdf", self.cfg.payload_mass)
             self.support_model = BatchedSupport(model, self._asset.joint_names, ARM_JOINT_NAMES, self.device)
         data = self._asset.data
+        external = self._env.command_manager.get_command("interaction")
+        if self.cfg.guide_aligned:
+            # Support model expects payload-local COM wrench; teacher commands use base axes.
+            external = base_planar_to_payload(self, external)
         wrench, effort, poses = self.support_model.compute(data.joint_pos,
-            data.projected_gravity_b * 9.81, self._env.command_manager.get_command("interaction"))
+            data.projected_gravity_b * 9.81, external)
         if self.support_check is None:
             ids = [self._asset.body_names.index(n) for n in self.support_model.names]
             native_mass = self._asset.root_physx_view.get_masses()[0, ids].to(self.device)
@@ -223,6 +233,9 @@ class FrozenLocomotionAction(ActionTerm):
         data = self._asset.data
         row = torch.cat((data.joint_pos[:, self.arm_ids], data.joint_vel[:, self.arm_ids],
                          self.executed_arm_target), dim=-1)
+        if self.cfg.guide_aligned:
+            row[:, :6] -= self.nominal
+            row[:, 12:] -= self.nominal
         self.arm_history.append(row, tick)
 
     def process_actions(self, actions):
@@ -289,6 +302,15 @@ class FrozenLocomotionAction(ActionTerm):
         torque = torch.zeros_like(force)
         force[:, 0, :2] = planar[:, :2]
         torque[:, 0, 2] = planar[:, 2]
+        if self.cfg.guide_aligned:
+            base_quat = self._asset.data.root_quat_w
+            inverse = base_quat.clone()
+            inverse[:, 1:] *= -1
+            force[:, 0] = quat_apply_inverse(inverse, force[:, 0])
+            torque[:, 0] = quat_apply_inverse(inverse, torque[:, 0])
+            payload_quat = self._asset.data.body_quat_w[:, self.payload_ids[0]]
+            force[:, 0] = quat_apply_inverse(payload_quat, force[:, 0])
+            torque[:, 0] = quat_apply_inverse(payload_quat, torque[:, 0])
         self._asset.set_external_force_and_torque(force, torque, body_ids=self.payload_ids, is_global=False)
         self._substep += 1
 
@@ -310,6 +332,7 @@ class FrozenLocomotionAction(ActionTerm):
 
 @configclass
 class FrozenLocomotionActionCfg(ActionTermCfg):
+    guide_aligned: bool = False
     class_type: type = FrozenLocomotionAction
     asset_name: str = "robot"
     locomotion_checkpoint: str = ""
@@ -332,6 +355,21 @@ def controller(env):
     return env.action_manager.get_term("teacher")
 
 
+def base_planar_to_payload(term, planar):
+    """Convert full force AND torque, retaining out-of-plane components."""
+    data = term._asset.data
+    inverse = data.root_quat_w.clone()
+    inverse[:, 1:] *= -1
+    zero = torch.zeros_like(planar)
+    force = zero.clone()
+    torque = zero.clone()
+    force[:, :2], torque[:, 2] = planar[:, :2], planar[:, 2]
+    payload = data.body_quat_w[:, term.payload_ids[0]]
+    force = quat_apply_inverse(payload, quat_apply_inverse(inverse, force))
+    torque = quat_apply_inverse(payload, quat_apply_inverse(inverse, torque))
+    return torch.cat((force, torque), -1)
+
+
 def payload_state(env):
     term = controller(env)
     data = term._asset.data
@@ -347,6 +385,11 @@ def teacher_observation(env):
     term = controller(env)
     term.sample_histories(env._sim_step_counter)
     data = term._asset.data
+    if term.cfg.guide_aligned:
+        history = term.arm_history.data.clone()
+        force = env.command_manager.get_command("interaction") / history.new_tensor(
+            env.cfg.commands.interaction.wrench_scale)
+        return torch.cat((history.flatten(1), force), -1)
     force = env.command_manager.get_command("interaction") / torch.tensor((5., 5., .5), device=env.device)
     relative_pos = quat_apply_inverse(data.root_quat_w, data.body_pos_w[:, term.payload_ids[0]] - data.root_pos_w)
     _, _, gravity = payload_state(env)
@@ -368,6 +411,8 @@ def critic_observation(env):
 
 
 def reference_observation(env):
+    if controller(env).cfg.guide_aligned:
+        return torch.zeros(env.num_envs, 0, device=env.device)
     return env.command_manager.get_term("interaction").reference
 
 
@@ -378,6 +423,12 @@ def runner_history_placeholder(env):
 
 
 def follow_reward(env):
+    if controller(env).cfg.guide_aligned:
+        data = env.scene["robot"].data
+        reference = env.command_manager.get_term("interaction").reference
+        linear = (data.root_lin_vel_b[:, :2] - reference[:, :2]).square().sum(-1)
+        yaw = (data.root_ang_vel_b[:, 2] - reference[:, 2]).square()
+        return torch.exp(-linear / .25) + .5 * torch.exp(-yaw / .25)
     lin, ang, _ = payload_state(env)
     velocity = torch.cat((lin[:, :2], ang[:, 2:3]), dim=-1)
     reference = reference_observation(env)
@@ -426,7 +477,7 @@ def released_hold(env):
     term = controller(env)
     force = env.command_manager.get_command("interaction")
     quiet = ((force[:, :2].abs().amax(-1) < .05) & (force[:, 2].abs() < .005)
-             & (reference_observation(env).abs().amax(-1) < .01))
+             & (env.command_manager.get_term("interaction").reference.abs().amax(-1) < .01))
     data = term._asset.data
     actual = torch.cat((data.root_lin_vel_b[:, :2] / .05, data.root_ang_vel_b[:, 2:3] / .1), -1)
     requested = term.processed_actions[:, :3] / term.velocity_scale

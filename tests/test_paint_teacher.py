@@ -117,6 +117,36 @@ class RobotDouble:
 
 
 class TeacherTests(unittest.TestCase):
+    def test_probe_requires_zero_force_and_rejects_silent_command_clipping(self):
+        spec = importlib.util.spec_from_file_location("teacher_probe_cli", ROOT / "scripts/rsl_rl/train_paint_teacher.py")
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        args = entry.build_parser().parse_args(["--mode","probe","--checkpoint_path","unused.pt",
+            "--zero_force","--probe_command","0","-.03","0"])
+        entry.validate_probe(args)
+        args.zero_force = False
+        with self.assertRaises(ValueError):
+            entry.validate_probe(args)
+        args.zero_force = True
+        args.probe_command = [0., -.5, 0.]
+        with self.assertRaises(ValueError):
+            entry.validate_probe(args)
+        args.probe_command = [0., -.03, 0.]
+        args.mode = "play"
+        with self.assertRaises(ValueError):
+            entry.validate_probe(args)
+
+    def test_reference_baseline_is_exact_before_slew_and_keeps_arm_nominal(self):
+        reference = torch.tensor([[.1,-.04,0.],[0.,0.,.1]])
+        scale = torch.tensor([.15,.08,.25])
+        action = core.reference_baseline_action(reference, scale, .02)
+        nominal = torch.full((2,6), .3)
+        previous = torch.cat((torch.zeros(2,3),nominal),-1)
+        actual = core.bounded_targets(action,previous,nominal,-torch.ones(2,6),torch.ones(2,6),
+            scale,.1,torch.full((9,),100.),.02,deadzone=.02)
+        torch.testing.assert_close(actual[:,:3],reference)
+        torch.testing.assert_close(actual[:,3:],nominal)
+
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(1)
@@ -129,6 +159,71 @@ class TeacherTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.temp.cleanup()
+
+    def test_guide_actor_history_and_current_force_only(self):
+        env, action, interaction = self.make_env(guide=True)
+        action.sample_histories(0)
+        obs = self.native.teacher_observation(env)
+        self.assertEqual(obs.shape, (2, 147))
+        self.assertEqual(self.native.critic_observation(env).shape, (2, 154))
+        self.assertEqual(self.native.reference_observation(env).shape, (2, 0))
+        torch.testing.assert_close(obs[:, -3:], interaction.command / torch.tensor([40.,40.,10.]))
+        before = obs.clone()
+        env.scene["robot"].data.root_lin_vel_b.fill_(42)
+        env.scene["robot"].data.body_pos_w.fill_(99)
+        torch.testing.assert_close(self.native.teacher_observation(env), before)
+        action.arm_history.reset(torch.tensor([0]))
+        env.scene["robot"].data.joint_vel[:, 10:16] = 2
+        action.sample_histories(4)
+        self.assertEqual(int(action.arm_history.data[0, :7].count_nonzero()), 0)
+        torch.testing.assert_close(action.arm_history.data[:, -1, 6:12], torch.full((2,6),2.))
+
+    def test_guide_force_frame_reward_and_release(self):
+        env, action, interaction = self.make_env(guide=True)
+        robot = env.scene["robot"]
+        robot.data.body_quat_w = robot.data.body_quat_w.clone()
+        robot.data.body_quat_w[:] = torch.tensor([math.sqrt(.5),0.,0.,math.sqrt(.5)])
+        interaction._command[:] = torch.tensor([4.,0.,1.])
+        action.process_actions(torch.zeros(2,9))
+        env._sim_step_counter += 1
+        action.apply_actions()
+        torch.testing.assert_close(robot.force[:,0], torch.tensor([[0.,-4.,0.]]).repeat(2,1), atol=1e-5,rtol=0)
+        torch.testing.assert_close(robot.torque[:,0], torch.tensor([[0.,0.,1.]]).repeat(2,1))
+        interaction.reference[:] = torch.tensor([.1,0.,.1])
+        robot.data.root_lin_vel_b[:,0] = .1
+        robot.data.root_ang_vel_b[:,2] = .1
+        torch.testing.assert_close(self.native.follow_reward(env), torch.full((2,),1.5))
+        interaction.amplitude.fill_(1.)
+        interaction.elapsed.fill_(1.)
+        interaction.duration.fill_(2.)
+        interaction._update_command()
+        torch.testing.assert_close(interaction.reference, interaction.command / torch.tensor([40.,40.,10.]))
+        interaction.amplitude.zero_()
+        interaction._update_command()
+        torch.testing.assert_close(interaction.reference, torch.zeros(2,3))
+
+    def test_guide_ppo_supports_empty_commands_and_updates(self):
+        sys.path.insert(0, str(ROOT / "rsl_rl"))
+        from rsl_rl.modules import MLP_Encoder, ActorCritic
+        from rsl_rl.algorithm import PPO
+        env, action, _ = self.make_env(guide=True)
+        with contextlib.redirect_stdout(io.StringIO()):
+            encoder = MLP_Encoder(num_input_dim=1, num_output_dim=0, hidden_dims=[1])
+            teacher = ActorCritic(147,154,9,actor_hidden_dims=[16],critic_hidden_dims=[16],
+                                  bounded_distribution=True,init_noise_std=.2)
+        ppo = PPO(2,encoder,teacher,num_learning_epochs=1,num_mini_batches=1,device="cpu")
+        ppo.init_storage(2,4,[147],[154],[1],[0],[9])
+        before=teacher.actor[0].weight.clone()
+        with torch.no_grad():
+            for _ in range(4):
+                obs=self.native.teacher_observation(env)
+                critic=self.native.critic_observation(env)
+                ppo.act(obs,torch.zeros(2,1),torch.zeros(2,0),critic)
+                ppo.process_env_step(torch.tensor([1.,-.2]),torch.zeros(2,dtype=torch.long),{},obs)
+            ppo.compute_returns(critic)
+        self.assertTrue(all(math.isfinite(x) for x in ppo.update()))
+        self.assertFalse(torch.equal(before,teacher.actor[0].weight))
+        self.assertTrue(all(not p.requires_grad for p in action.locomotion.parameters()))
 
     def test_strict_checkpoint_and_exact_original_actor_order(self):
         frozen = core.FrozenLocomotion(self.path)
@@ -188,7 +283,7 @@ class TeacherTests(unittest.TestCase):
         torch.testing.assert_close(core.force_envelope(phase, torch.zeros(7, dtype=torch.bool)),
                                    torch.tensor([0., 0., .5, 1., .5, 0., 0.]))
 
-    def make_env(self, low_checkpoint=None):
+    def make_env(self, low_checkpoint=None, guide=False):
         robot = RobotDouble(2)
         scene = {"robot": robot}
         class Scene(dict):
@@ -198,6 +293,9 @@ class TeacherTests(unittest.TestCase):
                 interaction=self.native.PayloadInteractionCfg())),
             episode_length_buf=torch.full((2,), 60), common_step_counter=0, _sim_step_counter=0,
             scene=Scene(scene))
+        if guide:
+            env.physics_dt, env.step_dt, env.cfg.decimation = .005, .02, 4
+            env.cfg.commands.interaction.guide_aligned = True
         interaction = self.native.PayloadInteraction(env.cfg.commands.interaction, env)
         interaction._command.copy_(torch.tensor([[3., -2., .4], [-1., 1., -.2]]))
         gait = torch.tensor([[1.125, .5, .5, .28]]).repeat(2, 1)
@@ -206,6 +304,7 @@ class TeacherTests(unittest.TestCase):
         env.command_manager = types.SimpleNamespace(get_command=commands.__getitem__,
                                                     get_term=lambda name: interaction)
         cfg = self.native.FrozenLocomotionActionCfg()
+        cfg.guide_aligned = guide
         cfg.locomotion_checkpoint = str(low_checkpoint or self.path)
         action = self.native.FrozenLocomotionAction(cfg, env)
         env.action_manager = types.SimpleNamespace(get_term=lambda name: action)

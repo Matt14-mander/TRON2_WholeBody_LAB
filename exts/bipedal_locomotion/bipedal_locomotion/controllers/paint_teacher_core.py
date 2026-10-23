@@ -87,7 +87,8 @@ class SampledHistory:
     On reset, the first new sample fills the window, matching Isaac's history
     initialization. A reset of one environment never clears the others.
     """
-    def __init__(self, num_envs, length, width, device):
+    def __init__(self, num_envs, length, width, device, repeat_first=True):
+        self.repeat_first = repeat_first
         self.data = torch.zeros(num_envs, length, width, device=device)
         self.last_tick = torch.full((num_envs,), -1, device=device, dtype=torch.long)
 
@@ -100,7 +101,8 @@ class SampledHistory:
         first = self.last_tick < 0
         ids = fresh.nonzero(as_tuple=False).flatten()
         self.data[ids] = torch.cat((self.data[ids, 1:], row[ids, None]), dim=1)
-        self.data[first] = row[first, None]
+        if self.repeat_first:
+            self.data[first] = row[first, None]
         self.last_tick[fresh] = tick
         return self.data
 
@@ -130,6 +132,14 @@ def bounded_targets(actions, previous, nominal, lower, upper, velocity_scale, ar
     limited = previous + (desired - previous).clamp(-slew_rate * dt, slew_rate * dt)
     limited[:, 3:] = torch.maximum(torch.minimum(limited[:, 3:], upper), lower)
     return limited
+
+
+def reference_baseline_action(reference, velocity_scale, deadzone):
+    """Known-force velocity baseline, inverted through the action deadzone."""
+    scaled = (reference / velocity_scale).clamp(-1, 1)
+    action = reference.new_zeros((len(reference), 9))
+    action[:, :3] = scaled.sign() * (scaled.abs() * (1-deadzone) + deadzone)
+    return action
 
 
 def force_envelope(phase, sine):

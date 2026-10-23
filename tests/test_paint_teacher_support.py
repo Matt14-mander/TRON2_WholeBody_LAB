@@ -13,6 +13,17 @@ from paint_teacher_core import ARM_JOINT_NAMES, LEG_JOINT_NAMES
 
 
 class SupportTest(unittest.TestCase):
+    def test_full_payload_wrench_preserves_tilted_force_and_torque(self):
+        external = torch.tensor([[1.,2.,3.,4.,5.,6.]]).repeat(3,1)
+        gravity, effort, poses = self.support.compute(self.q, self.g, torch.zeros(3,3))
+        result, actual_effort, _ = self.support.compute(self.q, self.g, external)
+        payload = poses[:, self.support.names.index("paint_payload_Link")]
+        force = (payload[:, :3,:3] @ external[:, :3,None]).squeeze(-1)
+        torque = (payload[:, :3,:3] @ external[:, 3:,None]).squeeze(-1)
+        expected = torch.cat((force, torque + torch.cross(payload[:, :3,3],force,dim=-1)), -1)
+        torch.testing.assert_close(result-gravity, expected, atol=2e-5,rtol=1e-5)
+        torch.testing.assert_close(actual_effort, effort)
+
     def setUp(self):
         folder = ROOT / "robot_description/tron2"
         self.model = AddedBodyModel(folder / "SFYG_TRON2A/urdf/robot_rl.urdf",

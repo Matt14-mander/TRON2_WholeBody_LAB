@@ -1,5 +1,66 @@
 # PAINT 高层 teacher：冻结 locomotion 的受力协调训练
 
+## Guide 核心对齐版本（2026-10-23，当前默认）
+
+### 短训失败后的低层隔离探针
+
+`teacher_guide_v1_20261023_171322`：固定臂零力基线稳定（线速度误差0.00155m/s），
+但 teacher 零力误差0.213m/s；施力直接速度参考基线误差0.201m/s、yaw误差0.144rad/s，
+teacher施力误差0.218m/s。两种运动方法的横向分量误差显著，尚不能归因到某个实现错误。
+这不支持直接长训，也不支持以静止稳定代替小速度行走能力验证。
+
+新增 probe 在同一 guide teacher 环境、同一支撑模型和PD下保持名义臂姿、关闭物理外力，
+分别输入零速、±0.04m/s纵向、±0.03m/s横向、±0.04rad/s转向；不调用训练策略或优化器。
+
+```bash
+conda activate limx
+export TEACHER_DEVICE=cuda:1
+bash scripts/rsl_rl/probe_teacher_support.sh
+```
+
+输出新目录内 `probe_summary.json`：每例同时记录请求指令、实际执行指令均值、
+实际vx/vy/wz均值、误差及失败次数；比较响应方向、增益与轴间耦合。
+`--mode probe` 必须指定 `--zero_force` 和范围内的 `--probe_command`，不会静默裁剪输入。
+probe 的跟踪目标是探针指令，奖励仍来自训练任务，仅作日志而非学习效果评价。
+探针不自动判定支撑已通过；需查看完整方向/速度统计，避免只看全局MSE。
+
+`train_paint_teacher.py` 默认 `--teacher_contract guide`；旧导纳任务可通过
+`--teacher_contract legacy` 保留复现。以下旧 v2 章节为历史说明，不能当作 guide 的接口。
+
+- Teacher 50 Hz、物理 200 Hz、低层 50 Hz；10 s episode。
+- Actor 仅接收 8×18 臂部历史（相对名义 q、原单位 dq、前一区间相对位置目标）和当前真实
+  wrench/(40,40,10)，共147维；commands 为零宽，不包含负载姿态或导纳参考。
+- 高层历史零填充复位；低层历史保持原 checkpoint 的首次帧重复填充行为。
+- 外力定义在底座坐标系、作用于负载 COM；每个物理步旋转到负载局部再施力。
+  支撑模型接收完整六维转换结果，不丢弃倾斜负载下的局部 z 力或 x/y 力矩。
+- 跟踪目标为当前 wrench/(40,40,10)，奖励分别比较底座 xy 速度和 yaw rate；没有导纳滤波。
+- Guide actor/critic 为128×3；初始标准差0.2、死区0.02，避免初始探索多数落入死区。
+- 仍保留 TRON2 PD、重力补偿、平地固定0.5kg、安全动作范围及限速、姿态终止条件。
+  臂尺度仍为0.1rad，不宣称全参数逐项复制论文；力幅3N/0.2Nm为初步验证范围。
+- 原 v2 checkpoint 不兼容新输入/动作契约，必须重新训练；不可将旧权重直接加载为 guide。
+
+运行（在具备 Isaac Sim 和低层 checkpoint 的 Linux）：
+
+```bash
+conda activate limx
+cd ~/workspace/isaaclab_tron2/TRON2_WholeBody_LAB
+export TEACHER_DEVICE=cuda:1
+export TEACHER_ENVS=1024
+export TEACHER_ITERATIONS=500
+unset TEACHER_RUN
+bash scripts/rsl_rl/train_teacher_tonight.sh
+```
+
+脚本先做零力和弱力支撑验证、2轮PPO检查，再训练并比较同seed、同负载、同外力的六组评估：
+零力/施力 × 零速固定臂baseline、真实力直接生成速度且固定臂baseline_reference、teacher。
+已修复旧脚本中 play 覆盖 EXTRA 导致零力评估漏掉 `--zero_force` 的问题。
+评估输出底座跟踪MSE以及分阶段线速度误差(m/s)、yaw误差(rad/s)。
+`comparison.json` 同时记录直接参考基线；teacher优于固定基线才建议长训，不将通过单元测试
+解释为闭环效果好。若直接参考基线也失败，先检查低层支撑和跟踪，不以延长PPO替代诊断。
+
+本机仅验证数据契约、坐标转换、奖励与PPO更新；服务器新版物理闭环结果尚未产生。
+同seed不能保证失败后复位的轨迹仍逐帧匹配；有失败时诊断门槛不通过。
+
 ## 本轮边界与实现状态
 
 这轮 PPO 训练高层的「受力后怎样移动底座、怎样调整臂姿」，低层仍负责稳定行走。
