@@ -8,6 +8,10 @@
 
 独立任务 `Isaac-Limx-SFYG-TRON2A-Paint-Locomotion-v4` 按 PAINT guide 的替代方案训练完整机器人与实体负载，腿策略控制、机械臂 PD 保持搬运姿态。入口为 `scripts/rsl_rl/train_locomotion_v4.py`，从零训练，拒绝旧 v2/v3 checkpoint。课程、评估和部署契约见 [v4 训练说明](docs/locomotion_v4.md)。
 
+## PAINT 搬运环境 v4
+
+独立 `paint-transport-v4` 分支接入冻结 locomotion v4，提供 teacher/student 共用搬运环境、受力评估和可视化。入口 `scripts/rsl_rl/train_transport_v4.py`，详见 [搬运环境说明](docs/paint_transport_v4.md)。
+
 ## 仓库结构
 
 ```
