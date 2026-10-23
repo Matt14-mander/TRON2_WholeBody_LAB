@@ -4,6 +4,10 @@
 
 基于 [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) 的 LimX **TRON2A** 双足机器人强化学习训练栈，使用 PPO 训练 locomotion 策略。支持 SF / WF 两种基础形态（sole-foot / wheel-foot）、锁臂 SFYG / WFYG 兼容任务，以及正在开发的 **SFYG WholeBody（OCS2 机械臂 MPC + 纯足式底盘 RL）**任务。
 
+## PAINT 底层训练 v4
+
+独立任务 `Isaac-Limx-SFYG-TRON2A-Paint-Locomotion-v4` 按 PAINT guide 的替代方案训练完整机器人与实体负载，腿策略控制、机械臂 PD 保持搬运姿态。入口为 `scripts/rsl_rl/train_locomotion_v4.py`，从零训练，拒绝旧 v2/v3 checkpoint。课程、评估和部署契约见 [v4 训练说明](docs/locomotion_v4.md)。
+
 ## 仓库结构
 
 ```
