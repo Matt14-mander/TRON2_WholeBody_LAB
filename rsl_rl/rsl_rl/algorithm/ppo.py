@@ -116,6 +116,7 @@ class PPO:
         self.lam = lam
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
+        self.last_update_stats = {}
 
     def init_storage(
         self,
@@ -196,6 +197,9 @@ class PPO:
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_kl = 0
+        kl_checks = 0
+        max_kl = 0.0
+        early_stopped = False
         generator = self.storage.mini_batch_generator(
             self.num_group,
             self.num_mini_batches,
@@ -235,7 +239,7 @@ class PPO:
             kl_mean = torch.tensor(0, device=self.device, requires_grad=False)
             with torch.inference_mode():
                 kl = torch.sum(
-                    torch.log(sigma_batch / old_sigma_batch + 1.0e-5)
+                    torch.log(sigma_batch / old_sigma_batch)
                     + (
                         torch.square(old_sigma_batch)
                         + torch.square(old_mu_batch - mu_batch)
@@ -246,14 +250,23 @@ class PPO:
                 )
                 kl_mean = torch.mean(kl)
 
+            # Include rejected batches: otherwise an update stopped on its
+            # second batch reports only the near-zero KL of its first batch.
+            kl_value = float(kl_mean)
+            mean_kl += kl_value
+            max_kl = max(max_kl, kl_value)
+            kl_checks += 1
+            should_stop = (self.desired_kl is not None and self.early_stop
+                           and kl_value > self.desired_kl * 1.5)
+
             # KL
             if self.desired_kl != None and self.schedule == "adaptive":
                 with torch.inference_mode():
-                    if kl_mean > self.desired_kl * 2.0:
+                    if should_stop or kl_mean > self.desired_kl * 2.0:
                         self.learning_rate = max(
                             self.min_learning_rate, self.learning_rate / 1.5
                         )
-                    elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
+                    elif num_updates > 0 and kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
                         self.learning_rate = min(
                             self.max_learning_rate, self.learning_rate * 1.5
                         )
@@ -261,10 +274,9 @@ class PPO:
                     for param_group in self.optimizer.param_groups:
                         param_group["lr"] = self.learning_rate
 
-            if self.desired_kl != None and self.early_stop:
-                if kl_mean > self.desired_kl * 1.5:
-                    print("early stop, num_updates =", num_updates)
-                    break
+            if should_stop:
+                early_stopped = True
+                break
 
             # Surrogate loss
             ratio = torch.exp(
@@ -310,7 +322,31 @@ class PPO:
             num_updates += 1
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
-            mean_kl += kl_mean.item()
+
+        # The supervised encoder changes the effective policy after PPO's KL
+        # checks. Measure that otherwise invisible change on a bounded probe.
+        with torch.no_grad():
+            total = self.storage.observations.shape[0] * self.storage.observations.shape[1]
+            probe_ids = torch.linspace(0, total - 1, min(total, 2048), device=self.device).long()
+            probe_obs = self.storage.observations.flatten(0, 1)[probe_ids]
+            probe_history = self.storage.observation_history.flatten(0, 1)[probe_ids]
+            probe_commands = self.storage.commands.flatten(0, 1)[probe_ids]
+            old_probe_mu = self.storage.mu.flatten(0, 1)[probe_ids]
+            old_probe_sigma = self.storage.sigma.flatten(0, 1)[probe_ids]
+
+            def probe_distribution():
+                self.actor_critic.update_distribution(torch.cat(
+                    (self.encoder.encode(probe_history), probe_obs, probe_commands), -1))
+                return (self.actor_critic.action_mean.detach().clone(),
+                        self.actor_critic.action_std.detach().clone())
+
+            def probe_kl(old_mu, old_sigma, mu, sigma):
+                return float((torch.log(sigma / old_sigma)
+                    + (old_sigma.square() + (old_mu - mu).square()) / (2 * sigma.square())
+                    - .5).sum(-1).mean())
+
+            before_encoder_mu, before_encoder_sigma = probe_distribution()
+            post_actor_kl = probe_kl(old_probe_mu, old_probe_sigma, before_encoder_mu, before_encoder_sigma)
 
         num_updates_extra = 0
         mean_extra_loss = 0
@@ -349,7 +385,23 @@ class PPO:
         if num_updates_extra > 0:
             mean_extra_loss /= num_updates_extra
         mean_surrogate_loss /= max(1, num_updates)
-        mean_kl /= max(1, num_updates)
+        mean_kl /= max(1, kl_checks)
+        with torch.no_grad():
+            after_encoder_mu, after_encoder_sigma = probe_distribution()
+            encoder_policy_kl = probe_kl(before_encoder_mu, before_encoder_sigma,
+                                         after_encoder_mu, after_encoder_sigma)
+            post_update_kl = probe_kl(old_probe_mu, old_probe_sigma, after_encoder_mu, after_encoder_sigma)
+        self.last_update_stats = {
+            "optimizer_steps": num_updates,
+            "planned_optimizer_steps": self.num_learning_epochs * self.num_mini_batches,
+            "kl_checks": kl_checks,
+            "max_checked_kl": max_kl,
+            "early_stopped": float(early_stopped),
+            "encoder_steps": num_updates_extra,
+            "post_actor_probe_kl": post_actor_kl,
+            "encoder_policy_probe_kl": encoder_policy_kl,
+            "post_update_probe_kl": post_update_kl,
+        }
         self.storage.clear()
 
         return (mean_value_loss, mean_extra_loss, mean_surrogate_loss, mean_kl)

@@ -187,7 +187,12 @@ def main(args, app):
         result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True)
         manifest["code_commit"] = result.stdout.strip()
         source_files = [Path(__file__), ROOT / "exts/bipedal_locomotion/bipedal_locomotion/controllers/locomotion_v4.py",
-            *sorted((ROOT / "exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion_v4").glob("*.py"))]
+            *sorted((ROOT / "exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion_v4").glob("*.py")),
+            ROOT / "rsl_rl/rsl_rl/algorithm/ppo.py",
+            ROOT / "rsl_rl/rsl_rl/runner/on_policy_runner.py",
+            ROOT / "rsl_rl/rsl_rl/storage/rollout_storage.py",
+            ROOT / "rsl_rl/rsl_rl/modules/actor_critic.py",
+            ROOT / "rsl_rl/rsl_rl/modules/mlp_encoder.py"]
         manifest["source_files_sha256"] = {}
         for source_file in source_files:
             relative = source_file.relative_to(ROOT)

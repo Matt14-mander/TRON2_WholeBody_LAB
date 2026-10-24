@@ -326,6 +326,8 @@ class OnPolicyRunner:
         self.writer.add_scalar("Loss/learning_rate", self.alg.learning_rate, locs["it"])
         self.writer.add_scalar("Policy/mean_noise_std", mean_std.item(), locs["it"])
         self.writer.add_scalar("Policy/mean_kl", locs["mean_kl"], locs["it"])
+        for key, value in self.alg.last_update_stats.items():
+            self.writer.add_scalar("PPO/" + key, value, locs["it"])
         self.writer.add_scalar(
             "Policy/raw_action_abs_max", locs["raw_action_abs_max"], locs["it"]
         )
