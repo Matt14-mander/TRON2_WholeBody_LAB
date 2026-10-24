@@ -11,7 +11,7 @@
 - `Isaac-Limx-SFYG-TRON2A-Paint-Transport-Student-v4`
 - 专用入口 `scripts/rsl_rl/train_transport_v4.py`，在 spawn 前生成独立负载 USD。
 - 一个环境实现，两种 actor 观测；提供冻结 v4 低层、teacher PPO、固定臂基线、直接参考基线、低速探针、固定受力评估、可视化和日志。
-- Student 环境已可构建和运行，当前不实现 student estimator / distillation 算法；专用入口禁止 student PPO 训练。未来算法应拼接 student144 与估计 wrench3，不能用真实 wrench 替代估计结果宣称 student 验收。
+- Student 环境及后续 PPO＋Teacher KL＋在线 estimator 已接入；开发与启动见 [Teacher–Student](paint_teacher_student.md)。Student actor 拼接 student144 与估计 wrench3，不能用真实 wrench 替代估计结果宣称 student 验收。
 - 现阶段验证目标是环境与接口正确，不是已完成搬运策略训练。高层正式训练应等待低层名义站立、多方向、起停及带载/受力回归通过。
 
 ## Simulation Settings 与机器人

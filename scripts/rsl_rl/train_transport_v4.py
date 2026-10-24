@@ -18,12 +18,16 @@ CASES = ("zero", "forward", "backward", "left", "right", "yaw_left", "yaw_right"
 def parser_for_task():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--mode", choices=("smoke", "eval", "train", "preview"), default="smoke")
-    p.add_argument("--controller", choices=("hold", "reference", "teacher", "probe"), default="hold")
+    p.add_argument("--controller", choices=("hold", "reference", "teacher", "student", "probe"), default="hold")
     p.add_argument("--actor_mode", choices=("teacher", "student"), default="teacher")
     p.add_argument("--locomotion_path", required=True, help="v4 model_N.pt or locomotion_v4.pt")
     p.add_argument("--low_format", choices=("checkpoint", "torchscript"), default="checkpoint")
     p.add_argument("--low_manifest", help="Required companion contract for an exported policy; default parent/contract.json")
     p.add_argument("--teacher_checkpoint")
+    p.add_argument("--student_checkpoint", help="Student weights for eval/warm-start; --resume restores optimizers")
+    p.add_argument("--resume", action="store_true")
+    p.add_argument("--distill_coef", type=float, default=1e-6)
+    p.add_argument("--est_learning_rate", type=float, default=1e-3)
     p.add_argument("--terrain", choices=("flat", "rough"), default="flat")
     p.add_argument("--terrain_level", type=int, default=0)
     p.add_argument("--domain", choices=("nominal", "randomized"), default="nominal")
@@ -60,8 +64,17 @@ def validate_args(args):
         raise ValueError("Counts must be positive.")
     if not 0 <= args.terrain_level <= 9 or len(args.cases) != len(set(args.cases)):
         raise ValueError("Invalid terrain row or duplicate cases.")
-    if args.mode == "train" and args.actor_mode != "teacher":
-        raise ValueError("Student environment is available; student estimator/distillation training is a separate next step.")
+    if not math.isfinite(args.distill_coef) or args.distill_coef < 0 or not math.isfinite(args.est_learning_rate) or args.est_learning_rate <= 0:
+        raise ValueError("Invalid Student loss/estimator settings")
+    student_run = args.actor_mode == "student" and (args.mode == "train" or args.controller == "student")
+    if student_run and not args.teacher_checkpoint:
+        raise ValueError("Student requires --teacher_checkpoint to pin its frozen Teacher")
+    if args.controller == "student" and (args.actor_mode != "student" or not args.student_checkpoint):
+        raise ValueError("Student evaluation requires student mode and --student_checkpoint")
+    if args.student_checkpoint and not student_run:
+        raise ValueError("--student_checkpoint requires Student training/controller")
+    if args.resume and (not student_run or args.mode != "train" or not args.student_checkpoint):
+        raise ValueError("--resume requires Student training and --student_checkpoint")
     if args.mode != "train" and args.controller == "teacher" and (args.actor_mode != "teacher" or not args.teacher_checkpoint):
         raise ValueError("Teacher controller requires teacher mode and --teacher_checkpoint.")
     if args.controller == "probe":
@@ -76,7 +89,7 @@ def validate_args(args):
 
 def make_action(args, raw, obs, actor=None):
     import torch
-    if args.controller == "teacher":
+    if args.controller in ("teacher", "student"):
         return actor(obs["policy"])
     action = torch.zeros(raw.num_envs, 9, device=raw.device)
     if args.controller == "reference":
@@ -99,6 +112,7 @@ def rollout(env, args, app, output, actor=None, debug=None):
                 obs = env.get_observations()
                 sums = torch.zeros(raw.num_envs, 3, device=raw.device)
                 reference_sums = torch.zeros_like(sums)
+                estimator_sums = torch.zeros_like(sums)
                 count, peak_tilt, completed = 0, 0., False
                 duration = 0.
                 for i in range(raw.max_episode_length if args.mode == "eval" else args.steps):
@@ -106,7 +120,12 @@ def rollout(env, args, app, output, actor=None, debug=None):
                         interrupted = True
                         break
                     started = time.monotonic()
+                    estimate, estimate_target = None, None
                     with torch.no_grad():
+                        if args.controller == "student":
+                            estimate = actor.estimator(obs["student"]).clone()
+                            estimate_target = obs["teacher"][:, -3:].clone()
+                            estimator_sums += (estimate - estimate_target).square()
                         obs, reward, dones, info = env.step(make_action(args, raw, obs, actor))
                     state = info["transport_state"]
                     if not all(torch.isfinite(v).all() for v in (*obs.values(), *state.values(), reward)):
@@ -126,6 +145,8 @@ def rollout(env, args, app, output, actor=None, debug=None):
                     stream.write(json.dumps({"case": case, "trial": trial, "step": i, "time_s": duration,
                         "done_env0": bool(dones[0]), "timeout_env0": bool(info["time_outs"][0]),
                         "tracking_reference": desired[0].tolist(),
+                        "estimated_c_pre_action": estimate[0].tolist() if estimate is not None else None,
+                        "true_c_pre_action": estimate_target[0].tolist() if estimate_target is not None else None,
                         "terminated_env0": bool(failure[0]),
                         "termination_terms": {name: bool(value[0]) for name, value in info["transport_done_terms"].items()},
                         **{key: value[0].tolist() for key, value in state.items()},
@@ -145,6 +166,9 @@ def rollout(env, args, app, output, actor=None, debug=None):
                     "reference_rms_vx_vy_wz": ref_rms,
                     "linear_rmse_limit": linear_limit, "yaw_rmse_limit": yaw_limit,
                     "rmse_vx_vy_wz": rmse, "max_base_tilt_deg": peak_tilt,
+                    "estimator_rmse_normalized": (estimator_sums / max(1, count)).mean(0).sqrt().tolist() if args.controller == "student" else None,
+                    "estimator_rmse_N_N_Nm": ((estimator_sums / max(1, count)).mean(0).sqrt()
+                        * torch.tensor([40., 40., 10.], device=raw.device)).tolist() if args.controller == "student" else None,
                     "passed": args.mode == "eval" and completed and peak_tilt < 15.
                         and math.hypot(*rmse[:2]) < linear_limit and rmse[2] < yaw_limit})
                 stream.flush()
@@ -222,7 +246,14 @@ def main(args, app):
             data.body_com_pos_w[0:1, term.payload_ids[0]] - data.root_pos_w[0:1])[0, 2])
         if not math.isfinite(nominal_height):
             raise RuntimeError("Cannot calibrate nominal payload height.")
-        raw.cfg.payload_height_range = tuple(args.payload_height_range or (nominal_height - .1, nominal_height + .1))
+        height_band = args.payload_height_range
+        if (height_band is None and args.actor_mode == "student" and args.teacher_checkpoint
+                and (args.mode == "train" or args.controller == "student")):
+            teacher_metadata = torch.load(args.teacher_checkpoint, map_location="cpu", weights_only=False)
+            height_band = teacher_metadata.get("transport_contract", {}).get("payload_height_range")
+            if height_band is None:
+                raise ValueError("Teacher has no calibrated payload height band")
+        raw.cfg.payload_height_range = tuple(height_band or (nominal_height - .1, nominal_height + .1))
         before = term.low.fingerprint()
         obs = env.get_observations()
         widths = {key: list(value.shape[1:]) for key, value in obs.items()}
@@ -236,8 +267,19 @@ def main(args, app):
             "frozen_low_fingerprint": before, "teacher_source_commit": "3136606",
             "v4_base_commit": "4f923e8", "reward_tracking_sign": "positive exponential",
             "arm_pd": [60., 6.], "wrench_frame": "base -> world -> each body local, applied every physics step"}
+        agent = load_cfg_from_registry(task, "rsl_rl_cfg_entry_point")
+        agent.seed, agent.device, agent.save_interval = args.seed, args.device, args.save_interval
+        manifest["policy_config"] = agent.to_dict()["policy"]
+        student_run = args.actor_mode == "student" and (args.mode == "train" or args.controller == "student")
         source_files = [Path(__file__).resolve(), ROOT / "exts/bipedal_locomotion/bipedal_locomotion/controllers/paint_transport_v4.py",
                        *sorted((ROOT / "exts/bipedal_locomotion/bipedal_locomotion/tasks/transport_v4").glob("*.py"))]
+        source_files += [ROOT / "rsl_rl/rsl_rl" / name for name in (
+            "algorithm/ppo.py", "runner/on_policy_runner.py", "storage/rollout_storage.py",
+            "modules/actor_critic.py", "modules/mlp_encoder.py", "modules/intent_estimator.py",
+            "algorithm/paint_ppo.py", "storage/paint_storage.py", "runner/paint_runner.py")]
+        source_files.append(ROOT / "exts/bipedal_locomotion/bipedal_locomotion/tasks/teacher/teacher_ppo_cfg.py")
+        if student_run:
+            manifest["teacher_sha256"] = hashlib.sha256(Path(args.teacher_checkpoint).read_bytes()).hexdigest()
         manifest["source_sha256"] = {}
         for source in source_files:
             relative = source.relative_to(ROOT)
@@ -250,9 +292,15 @@ def main(args, app):
             from bipedal_locomotion.tasks.transport_v4.debug_vis import TransportDebugView
             debug = TransportDebugView(raw)
             raw._transport_debug = debug
-        if args.mode == "train" or args.controller == "teacher":
-            agent = load_cfg_from_registry(task, "rsl_rl_cfg_entry_point")
-            agent.seed, agent.device, agent.save_interval = args.seed, args.device, args.save_interval
+        if student_run:
+            from rsl_rl.runner.paint_runner import PaintRunner
+            train_cfg = agent.to_dict()
+            train_cfg["algorithm"].update(distill_coef=args.distill_coef, est_learning_rate=args.est_learning_rate)
+            runner = PaintRunner(env, train_cfg, manifest, args.teacher_checkpoint, output, args.device)
+            if args.student_checkpoint:
+                runner.load(args.student_checkpoint, resume=args.resume)
+            actor = runner.get_inference_policy(device=raw.device)
+        elif args.mode == "train" or args.controller == "teacher":
 
             class TransportRunner(OnPolicyRunner):
                 def log(self, locs, *a, **kw):
@@ -291,13 +339,18 @@ def main(args, app):
             runner.learn(args.max_iterations, init_at_random_ep_len=False)
             # Export only the high-level teacher; low-level remains a separately pinned artifact.
             from copy import deepcopy
-            with (output / "teacher_actor.pt").open("wb") as stream:
-                torch.jit.save(torch.jit.script(deepcopy(runner.alg.actor_critic.actor).cpu().eval()), stream)
+            if student_run:
+                runner.export(output / "student_actor.pt")
+            else:
+                with (output / "teacher_actor.pt").open("wb") as stream:
+                    torch.jit.save(torch.jit.script(deepcopy(runner.alg.actor_critic.actor).cpu().eval()), stream)
         else:
             result = rollout(env, args, app, output, actor, debug)
             print(f"[TRANSPORT] evaluation={result}", flush=True)
         frozen = term.low.fingerprint() == before
         completion = {"complete": True, "frozen_weights_verified": frozen, "mode": args.mode}
+        if student_run:
+            completion["frozen_teacher_verified"] = runner.verify_frozen_teacher()
         (output / "completion.json").write_text(json.dumps(completion, indent=2) + "\n", encoding="utf-8")
         if not frozen:
             raise RuntimeError("Frozen low-level weights changed.")
