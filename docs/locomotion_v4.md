@@ -1,5 +1,7 @@
 # PAINT guide 底层训练 v4
 
+2026-10-25 双足重建：完整 SFYG + 实体负载的后续训练请使用显式 `--design biped`，见 [双足学走设计与训练流程](locomotion_v4_biped.md)。下面的旧配置仍对应 `--design baseline`，用于复查和对照；两者的 checkpoint 输入不兼容。
+
 2026-10-25 更新：默认恢复相位步态，新输入为policy123/history360/command3，actor129→10。首次训练与对照安排见 [恢复步态训练计划](locomotion_v4_gait_retrain.md)。旧无步态v4用`--gait legacy`播放/评估；新旧checkpoint严格区分。
 
 分支 `locomotion-v4`，基线 `main@457f0bb`。

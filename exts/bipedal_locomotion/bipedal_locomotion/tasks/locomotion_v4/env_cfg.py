@@ -10,6 +10,7 @@ from isaaclab.utils.noise import AdditiveGaussianNoiseCfg as GaussianNoise
 
 from bipedal_locomotion.assets.config.solefoot_yg_tron2a_wholebody_cfg import SOLEFOOT_YG_TRON2A_WHOLEBODY_CFG
 from bipedal_locomotion.controllers.locomotion_v4 import LEG_JOINTS, DEFAULT_GAIT
+from bipedal_locomotion.controllers import locomotion_biped as biped
 from bipedal_locomotion.controllers.ocs2_reset import configure_nominal_ocs2_reset
 from bipedal_locomotion.tasks.locomotion import mdp as legacy
 from bipedal_locomotion.tasks.locomotion.robots.limx_solefoot_tron2a_env_cfg import SF_TRON2A_BaseEnvCfg
@@ -39,6 +40,7 @@ class ProprioCfg(ObsGroup):
 class PolicyCfg(ProprioCfg):
     heights = ObsTerm(func=mdp.heights, clip=(-1., 1.), noise=GaussianNoise(mean=0., std=.01))
     gait = ObsTerm(func=mdp.gait_observation)
+    arm = None
 
 
 @configclass
@@ -60,6 +62,8 @@ class CriticCfg(ObsGroup):
     mass = ObsTerm(func=mdp.current_masses)
     wrench = ObsTerm(func=legacy.generated_commands, params={"command_name": "payload_wrench"}, scale=.05)
     gait = ObsTerm(func=mdp.gait_observation)
+    arm = None
+    foot_load = None
     enable_corruption = False
     concatenate_terms = True
 
@@ -94,6 +98,7 @@ class ActionsCfg:
 @configclass
 class PaintLocomotionV4EnvCfg(SF_TRON2A_BaseEnvCfg):
     locomotion_gait: dict = dict(DEFAULT_GAIT)
+    biped: dict = None
 
     def __post_init__(self):
         self.scene.height_scanner = RayCasterCfg(prim_path="{ENV_REGEX_NS}/Robot/base_Link",
@@ -167,6 +172,52 @@ def configure_experiment(cfg, gait="restored", gait_weight=.75, command_profile=
             params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="ankle_pitch_[RL]_Link")})
     else:
         cfg.rewards.gait_reward.weight = gait_weight
+
+
+def configure_biped(cfg, skill="bootstrap", evaluation=False, gait_weight=1.):
+    """Rebuild the task while retaining the FULL physical SFYG and payload.
+
+    Stage promotion is explicit, based on evaluation, rather than iteration.
+    No synthetic base wrench or nominal-arm mass cancellation is introduced.
+    """
+    import hashlib
+    from pathlib import Path
+    source = Path(__file__).resolve().parents[5] / "robot_description/tron2/SFYG_TRON2A/urdf/robot.urdf"
+    cfg.biped = {"recipe": "full_sfyg_walk_v1", "sole_geometry": biped.sole_geometry(source),
+                 "source_urdf_sha256": hashlib.sha256(source.read_bytes()).hexdigest()}
+    root_height = biped.nominal_root_height(source, cfg.scene.robot.init_state.joint_pos)
+    cfg.scene.robot.init_state.pos = (0., 0., root_height)
+    cfg.biped["nominal_root_height_m"] = root_height
+    cfg.biped["nominal_sole_spawn_clearance_m"] = .01
+    cfg.locomotion_gait = dict(biped.GAIT)
+    cfg.commands.base_velocity.profile = skill
+    if skill == "bootstrap":
+        cfg.commands.base_velocity.resampling_time_range = (1e9, 1e9)
+    cfg.observations.policy.arm = ObsTerm(func=mdp.biped_arm_observation)
+    cfg.observations.critic.arm = ObsTerm(func=mdp.biped_arm_observation)
+    cfg.observations.critic.foot_load = ObsTerm(func=mdp.biped_load_observation)
+    cfg.rewards.gait_reward = None
+    cfg.rewards.feet_air_time = None
+    cfg.rewards.load_transfer = RewTerm(func=mdp.biped_load_cost, weight=-gait_weight)
+    cfg.rewards.swing_clearance = RewTerm(func=mdp.biped_clearance_cost, weight=-.5 * gait_weight)
+    cfg.rewards.motion_shortfall = RewTerm(func=mdp.biped_stall_cost, weight=-1.)
+    cfg.rewards.valid_touchdown = RewTerm(func=mdp.biped_touchdown, weight=gait_weight)
+    cfg.rewards.airborne = RewTerm(func=mdp.biped_airborne_cost, weight=-1.)
+    cfg.rewards.track_lin_vel_xy.func = mdp.biped_track_linear
+    cfg.rewards.track_lin_vel_xy.params = {"std": cfg.rewards.track_lin_vel_xy.params["std"]}
+    cfg.rewards.track_ang_vel_z.params["std"] = .25
+    cfg.rewards.flat_orientation.weight = -2.5
+    if skill == "bootstrap":
+        cfg.rewards.action_rate_l2.weight = -.005
+        cfg.rewards.action_smoothness.weight = -.002
+    # Modest randomization, restricted to legs. Arm/gripper reset to defaults
+    # every episode and are held by the existing articulated PD action term.
+    cfg.events.reset_robot_joints = EventTerm(func=mdp.reset_biped_joints, mode="reset",
+        params={"asset_cfg": legs(), "offset": 0. if evaluation else .05})
+    if not evaluation:
+        cfg.events.reset_robot_base.params["pose_range"]["yaw"] = (-.05, .05)
+        cfg.events.reset_robot_base.params["velocity_range"].update(
+            {"x": (-.03, .03), "y": (-.03, .03), "yaw": (-.03, .03)})
 
 
 def configure_stage(cfg, settings, limits, evaluation=False):

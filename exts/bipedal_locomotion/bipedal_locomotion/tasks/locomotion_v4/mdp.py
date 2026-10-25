@@ -4,19 +4,22 @@ import torch
 from isaaclab.managers import CommandTerm, CommandTermCfg
 from isaaclab.envs.mdp.actions import JointPositionAction, JointPositionActionCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import quat_apply_inverse
+from isaaclab.utils.math import quat_apply, quat_apply_inverse
 
 from bipedal_locomotion.controllers.locomotion_v4 import (
     LEG_JOINTS, sample_planar_wrench, gait_features, gait_targets, gait_score,
 )
 from bipedal_locomotion.controllers.standwalk_core import scheduled_velocity, standing_mask
+from bipedal_locomotion.controllers import locomotion_biped as biped
 
 
 class VelocityCommand(CommandTerm):
     def __init__(self, cfg, env):
         super().__init__(cfg, env)
         # Fixed env quotas prevent short standing failures from disappearing from rollout.
-        if getattr(cfg, "profile", "mixed") == "walk_first":
+        if getattr(cfg, "profile", "mixed") in biped.SKILLS:
+            self.roles = biped.command_roles(self.num_envs, cfg.profile, self.device)
+        elif getattr(cfg, "profile", "mixed") == "walk_first":
             roles = torch.arange(self.num_envs, device=self.device) % 20
             self.roles = torch.where(roles < 2, 0, torch.where(roles < 18, 1, torch.where(roles < 19, 2, 3)))
         else:
@@ -40,6 +43,8 @@ class VelocityCommand(CommandTerm):
         axes = torch.randint(0, 3, (n,), device=self.device)
         mask = torch.nn.functional.one_hot(axes, 3).bool()
         target = torch.where((torch.rand(n, 1, device=self.device) < .5) | mask, target, 0.)
+        if getattr(self.cfg, "profile", "mixed") in biped.SKILLS:
+            target = biped.movement_targets(n, self.cfg.profile, self.cfg.limits, self.device)
         if getattr(self.cfg, "profile", "mixed") == "walk_first":
             # A separate experiment: exclude tiny nonzero movement targets.
             limits = target.new_tensor(self.cfg.limits)
@@ -51,6 +56,8 @@ class VelocityCommand(CommandTerm):
             target[:] = torch.tensor(self.cfg.evaluation_velocity, device=self.device)
         self.target[env_ids] = target
         initial = scheduled_velocity(torch.zeros(n, device=self.device), self.roles[env_ids], target)
+        if getattr(self.cfg, "profile", "mixed") in biped.SKILLS:
+            initial.zero_()
         self._command[env_ids] = initial
         self.is_standing_env[env_ids] = standing_mask(initial,
             torch.zeros(n, device=self.device, dtype=torch.bool))
@@ -58,6 +65,9 @@ class VelocityCommand(CommandTerm):
     def _update_command(self):
         time = self._env.episode_length_buf * self._env.step_dt
         command = scheduled_velocity(time, self.roles, self.target, transition_s=1.)
+        if getattr(self.cfg, "profile", "mixed") in biped.SKILLS:
+            u = (time / .5).clamp(0., 1.)
+            command *= (u.square() * (3 - 2 * u))[:, None]
         # Match high-level clipping and deadband in training and deployment.
         command[:, :2] = torch.where(command[:, :2].norm(dim=-1, keepdim=True) <= .02, 0., command[:, :2])
         command[:, 2] = torch.where(command[:, 2].abs() <= .03, 0., command[:, 2])
@@ -183,6 +193,122 @@ def heights(env):
 def gait_observation(env):
     # Read the episode clock directly: rewards run before command updates in Isaac.
     return gait_features(env.episode_length_buf * env.step_dt, env.cfg.locomotion_gait)
+
+
+def biped_arm_observation(env):
+    robot = env.scene["robot"]
+    if not hasattr(env, "_biped_arm_ids"):
+        env._biped_arm_ids = robot.find_joints(list(biped.ARM_JOINTS), preserve_order=True)[0]
+    ids = env._biped_arm_ids
+    return torch.cat((robot.data.joint_pos[:, ids], robot.data.joint_vel[:, ids] * .1), -1)
+
+
+def biped_feet(env):
+    """Foot collisions transformed to world, cached within one control tick.
+
+    Nearest local scan height is adequate on nominal flat terrain. Detailed
+    per-corner terrain contact on rough terrain requires its own acceptance.
+    Reset invalidates this cache even when the physics tick did not advance.
+    """
+    tick = env._sim_step_counter
+    cached = getattr(env, "_biped_feet_cache", None)
+    if cached is not None and cached[0] == tick:
+        return cached[1]
+    robot = env.scene["robot"]
+    sensor = env.scene.sensors["contact_forces"]
+    if not hasattr(env, "_biped_geometry"):
+        names = ["ankle_pitch_L_Link", "ankle_pitch_R_Link"]
+        env._biped_body_ids = robot.find_bodies(names, preserve_order=True)[0]
+        env._biped_contact_ids = sensor.find_bodies(names, preserve_order=True)[0]
+        env._biped_leg_ids = robot.find_joints(list(LEG_JOINTS), preserve_order=True)[0]
+        geometry = env.cfg.biped["sole_geometry"]
+        env._biped_geometry = (
+            torch.tensor([foot["points"] for foot in geometry], device=env.device),
+            torch.tensor([foot["radii"] for foot in geometry], device=env.device))
+    ids = env._biped_body_ids
+    points, radii = env._biped_geometry
+    pos, quat = robot.data.body_pos_w[:, ids], robot.data.body_quat_w[:, ids]
+    shape = (env.num_envs, 2, points.shape[1])
+    rotated = quat_apply(quat[:, :, None].expand(*shape, 4).reshape(-1, 4),
+                         points[None].expand(*shape, 3).reshape(-1, 3)).reshape(*shape, 3)
+    collision_world = pos[:, :, None] + rotated
+    hits = env.scene.sensors["height_scanner"].data.ray_hits_w
+    nearest = (pos[:, :, None, :2] - hits[:, None, :, :2]).square().sum(-1).argmin(-1)
+    ground = hits[..., 2].gather(1, nearest)
+    clearance = (collision_world[..., 2] - radii[None]).min(-1).values - ground
+    value = {"force_z": sensor.data.net_forces_w[:, env._biped_contact_ids, 2],
+             "clearance": clearance, "velocity": robot.data.body_lin_vel_w[:, ids],
+             "collision_world": collision_world, "ground": ground,
+             "contact": sensor.data.net_forces_w[:, env._biped_contact_ids, 2] > 5.}
+    env._biped_feet_cache = (tick, value)
+    return value
+
+
+def biped_load_observation(env):
+    feet = biped_feet(env)
+    return feet["force_z"] / (current_masses(env).sum(-1, keepdim=True) * 9.81)
+
+
+def reset_biped_joints(env, env_ids, asset_cfg, offset=.05):
+    robot = env.scene[asset_cfg.name]
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
+    q = robot.data.default_joint_pos[env_ids].clone()
+    dq = robot.data.default_joint_vel[env_ids].clone()
+    ids = asset_cfg.joint_ids
+    q[:, ids] += (2 * torch.rand(len(env_ids), len(ids), device=env.device) - 1) * offset
+    limits = robot.data.joint_pos_limits[env_ids][:, ids]
+    q[:, ids] = q[:, ids].maximum(limits[..., 0]).minimum(limits[..., 1])
+    robot.write_joint_state_to_sim(q, dq, env_ids=env_ids)
+    robot.set_joint_position_target(q, env_ids=env_ids)
+    if hasattr(env, "_biped_air_peak"):
+        env._biped_air_peak[env_ids] = 0.
+    env._biped_feet_cache = None
+
+
+def biped_load_cost(env):
+    contact = gait_targets(env.episode_length_buf * env.step_dt, env.cfg.locomotion_gait)[0]
+    return biped.load_tracking_cost(biped_feet(env)["force_z"], current_masses(env).sum(-1), contact) * ~env.command_manager.get_term("base_velocity").is_standing_env
+
+
+def biped_clearance_cost(env):
+    contact, height, _ = gait_targets(env.episode_length_buf * env.step_dt, env.cfg.locomotion_gait)
+    error = (biped_feet(env)["clearance"].clamp_min(0.) - height) / env.cfg.locomotion_gait["swing_height"]
+    return ((1 - contact) * error.square().clamp(max=4.)).mean(-1) * ~env.command_manager.get_term("base_velocity").is_standing_env
+
+
+def biped_stall_cost(env):
+    data = env.scene["robot"].data
+    return biped.motion_shortfall(env.command_manager.get_command("base_velocity"),
+                                  data.root_lin_vel_b, data.root_ang_vel_b[:, 2])
+
+
+def biped_track_linear(env, std=.2):
+    return biped.velocity_score(env.command_manager.get_command("base_velocity"),
+                                 env.scene["robot"].data.root_lin_vel_b, std)
+
+
+def biped_airborne_cost(env):
+    return (~biped_feet(env)["contact"]).all(-1).float()
+
+
+def biped_touchdown(env):
+    """A small event reward, requiring real clearance and correctly timed landing."""
+    feet = biped_feet(env)
+    if not hasattr(env, "_biped_air_peak"):
+        env._biped_air_peak = torch.zeros(env.num_envs, 2, device=env.device)
+    peak = env._biped_air_peak
+    peak.copy_(torch.maximum(peak, feet["clearance"]))
+    sensor = env.scene.sensors["contact_forces"]
+    ids = env._biped_contact_ids
+    first = sensor.compute_first_contact(env.step_dt)[:, ids]
+    duration = sensor.data.last_air_time[:, ids]
+    desired = gait_targets(env.episode_length_buf * env.step_dt, env.cfg.locomotion_gait)[0]
+    valid = first & (duration >= .08) & (duration <= 1.) & (peak >= .015) & (desired > .5)
+    peak[feet["contact"]] = 0.
+    moving = ~env.command_manager.get_term("base_velocity").is_standing_env
+    # RewardManager multiplies by dt: this contributes .1 per valid touchdown.
+    return .1 * valid.float().sum(-1) * moving / env.step_dt
 
 
 def restored_gait(env, sensor_cfg, asset_cfg):

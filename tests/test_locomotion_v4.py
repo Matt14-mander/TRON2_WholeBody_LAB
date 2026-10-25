@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTROLLERS = ROOT / "exts/bipedal_locomotion/bipedal_locomotion/controllers"
 sys.path[:0] = [str(CONTROLLERS), str(ROOT / "rsl_rl")]
 import locomotion_v4 as core
+import locomotion_biped as biped
 import standwalk_core
 
 
@@ -49,11 +50,17 @@ def native_module():
         return v + 2 * (q[:, :1] * torch.cross(xyz, v, dim=-1)
                          + torch.cross(xyz, torch.cross(xyz, v, dim=-1), dim=-1))
     maths.quat_apply_inverse = inverse
+    def apply(q, v):
+        conjugate = q.clone()
+        conjugate[:, 1:] *= -1
+        return inverse(conjugate, v)
+    maths.quat_apply = apply
     modules = {name: types.ModuleType(name) for name in ("isaaclab", "isaaclab.envs", "isaaclab.envs.mdp",
         "bipedal_locomotion", "bipedal_locomotion.controllers")}
     modules.update({"isaaclab.managers": managers, "isaaclab.envs.mdp.actions": actions,
         "isaaclab.utils": utils, "isaaclab.utils.math": maths,
         "bipedal_locomotion.controllers.locomotion_v4": core,
+        "bipedal_locomotion.controllers.locomotion_biped": biped,
         "bipedal_locomotion.controllers.standwalk_core": standwalk_core})
     path = ROOT / "exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion_v4/mdp.py"
     spec = importlib.util.spec_from_file_location("v4_native_terms", path)
@@ -230,7 +237,8 @@ class V4Contracts(unittest.TestCase):
                                     velocity_limits=(.35, .2, .4), terrain_level=0)
         with tempfile.TemporaryDirectory(dir=ROOT / ".test-temp") as tmp:
             with patch.dict(sys.modules, {"bipedal_locomotion.controllers.standwalk_core": standwalk_core,
-                                         "bipedal_locomotion.controllers.locomotion_v4": core}):
+                                         "bipedal_locomotion.controllers.locomotion_v4": core,
+                                         "bipedal_locomotion.controllers.locomotion_biped": biped}):
                 with contextlib.redirect_stdout(io.StringIO()):
                     summary = script.evaluate(env, runner, args, Path(tmp), types.SimpleNamespace(is_running=lambda: True))
             self.assertEqual(env.resets, 2)

@@ -1,5 +1,7 @@
 # v4 快速播放与录像
 
+新双足设计必须额外指定 `--design biped --skill_stage bootstrap`（或该模型实际的 omni/transitions 阶段），输入 policy135、actor141；完整命令见 [双足训练流程](locomotion_v4_biped.md)。下面的 policy123 示例对应旧 baseline 模型。
+
 `play_locomotion_v4.py`复用实体负载准备和严格checkpoint检查。默认读取新步态模型（policy123/history360/command3）；旧无步态模型必须加`--gait legacy`。
 
 - `--quick`：连续预览，默认30秒，不跑10案例×多回合。移动角色，每3秒在训练速度范围内重新随机采样命令；跌倒或20秒超时由环境自动复位，录像继续。

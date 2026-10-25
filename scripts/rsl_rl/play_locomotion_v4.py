@@ -3,6 +3,7 @@
 Run from a graphical desktop without --headless. --quick switches to one
 continuous random-command rollout; --video records it with velocity overlays.
 Without --quick, uses the deterministic v4 acceptance cases.
+Biped checkpoints require --design biped and their saved --skill_stage.
 """
 import sys
 import traceback

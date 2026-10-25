@@ -4,6 +4,7 @@ import io
 from pathlib import Path
 import sys
 import unittest
+from copy import deepcopy
 
 import torch
 
@@ -80,6 +81,60 @@ class PPOKLTests(unittest.TestCase):
         algo.update()
         self.assertGreater(algo.last_update_stats["encoder_policy_probe_kl"], 1e-5)
         self.assertTrue(all(torch.isfinite(torch.tensor(v)) for v in algo.last_update_stats.values()))
+
+    def test_guard_rolls_back_actor_weights_and_adam_state(self):
+        algo = self.make_rollout()
+        algo.update_kl_guard = True
+        algo.extra_optimizer = None
+        for param in algo.actor_critic.parameters():
+            param.grad = torch.zeros_like(param)
+        algo.optimizer.step()
+        before = deepcopy(algo.actor_critic.state_dict())
+        state = deepcopy(algo.optimizer.state_dict()["state"])
+        step = algo.optimizer.step
+        def excessive_step(*args, **kwargs):
+            value = step(*args, **kwargs)
+            with torch.no_grad():
+                algo.actor_critic.actor[-1].bias.add_(1.)
+            return value
+        algo.optimizer.step = excessive_step
+        algo.update()
+        self.assertEqual(algo.last_update_stats["actor_rejected_updates"], 1)
+        self.assertEqual(algo.last_update_stats["optimizer_steps"], 0)
+        self.assertLess(algo.last_update_stats["post_update_probe_kl"], 1e-6)
+        for key, value in before.items():
+            torch.testing.assert_close(value, algo.actor_critic.state_dict()[key], rtol=0, atol=0)
+        for key, values in state.items():
+            for field, value in values.items():
+                torch.testing.assert_close(value, algo.optimizer.state_dict()["state"][key][field], rtol=0, atol=0)
+
+    def test_guard_rolls_back_encoder_weights_and_adam_state(self):
+        algo = self.make_rollout()
+        algo.update_kl_guard = True
+        algo.schedule = "fixed"
+        for group in algo.optimizer.param_groups:
+            group["lr"] = 0.
+        for param in algo.encoder.parameters():
+            param.grad = torch.zeros_like(param)
+        algo.extra_optimizer.step()
+        before = deepcopy(algo.encoder.state_dict())
+        state = deepcopy(algo.extra_optimizer.state_dict()["state"])
+        step = algo.extra_optimizer.step
+        def excessive_step(*args, **kwargs):
+            value = step(*args, **kwargs)
+            with torch.no_grad():
+                algo.encoder.encoder[-1].bias.add_(20.)
+            return value
+        algo.extra_optimizer.step = excessive_step
+        algo.update()
+        self.assertEqual(algo.last_update_stats["encoder_rejected_updates"], 1)
+        self.assertEqual(algo.last_update_stats["encoder_steps"], 0)
+        self.assertLess(algo.last_update_stats["encoder_policy_probe_kl"], 1e-6)
+        for key, value in before.items():
+            torch.testing.assert_close(value, algo.encoder.state_dict()[key], rtol=0, atol=0)
+        for key, values in state.items():
+            for field, value in values.items():
+                torch.testing.assert_close(value, algo.extra_optimizer.state_dict()["state"][key][field], rtol=0, atol=0)
 
 
 if __name__ == "__main__":

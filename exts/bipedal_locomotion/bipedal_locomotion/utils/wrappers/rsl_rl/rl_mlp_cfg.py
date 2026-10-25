@@ -30,6 +30,8 @@ class RslRlPpoAlgorithmMlpCfg(RslRlPpoAlgorithmCfg):
     early_stop: bool = False
     est_learning_rate: float = 1.0e-3
     encoder_max_grad_norm: float = 0.0
+    update_kl_guard: bool = False
+    encoder_kl_fraction: float = .3
 
 
 @configclass
