@@ -13,6 +13,7 @@ import subprocess
 import shutil
 import sys
 import traceback
+import time
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT / "rsl_rl"), str(ROOT / "exts/bipedal_locomotion")]
@@ -38,6 +39,7 @@ def parser_for_task():
                         "slow", "forward", "left", "right", "yaw_left", "yaw_right"],
                         choices=["stand", "walk", "start_stop", "stop_start", "slow", "forward", "left", "right", "yaw_left", "yaw_right"])
     parser.add_argument("--terrain_level", type=int, default=0, help="Fixed rough-terrain evaluation row [0,9]")
+    parser.add_argument("--real_time", action="store_true", help="Pace evaluation at control frequency when simulation is faster than real time")
     return parser
 
 
@@ -89,6 +91,7 @@ def evaluate(env, runner, args, output, app):
                         if not app.is_running():
                             interrupted = True
                             break
+                        step_started = time.perf_counter()
                         action = policy(torch.cat((encoder(obs["obsHistory"].flatten(1)), obs["policy"], obs["commands"]), dim=-1))
                         obs, reward, dones, infos = env.step(action)
                         state = infos["standwalk_state"]
@@ -102,6 +105,8 @@ def evaluate(env, runner, args, output, app):
                             state["yaw_rate"][0], state["position"][0, :2], state["tilt_deg"][0], raw.step_dt)
                         stream.write(json.dumps({"case": case, "trial": trial, "time_s": t,
                             **{key: value[0].tolist() for key, value in state.items()}, "done": bool(dones[0])}) + "\n")
+                        if getattr(args, "real_time", False):
+                            time.sleep(max(0., raw.step_dt - (time.perf_counter() - step_started)))
                         if bool(dones[0]):
                             completed = bool(infos["time_outs"][0]) and t >= raw.max_episode_length_s - raw.step_dt
                             break
