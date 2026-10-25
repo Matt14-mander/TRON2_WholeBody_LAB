@@ -1,5 +1,7 @@
 # PAINT guide 底层训练 v4
 
+2026-10-25 更新：默认恢复相位步态，新输入为policy123/history360/command3，actor129→10。首次训练与对照安排见 [恢复步态训练计划](locomotion_v4_gait_retrain.md)。旧无步态v4用`--gait legacy`播放/评估；新旧checkpoint严格区分。
+
 分支 `locomotion-v4`，基线 `main@457f0bb`。
 参考：https://paint-bot.github.io/docs/locomotion.html
 
@@ -21,10 +23,10 @@ guide 作者的 ANYmal D 内部 backbone 未公开；这里实现其推荐的完
 
 - 物理 200 Hz，底层 50 Hz，20 s episode。
 - proprio 36 维：机体系角速度×0.25、投影重力、10 个腿关节相对位置、腿关节速度×0.05、上一实际腿动作。
-- policy：proprio + 机身周围 0.8×0.8 m、0.1 m 分辨率的 81 点地形扫描，共 117 维。
+- policy：proprio + 机身周围 0.8×0.8 m、0.1 m 分辨率的 81 点地形扫描 + 6维步态，共123维（legacy117维）。
 - history：最近 10 次控制步的 proprio，旧→新排列，10×36；reset 按 Isaac ObservationManager 的初始化规则填充。
 - 估计器：360→3，监督目标为 critic 最前面的真实机体系线速度，输出 detach 后送 actor。
-- actor 顺序：估计速度(3)、policy(117)、命令(3)，总计 123→10。
+- actor 顺序：估计速度(3)、policy(123)、命令(3)，总计129→10（legacy123→10）。
 - 关节严格按左腿 pitch/roll/yaw/knee/ankle，然后右腿同序；不依赖 URDF 遍历顺序。
 - `q_target = q_default + 0.25 * clip(action,-5,5)`；名义机械臂/夹爪位置保持资产默认值。
 - 速度命令默认 vx±0.35、vy±0.20 m/s、wz±0.40 rad/s。平移范数≤0.02、yaw≤0.03 时归零；站立判定有迟滞。
@@ -49,7 +51,7 @@ nominal 关闭观测噪声，其余阶段开启。负载质量每次 reset 采�
 
 地形课程包含平地、坡面（0–0.15 坡度）、台阶（1–8 cm）、离散障碍（1–6 cm），从低难度初始化。沿用按速度进度的地形升级逻辑；零命令环境不应被其地形等级当作运动能力指标。
 
-奖励保留速度跟踪、姿态/高度、脚滑动、动作平滑、关节力矩和限位；移除旧固定 gait/膝姿/强 default-pose 约束，使用短单脚支撑奖励（包含低速和纯转向）及站立实际速度、双脚接触、腿运动惩罚。35°倾角或离地高度<0.45 m 终止，保留非法机身接触终止，并禁止机械臂、夹爪、负载接触地面以防撑地取巧。终止统计在自动 reset 前捕获。
+奖励保留速度跟踪、姿态/高度、脚滑动、动作平滑、关节力矩和限位；默认恢复0.8Hz相位步态奖励0.75，以此替换单脚支撑奖励。站立关闭步态奖励，保留实际速度、双脚接触、腿运动惩罚；膝姿/强default-pose约束仍关闭。legacy模式保留原single-support。35°倾角或离地高度<0.45 m终止，禁止机械臂、夹爪、负载撑地，终止统计在自动reset前捕获。
 
 PPO 初始 LR 3e-4，自适应范围 [1e-5,3e-4]，KL early stop、梯度裁剪；32 步 rollout，初始动作 std=0.6。actor 使用 `5*tanh(x/5)` 均值边界，环境也裁剪至±5。保留动作饱和、速度估计损失及真实 rollout 站立占比日志。所有参数属于 TRON2 工程起点，需要训练验证，非 guide 给定超参数。
 
@@ -99,7 +101,7 @@ LIVESTREAM=0 python -u scripts/rsl_rl/train_locomotion_v4.py \
 
 每个案例默认 20 回合：站、退、低速、前进、左右、左右 yaw、起停两方向。逐步写 `evaluation_steps.jsonl`，汇总写 `evaluation.json`。固定 seed 跨案例复位，保留终止前状态。已完成回合不等于通过。
 
-初始平地 gate 沿用工程标准：完整20 s、最大倾角<15°、平面/yaw 跟踪 RMSE<0.1，站立速度/yaw RMS<0.05，停止时间<2 s。站立统计忽略零速段最初1 s；漂移报告但尚未作为 gate。粗糙地形这些同一阈值仅供严格对照，不代表已验证适合所有地形。
+初始平地gate要求完整20s、最大倾角<15°、平面/yaw跟踪RMSE<0.1、站立速度/yaw RMS<0.05；另要求移动稳态有向进展比0.7～1.3，停止必须先观测到实际运动且停止时间<2s。新`acceptance_version=v4_motion_progress_v1`不能与旧pass直接混用。站立/移动各忽略段首1s；漂移报告但尚未作为gate。粗糙地形阈值仅供严格对照，尚未经验证。
 
 必须分开跑：
 

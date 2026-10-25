@@ -170,22 +170,22 @@ class V4Contracts(unittest.TestCase):
         from rsl_rl.modules import ActorCritic, MLP_Encoder
         from rsl_rl.algorithm import PPO
         with contextlib.redirect_stdout(io.StringIO()):
-            actor = ActorCritic(123, 125, 10, actor_hidden_dims=[16], critic_hidden_dims=[16],
+            actor = ActorCritic(129, 131, 10, actor_hidden_dims=[16], critic_hidden_dims=[16],
                                 squash_action=True, squash_action_scale=5., init_noise_std=.6)
             encoder = MLP_Encoder(360, 3, hidden_dims=[16], output_detach=True)
         algorithm = PPO(4, encoder, actor, device="cpu", num_learning_epochs=1, num_mini_batches=1,
                         learning_rate=3e-4, max_learning_rate=3e-4, encoder_max_grad_norm=1.)
-        algorithm.init_storage(4, 4, [117], [125], [360], [3], [10])
+        algorithm.init_storage(4, 4, [123], [131], [360], [3], [10])
         before = actor.actor[0].weight.detach().clone()
         for _ in range(4):
-            obs, history, cmd, critic = torch.randn(4, 117), torch.randn(4, 360), torch.randn(4, 3), torch.randn(4, 122)
+            obs, history, cmd, critic = torch.randn(4, 123), torch.randn(4, 360), torch.randn(4, 3), torch.randn(4, 128)
             algorithm.act(obs, history, cmd, critic)
             algorithm.process_env_step(torch.randn(4), torch.zeros(4, dtype=torch.bool), {}, obs)
         algorithm.compute_returns(torch.cat((critic, cmd), -1))
         losses = algorithm.update()
         self.assertTrue(all(torch.isfinite(torch.tensor(v)) for v in losses))
         self.assertFalse(torch.equal(before, actor.actor[0].weight))
-        exported = core.ExportedPolicy(actor.actor, encoder.encoder, 117)
+        exported = core.ExportedPolicy(actor.actor, encoder.encoder, 123)
         scripted = torch.jit.script(exported)
         expected = actor.act_inference(torch.cat((encoder.encode(history), obs, cmd), -1)).clamp(-5, 5)
         self.assertTrue(torch.allclose(scripted(obs, history, cmd), expected))
@@ -229,7 +229,8 @@ class V4Contracts(unittest.TestCase):
         args = types.SimpleNamespace(eval_cases=["stand", "walk"], episodes=1, seed=42,
                                     velocity_limits=(.35, .2, .4), terrain_level=0)
         with tempfile.TemporaryDirectory(dir=ROOT / ".test-temp") as tmp:
-            with patch.dict(sys.modules, {"bipedal_locomotion.controllers.standwalk_core": standwalk_core}):
+            with patch.dict(sys.modules, {"bipedal_locomotion.controllers.standwalk_core": standwalk_core,
+                                         "bipedal_locomotion.controllers.locomotion_v4": core}):
                 with contextlib.redirect_stdout(io.StringIO()):
                     summary = script.evaluate(env, runner, args, Path(tmp), types.SimpleNamespace(is_running=lambda: True))
             self.assertEqual(env.resets, 2)

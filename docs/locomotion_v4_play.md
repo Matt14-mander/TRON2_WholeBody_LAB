@@ -1,6 +1,6 @@
 # v4 快速播放与录像
 
-`play_locomotion_v4.py` 复用 v4 的实体负载准备、117/360/3 输入与严格 checkpoint 检查。
+`play_locomotion_v4.py`复用实体负载准备和严格checkpoint检查。默认读取新步态模型（policy123/history360/command3）；旧无步态模型必须加`--gait legacy`。
 
 - `--quick`：连续预览，默认30秒，不跑10案例×多回合。移动角色，每3秒在训练速度范围内重新随机采样命令；跌倒或20秒超时由环境自动复位，录像继续。
 - `--seconds 30 --command_interval 3`：设置总时长及换指令周期。
@@ -13,6 +13,7 @@
 ```bash
 LIVESTREAM=0 python -u scripts/rsl_rl/play_locomotion_v4.py \
   --checkpoint_path /absolute/path/model_20000.pt \
+  --gait legacy \
   --quick --video --fast --headless --seconds 30 --command_interval 3 \
   --output_dir logs/rsl_rl/v4_quick_$(date +%Y%m%d_%H%M%S) --device cuda:0
 ```

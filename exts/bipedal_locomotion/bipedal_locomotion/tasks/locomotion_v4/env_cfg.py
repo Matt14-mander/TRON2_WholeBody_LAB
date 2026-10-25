@@ -9,7 +9,7 @@ from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveGaussianNoiseCfg as GaussianNoise
 
 from bipedal_locomotion.assets.config.solefoot_yg_tron2a_wholebody_cfg import SOLEFOOT_YG_TRON2A_WHOLEBODY_CFG
-from bipedal_locomotion.controllers.locomotion_v4 import LEG_JOINTS
+from bipedal_locomotion.controllers.locomotion_v4 import LEG_JOINTS, DEFAULT_GAIT
 from bipedal_locomotion.controllers.ocs2_reset import configure_nominal_ocs2_reset
 from bipedal_locomotion.tasks.locomotion import mdp as legacy
 from bipedal_locomotion.tasks.locomotion.robots.limx_solefoot_tron2a_env_cfg import SF_TRON2A_BaseEnvCfg
@@ -38,6 +38,7 @@ class ProprioCfg(ObsGroup):
 @configclass
 class PolicyCfg(ProprioCfg):
     heights = ObsTerm(func=mdp.heights, clip=(-1., 1.), noise=GaussianNoise(mean=0., std=.01))
+    gait = ObsTerm(func=mdp.gait_observation)
 
 
 @configclass
@@ -58,6 +59,7 @@ class CriticCfg(ObsGroup):
     heights = ObsTerm(func=mdp.heights, clip=(-1., 1.))
     mass = ObsTerm(func=mdp.current_masses)
     wrench = ObsTerm(func=legacy.generated_commands, params={"command_name": "payload_wrench"}, scale=.05)
+    gait = ObsTerm(func=mdp.gait_observation)
     enable_corruption = False
     concatenate_terms = True
 
@@ -91,6 +93,8 @@ class ActionsCfg:
 
 @configclass
 class PaintLocomotionV4EnvCfg(SF_TRON2A_BaseEnvCfg):
+    locomotion_gait: dict = dict(DEFAULT_GAIT)
+
     def __post_init__(self):
         self.scene.height_scanner = RayCasterCfg(prim_path="{ENV_REGEX_NS}/Robot/base_Link",
             offset=RayCasterCfg.OffsetCfg(pos=(0., 0., 20.)), attach_yaw_only=True,
@@ -114,7 +118,7 @@ class PaintLocomotionV4EnvCfg(SF_TRON2A_BaseEnvCfg):
                 actuator.min_delay = actuator.max_delay = 0
         self.actions, self.commands, self.observations = ActionsCfg(), CommandsCfg(), ObservationsCfg()
         configure_nominal_ocs2_reset(self, SceneEntityCfg("robot"))
-        # Reuse basic locomotion objectives, discard inherited rigid gait/pose pressure.
+        # Restore gait separately below; strong knee/default-pose constraints remain off.
         for name in ("gait_reward", "stand_still", "knee_joint_orientation", "orientation_exp_knee",
                      "feet_air_time", "action_out_of_limits"):
             if hasattr(self.rewards, name):
@@ -124,8 +128,10 @@ class PaintLocomotionV4EnvCfg(SF_TRON2A_BaseEnvCfg):
         self.rewards.track_lin_vel_xy.weight = 2.
         self.rewards.track_ang_vel_z.weight = 1.
         self.rewards.base_height.params["sensor_cfg"] = SceneEntityCfg("height_scanner")
-        self.rewards.feet_air_time = RewTerm(func=mdp.single_support, weight=.5,
-            params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="ankle_pitch_[RL]_Link")})
+        self.rewards.feet_air_time = None
+        self.rewards.gait_reward = RewTerm(func=mdp.restored_gait, weight=.75,
+            params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["ankle_pitch_L_Link", "ankle_pitch_R_Link"], preserve_order=True),
+                    "asset_cfg": SceneEntityCfg("robot", body_names=["ankle_pitch_L_Link", "ankle_pitch_R_Link"], preserve_order=True)})
         self.rewards.standing_speed = RewTerm(func=stance.standing_speed, weight=-4.)
         self.rewards.standing_yaw = RewTerm(func=stance.standing_yaw, weight=-.5)
         self.rewards.standing_joint_motion = RewTerm(func=stance.standing_joint_motion, weight=-.01,
@@ -147,6 +153,20 @@ class PaintLocomotionV4EnvCfg(SF_TRON2A_BaseEnvCfg):
         self.sim.physx.enable_external_forces_every_iteration = True
         self.scene.height_scanner.update_period = .02
         self.episode_length_s = 20.
+
+
+def configure_experiment(cfg, gait="restored", gait_weight=.75, command_profile="mixed", tracking_std=.5):
+    """Explicit single-variable ablations; legacy mode retains old v4 I/O."""
+    cfg.commands.base_velocity.profile = command_profile
+    cfg.rewards.track_lin_vel_xy.params["std"] = tracking_std
+    if gait == "legacy":
+        cfg.locomotion_gait = None
+        cfg.observations.policy.gait = cfg.observations.critic.gait = None
+        cfg.rewards.gait_reward = None
+        cfg.rewards.feet_air_time = RewTerm(func=mdp.single_support, weight=.5,
+            params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="ankle_pitch_[RL]_Link")})
+    else:
+        cfg.rewards.gait_reward.weight = gait_weight
 
 
 def configure_stage(cfg, settings, limits, evaluation=False):

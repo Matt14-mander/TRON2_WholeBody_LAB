@@ -8,6 +8,7 @@ from datetime import datetime
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 import subprocess
 import shutil
@@ -31,6 +32,13 @@ def parser_for_task():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output_dir")
     parser.add_argument("--velocity_limits", type=float, nargs=3, default=(.35, .2, .4))
+    parser.add_argument("--gait", choices=("restored", "legacy"), default="restored",
+                        help="Restored phase gait (new I/O); legacy replays pre-gait v4 checkpoints")
+    parser.add_argument("--gait_weight", type=float, default=.75,
+                        help="Set 0 for a reward ablation with identical phase observations")
+    parser.add_argument("--command_profile", choices=("mixed", "walk_first"), default="mixed")
+    parser.add_argument("--tracking_std", type=float, default=.5,
+                        help="Linear velocity exponential-kernel std; .5 preserves old v4")
     parser.add_argument("--payload_mass_range", type=float, nargs=2)
     parser.add_argument("--force_n", type=float)
     parser.add_argument("--yaw_torque_nm", type=float)
@@ -50,6 +58,9 @@ def settings_for_args(args):
                     force_n=args.force_n if args.force_n is not None else stage.force_n,
                     yaw_torque_nm=args.yaw_torque_nm if args.yaw_torque_nm is not None else stage.yaw_torque_nm)
     validate_ranges(stage.payload_mass, stage.force_n, stage.yaw_torque_nm, args.velocity_limits)
+    if (not math.isfinite(args.gait_weight) or args.gait_weight < 0
+            or not math.isfinite(args.tracking_std) or args.tracking_std <= 0):
+        raise ValueError("Gait weight must be finite/nonnegative and tracking std positive/finite.")
     if min(args.max_iterations, args.save_interval, args.episodes) < 1 or (args.num_envs is not None and args.num_envs < 1):
         raise ValueError("Iteration, save, episode and environment counts must be positive.")
     if not 0 <= args.terrain_level <= 9 or len(args.eval_cases) != len(set(args.eval_cases)):
@@ -64,6 +75,7 @@ def settings_for_args(args):
 def evaluate(env, runner, args, output, app):
     import torch
     from bipedal_locomotion.controllers.standwalk_core import EVAL_CASES, EpisodeMetrics
+    from bipedal_locomotion.controllers.locomotion_v4 import MotionProgress
     raw = env.unwrapped
     command = raw.command_manager.get_term("base_velocity")
     command.cfg.resampling_time_range = (1e9, 1e9)
@@ -81,6 +93,7 @@ def evaluate(env, runner, args, output, app):
                 raw.reset(seed=args.seed + trial)
                 obs = env.get_observations()
                 metrics, completed, steps = EpisodeMetrics(), False, 0
+                progress = MotionProgress()
                 robot = raw.scene["robot"]
                 payload_id = robot.find_bodies("paint_payload_Link")[0][0]
                 masses = robot.root_physx_view.get_masses()[0]
@@ -103,6 +116,8 @@ def evaluate(env, runner, args, output, app):
                         t = steps * raw.step_dt
                         metrics.update(t, state["command"][0], state["linear_velocity"][0],
                             state["yaw_rate"][0], state["position"][0, :2], state["tilt_deg"][0], raw.step_dt)
+                        progress.update(t, state["command"][0], state["linear_velocity"][0],
+                                        state["yaw_rate"][0], raw.step_dt)
                         stream.write(json.dumps({"case": case, "trial": trial, "time_s": t,
                             **{key: value[0].tolist() for key, value in state.items()}, "done": bool(dones[0])}) + "\n")
                         if getattr(args, "real_time", False):
@@ -110,18 +125,23 @@ def evaluate(env, runner, args, output, app):
                         if bool(dones[0]):
                             completed = bool(infos["time_outs"][0]) and t >= raw.max_episode_length_s - raw.step_dt
                             break
+                motion = progress.result(require_stop=case in ("start_stop", "stop_start"))
+                result = metrics.result(steps * raw.step_dt, completed,
+                    require_standing=case in ("stand", "start_stop", "stop_start"),
+                    require_stop=False)
+                result["stop_latency_s"] = motion["observed_stop_latency_s"]
+                result["passed"] = bool(result["passed"] and motion["motion_passed"])
                 rows.append({"case": case, "seed": args.seed + trial,
                     "payload_mass_kg": payload_mass, "robot_total_mass_kg": total_mass,
                     "max_applied_force_n": peak_force, "max_applied_yaw_torque_nm": peak_torque,
-                    **metrics.result(steps * raw.step_dt, completed,
-                        require_standing=case in ("stand", "start_stop", "stop_start"),
-                        require_stop=case in ("start_stop", "stop_start"))})
+                    **result, **motion})
                 print(f"[EVAL] {case} trial={trial} {rows[-1]}", flush=True)
                 if interrupted:
                     break
             if interrupted:
                 break
     summary = {"interrupted": interrupted, "terrain_level": args.terrain_level,
+        "acceptance_version": "v4_motion_progress_v1",
         "all_passed": not interrupted and len(rows) == len(args.eval_cases) * args.episodes and all(row["passed"] for row in rows),
         "episodes": rows}
     (output / "evaluation.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
@@ -137,7 +157,7 @@ def main(args, app):
     import bipedal_locomotion  # noqa: F401 (registers tasks)
     from bipedal_locomotion.controllers.paint_payload import create_payload_asset
     from bipedal_locomotion.controllers.locomotion_v4 import contract, check_checkpoint, ExportedPolicy
-    from bipedal_locomotion.tasks.locomotion_v4.env_cfg import configure_stage
+    from bipedal_locomotion.tasks.locomotion_v4.env_cfg import configure_stage, configure_experiment
 
     settings = settings_for_args(args)
     torch.manual_seed(args.seed)
@@ -150,6 +170,7 @@ def main(args, app):
     cfg = parse_env_cfg(task, device=args.device, num_envs=args.num_envs or (1 if args.mode == "eval" else 1024))
     cfg.seed = args.seed
     configure_stage(cfg, settings, args.velocity_limits, evaluation=args.mode == "eval")
+    configure_experiment(cfg, args.gait, args.gait_weight, args.command_profile, args.tracking_std)
     if getattr(args, "quick", False):
         cfg.viewer.eye, cfg.viewer.lookat = (2.5, 2.5, 1.8), (0., 0., .65)
     if args.mode == "eval" and settings.terrain == "rough":
@@ -172,11 +193,14 @@ def main(args, app):
             raw.scene.env_origins[:] = terrain.env_origins
         env = RslRlVecEnvWrapper(env)
         obs = env.get_observations()
-        if (obs["policy"].ndim != 2 or obs["policy"].shape[1] <= 36
+        expected_policy_width = 123 if cfg.locomotion_gait is not None else 117
+        if (obs["policy"].ndim != 2 or obs["policy"].shape[1] != expected_policy_width
                 or tuple(obs["obsHistory"].shape[1:]) != (10, 36) or obs["commands"].shape[1] != 3
                 or env.num_actions != 10 or not all(torch.isfinite(v).all() for v in obs.values())):
             raise RuntimeError("v4 observation/action preflight failed.")
-        manifest = contract(obs["policy"].shape[1], args.stage, args.velocity_limits, settings)
+        manifest = contract(obs["policy"].shape[1], args.stage, args.velocity_limits, settings, cfg.locomotion_gait)
+        manifest["training_objective"] = {"gait": args.gait, "gait_weight": args.gait_weight,
+            "command_profile": args.command_profile, "tracking_std": args.tracking_std}
         robot = raw.scene["robot"]
         payload_ids, names = robot.find_bodies("paint_payload_Link")
         imported = robot.data.default_mass[:, payload_ids[0]]
@@ -199,7 +223,12 @@ def main(args, app):
             ROOT / "rsl_rl/rsl_rl/runner/on_policy_runner.py",
             ROOT / "rsl_rl/rsl_rl/storage/rollout_storage.py",
             ROOT / "rsl_rl/rsl_rl/modules/actor_critic.py",
-            ROOT / "rsl_rl/rsl_rl/modules/mlp_encoder.py"]
+            ROOT / "rsl_rl/rsl_rl/modules/mlp_encoder.py",
+            ROOT / "exts/bipedal_locomotion/bipedal_locomotion/controllers/standwalk_core.py",
+            ROOT / "exts/bipedal_locomotion/bipedal_locomotion/tasks/standwalk/mdp.py",
+            ROOT / "exts/bipedal_locomotion/bipedal_locomotion/tasks/standwalk/env.py",
+            ROOT / "exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/cfg/SF_TRON2A/limx_base_env_cfg.py",
+            ROOT / "exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/mdp/rewards.py"]
         manifest["source_files_sha256"] = {}
         for source_file in source_files:
             relative = source_file.relative_to(ROOT)
@@ -239,8 +268,11 @@ def main(args, app):
                        for tensor in checkpoint[key].values()):
                 raise ValueError("v4 checkpoint contains nonfinite parameters.")
             if args.resume and (checkpoint["v4_contract"]["settings"] != manifest["settings"]
-                    or checkpoint["v4_contract"]["velocity_limits"] != manifest["velocity_limits"]):
-                raise ValueError("Resume requires identical physical settings and command ranges; use weights-only stage promotion.")
+                    or checkpoint["v4_contract"]["velocity_limits"] != manifest["velocity_limits"]
+                    or checkpoint["v4_contract"].get("training_objective", {
+                        "gait": "legacy", "gait_weight": .75, "command_profile": "mixed", "tracking_std": .5
+                    }) != manifest["training_objective"]):
+                raise ValueError("Resume requires identical physics, commands and objective; use weights-only stage promotion.")
             runner.alg.actor_critic.load_state_dict(checkpoint["model_state_dict"], strict=True)
             runner.alg.encoder.load_state_dict(checkpoint["encoder_state_dict"], strict=True)
             if args.resume:

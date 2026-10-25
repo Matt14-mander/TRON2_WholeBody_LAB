@@ -6,7 +6,9 @@ from isaaclab.envs.mdp.actions import JointPositionAction, JointPositionActionCf
 from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_apply_inverse
 
-from bipedal_locomotion.controllers.locomotion_v4 import LEG_JOINTS, sample_planar_wrench
+from bipedal_locomotion.controllers.locomotion_v4 import (
+    LEG_JOINTS, sample_planar_wrench, gait_features, gait_targets, gait_score,
+)
 from bipedal_locomotion.controllers.standwalk_core import scheduled_velocity, standing_mask
 
 
@@ -14,8 +16,12 @@ class VelocityCommand(CommandTerm):
     def __init__(self, cfg, env):
         super().__init__(cfg, env)
         # Fixed env quotas prevent short standing failures from disappearing from rollout.
-        roles = torch.arange(self.num_envs, device=self.device) % 10
-        self.roles = torch.where(roles < 2, 0, torch.where(roles < 6, 1, torch.where(roles < 8, 2, 3)))
+        if getattr(cfg, "profile", "mixed") == "walk_first":
+            roles = torch.arange(self.num_envs, device=self.device) % 20
+            self.roles = torch.where(roles < 2, 0, torch.where(roles < 18, 1, torch.where(roles < 19, 2, 3)))
+        else:
+            roles = torch.arange(self.num_envs, device=self.device) % 10
+            self.roles = torch.where(roles < 2, 0, torch.where(roles < 6, 1, torch.where(roles < 8, 2, 3)))
         self.roles = self.roles[torch.randperm(self.num_envs, device=self.device)]
         self.target = torch.zeros(self.num_envs, 3, device=self.device)
         self._command = torch.zeros_like(self.target)
@@ -34,6 +40,12 @@ class VelocityCommand(CommandTerm):
         axes = torch.randint(0, 3, (n,), device=self.device)
         mask = torch.nn.functional.one_hot(axes, 3).bool()
         target = torch.where((torch.rand(n, 1, device=self.device) < .5) | mask, target, 0.)
+        if getattr(self.cfg, "profile", "mixed") == "walk_first":
+            # A separate experiment: exclude tiny nonzero movement targets.
+            limits = target.new_tensor(self.cfg.limits)
+            minimum = torch.minimum(target.new_tensor((.15, .10, .15)), limits)
+            magnitude = minimum + (target.abs() / limits) * (limits - minimum)
+            target = torch.where(target != 0., target.sign() * magnitude, 0.)
         if self.cfg.evaluation_case >= 0:
             self.roles[env_ids] = self.cfg.evaluation_case
             target[:] = torch.tensor(self.cfg.evaluation_velocity, device=self.device)
@@ -64,6 +76,7 @@ class VelocityCommandCfg(CommandTermCfg):
     class_type: type = VelocityCommand
     resampling_time_range: tuple = (5., 8.)
     limits: tuple = (.35, .2, .4)
+    profile: str = "mixed"
     evaluation_case: int = -1
     evaluation_velocity: tuple = (0., 0., 0.)
 
@@ -165,6 +178,27 @@ def heights(env):
     if not torch.isfinite(hits).all():
         raise RuntimeError("v4 height scan missed the terrain; check terrain mesh and ray coverage.")
     return env.scene["robot"].data.root_pos_w[:, 2:3] - hits - .5
+
+
+def gait_observation(env):
+    # Read the episode clock directly: rewards run before command updates in Isaac.
+    return gait_features(env.episode_length_buf * env.step_dt, env.cfg.locomotion_gait)
+
+
+def restored_gait(env, sensor_cfg, asset_cfg):
+    sensor = env.scene.sensors[sensor_cfg.name]
+    robot = env.scene[asset_cfg.name]
+    feet = robot.data.body_pos_w[:, asset_cfg.body_ids]
+    hits = env.scene.sensors["height_scanner"].data.ray_hits_w
+    # Preserve the legacy foot-link height objective on flat ground, but remove
+    # the world terrain elevation. This is link height, not calibrated sole clearance.
+    nearest = (feet[:, :, None, :2] - hits[:, None, :, :2]).square().sum(-1).argmin(-1)
+    ground = hits[..., 2].gather(1, nearest)
+    reward = gait_score(
+        sensor.data.net_forces_w[:, sensor_cfg.body_ids].norm(dim=-1),
+        robot.data.body_lin_vel_w[:, asset_cfg.body_ids], feet[..., 2] - ground,
+        gait_targets(env.episode_length_buf * env.step_dt, env.cfg.locomotion_gait))
+    return reward * ~env.command_manager.get_term("base_velocity").is_standing_env
 
 
 def single_support(env, sensor_cfg):
