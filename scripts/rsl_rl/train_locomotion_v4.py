@@ -150,6 +150,8 @@ def main(args, app):
     cfg = parse_env_cfg(task, device=args.device, num_envs=args.num_envs or (1 if args.mode == "eval" else 1024))
     cfg.seed = args.seed
     configure_stage(cfg, settings, args.velocity_limits, evaluation=args.mode == "eval")
+    if getattr(args, "quick", False):
+        cfg.viewer.eye, cfg.viewer.lookat = (2.5, 2.5, 1.8), (0., 0., .65)
     if args.mode == "eval" and settings.terrain == "rough":
         cfg.scene.terrain.max_init_terrain_level = args.terrain_level
     source = cfg.scene.robot.spawn.usd_path
@@ -158,7 +160,7 @@ def main(args, app):
     agent = load_cfg_from_registry(task, "rsl_rl_cfg_entry_point")
     agent.seed, agent.device = args.seed, args.device
     agent.max_iterations, agent.save_interval = args.max_iterations, args.save_interval
-    env = gym.make(task, cfg=cfg)
+    env = gym.make(task, cfg=cfg, render_mode="rgb_array" if getattr(args, "video", False) else None)
     runner = None
     try:
         raw = env.unwrapped
@@ -252,6 +254,9 @@ def main(args, app):
         print(f"[V4] stage={args.stage} settings={settings} shapes={manifest['observation_shapes']}", flush=True)
         if args.mode == "train":
             runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=False)
+        elif getattr(args, "quick", False):
+            from play_locomotion_v4 import preview
+            preview(env, runner, args, output, app)
         else:
             summary = evaluate(env, runner, args, output, app)
             print(f"[V4] evaluation all_passed={summary['all_passed']}", flush=True)
