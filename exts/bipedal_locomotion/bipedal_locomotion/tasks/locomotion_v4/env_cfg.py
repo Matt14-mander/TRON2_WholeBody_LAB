@@ -96,6 +96,12 @@ class PaintLocomotionV4EnvCfg(SF_TRON2A_BaseEnvCfg):
             offset=RayCasterCfg.OffsetCfg(pos=(0., 0., 20.)), attach_yaw_only=True,
             pattern_cfg=patterns.GridPatternCfg(resolution=.1, size=(.8, .8)),
             debug_vis=False, mesh_prim_paths=["/World/ground"])
+        # New Isaac Lab checks the deprecated flag at every sensor update.
+        # Clear it while retaining the same yaw alignment; older releases keep
+        # using attach_yaw_only=True.
+        if hasattr(self.scene.height_scanner, "ray_alignment"):
+            self.scene.height_scanner.attach_yaw_only = None
+            self.scene.height_scanner.ray_alignment = "yaw"
         super().__post_init__()
         self.scene.robot = SOLEFOOT_YG_TRON2A_WHOLEBODY_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
         self.scene.num_envs = 1024
