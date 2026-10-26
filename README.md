@@ -1,5 +1,7 @@
 # tron2_rl_lab
 
+当前 `codex/sfyg-locomotion-reset` 分支从初始提交 `f441d67` 恢复，先验证原版 SFYG，再训练搬运姿态与实体负载（无外力）。训练、源码一致性校验及播放见 [分阶段说明](docs/sfyg_source_reset.md)。原 v4 试验保留在 `paint-teacher-student` 分支。
+
 基于 [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) 的 LimX **TRON2A** 双足机器人强化学习训练栈，使用 PPO 训练 locomotion 策略。支持 SF / WF 两种基础形态（sole-foot / wheel-foot），以及带 6-DoF 机械臂 + 双指 gripper 的 SFYG / WFYG 形态（机械臂运行时锁死、不参与 RL）。
 
 ## 仓库结构

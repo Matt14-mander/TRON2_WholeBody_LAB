@@ -18,6 +18,8 @@
 !.vscode
 
 # Outputs
+/.test-temp/
+/ocs2_ws/
 **/runs/*
 **/logs/*
 **/recordings/*
