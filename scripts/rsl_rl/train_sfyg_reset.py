@@ -274,8 +274,11 @@ def evaluate(env, runner, args, output, app):
     try:
         with (output / "evaluation_steps.jsonl").open("w", encoding="utf-8") as stream:
             for episode in range(args.episodes):
-                raw.reset(seed=args.seed + episode)
-                obs = env.get_observations()
+                # PhysX lazy state caches can have been allocated by the prior
+                # inference rollout. Reset must use the same inference scope.
+                with torch.inference_mode():
+                    raw.reset(seed=args.seed + episode)
+                    obs = env.get_observations()
                 rows, releases, previous = [], torch.zeros(2, dtype=torch.long), None
                 interrupted = False
                 with torch.inference_mode():

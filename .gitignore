@@ -30,6 +30,7 @@
 **/.neptune/*
 docker/artifacts/
 *.tmp
+MUJOCO_LOG.TXT
 
 # Isaac-Sim packman
 _isaac_sim*
