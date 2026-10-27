@@ -45,10 +45,13 @@ def load_weights(algorithm, saved, phase, evaluation=False):
     if contract.get("schema") != SCHEMA or contract.get("source_commit") != BASE:
         raise ValueError("Use a checkpoint from train_sfyg_reset.py; old v2/v3/v4 are excluded")
     old = contract.get("phase")
-    if evaluation and old != phase:
+    if evaluation and old != phase and (old, phase) != ("carry", "robust"):
         raise ValueError("Evaluation phase must match the checkpoint")
-    if not evaluation and (old, phase) not in (("source", "source"), ("source", "carry"), ("carry", "carry")):
-        raise ValueError("Only source -> carry or same-phase weights-only transfer is supported")
+    if evaluation and (old, phase) == ("carry", "robust"):
+        print("[RESET] evaluating unadapted carry weights under robust physics (baseline)",flush=True)
+    if not evaluation and (old, phase) not in (("source", "source"), ("source", "carry"),
+            ("carry", "carry"), ("carry", "robust"), ("robust", "robust")):
+        raise ValueError("Supported weights transfer: source -> carry -> robust, or same phase")
     for key in ("model_state_dict", "encoder_state_dict"):
         if not all(torch.isfinite(v).all() for v in saved[key].values()):
             raise ValueError("Checkpoint contains nonfinite weights")

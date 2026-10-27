@@ -31,7 +31,7 @@
 
 1. **source**：原始SFYG臂姿态、无新增负载、无外力，先恢复基础行走。质量约39.523 kg。首次从零训练，不能加载旧v4权重。
 2. **carry**：完整SFYG，臂保持 `[0, π/2, -1.4835299, 0, 0, 0]`，夹爪保持默认位置，新增0.5 kg实体负载，无外力。其余训练设置沿用source。默认质量约40.023 kg。
-3. **后续外力阶段**：source和carry实测能走后另行加入。当前入口没有外力、推扰或随机负载选项，也不会自动晋级。计划先在固定负载上加入小水平力，再扩大力、yaw力矩、负载范围，最后地形；不直接复制四足40 N/10 Nm。
+3. **robust阶段**：source和carry的服务器实测已出现前进行为；现新增独立的负载外力、质量与摩擦随机化配置，见[鲁棒性训练说明](sfyg_payload_robust.md)。source/carry保持无外力，不自动晋级，不直接复制四足40 N/10 Nm。
 
 carry只新增物理适配：每个物理子步重发固定臂/夹爪目标，每次reset恢复该姿态；负载为夹爪处固定连接的实体box，尺寸0.20×0.12×0.08 m，偏置(0.15,0,0) m，含质量、惯量、碰撞体。资产输出到run目录，不改源USD。没有基座合成wrench、速度推扰、随机外力或机械臂运动轨迹。
 
@@ -92,21 +92,21 @@ LIVESTREAM=0 python -u scripts/rsl_rl/train_sfyg_reset.py \
 
 这些是诊断报告，不会仅凭20秒存活标记“学会走”。source实际能走后，应至少对前后、侧移、转向各做10回合，核对速度、实际位移、真实交替迈步和摔倒率。接触释放计数本身不排除抖动/滑动，需结合视频与逐步数据。
 
-## source恢复后训练carry
+## carry独立从零训练
 
-选择实际验证能走的source checkpoint，不默认最后一个最好。先验证这一步，再执行下面命令：
+source和carry作为独立对照。按当前实验约定，carry从零初始化，不加载source权重：
 
 ```bash
 export SFYG_CARRY_RUN="logs/rsl_rl/sfyg_carry_10000_$(date +%Y%m%d_%H%M%S)"
 nohup env LIVESTREAM=0 python -u scripts/rsl_rl/train_sfyg_reset.py \
-  --phase carry --payload_mass 0.5 --checkpoint_path "$SFYG_SOURCE_CKPT" \
+  --phase carry --payload_mass 0.5 \
   --num_envs 4096 --max_iterations 10000 --save_interval 250 --seed 42 \
   --output_dir "$SFYG_CARRY_RUN" --headless --device cuda:0 \
   > "${SFYG_CARRY_RUN}.console.log" 2>&1 < /dev/null &
 echo "PID=$! RUN=$SFYG_CARRY_RUN"
 ```
 
-carry播放沿用上述评估命令，改为`--phase carry --payload_mass 0.5`并选择carry checkpoint。也可以不传checkpoint独立从零训练carry，但不应跳过source对照就把结果归因于负载。
+carry播放沿用上述评估命令，改为`--phase carry --payload_mass 0.5`并选择carry checkpoint。代码仍支持显式的source→carry迁移作为另一组对照；本次服务器carry实验实际从零训练。下一轮robust则从已经能走的carry权重微调。
 
 ## 验证边界
 

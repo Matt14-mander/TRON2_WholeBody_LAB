@@ -65,6 +65,15 @@ class ResetTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             core.load_weights(model,saved,"carry")
 
+    def test_carry_to_robust_keeps_actor_critic_and_encoder_weights(self):
+        source,target = self.model(126),self.model(126)
+        core.load_weights(target,self.saved(source,"carry"),"robust")
+        for k,v in source.actor_critic.state_dict().items():
+            torch.testing.assert_close(v,target.actor_critic.state_dict()[k],rtol=0,atol=0)
+        core.load_weights(target,self.saved(source,"carry"),"robust",evaluation=True)
+        with self.assertRaises(ValueError):
+            core.load_weights(target,self.saved(source,"robust"),"carry")
+
     def test_original_ppo_runs_without_any_new_kl_guards(self):
         from rsl_rl.algorithm import PPO
         model = self.model()
