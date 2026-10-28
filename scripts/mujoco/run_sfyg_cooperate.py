@@ -12,7 +12,7 @@ import numpy as np
 
 from sfyg_bridge import ROOT
 from sfyg_policy import sha256
-from sfyg_cooperative_control import LocalAdmittance,PayloadKeyboard,slew
+from sfyg_cooperative_control import LocalAdmittance,PayloadKeyboard,slew,calibration_quality
 from sfyg_cooperative_scene import CooperativeScene,grasp_reaction,audit_reactions
 from sfyg_cooperative_visuals import draw
 
@@ -60,7 +60,8 @@ def run(args):
     keyboard = PayloadKeyboard([*args.force_world,args.yaw_torque],args.force_step,args.torque_step,args.max_force,args.max_torque)
     controllers = [LocalAdmittance(mass=args.virtual_mass,damping=args.damping,filter_tau=args.filter_tau,
                                    max_speed=args.max_speed,max_yaw=args.max_yaw) for _ in range(2)]
-    scene = CooperativeScene(configs,args.spacing,args.payload_mass,args.friction,args.delay_steps,args.seed)
+    scene = CooperativeScene(configs,args.spacing,args.payload_mass,args.friction,args.delay_steps,args.seed,
+                             args.grasp_model,args.physics_substeps)
     output = args.output_dir or ROOT / "logs/mujoco" / ("sfyg_cooperate_"+datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
     if output.exists() and any(output.iterdir()):
         raise FileExistsError("Use a new output directory")
@@ -72,14 +73,18 @@ def run(args):
     grasp_rows = scene.data.efc_pos[(scene.data.efc_type == mujoco.mjtConstraint.mjCNSTR_EQUALITY)]
     if np.max(abs(grasp_rows)) > 1e-6:
         raise ValueError("Nonzero initial weld residual")
-    manifest = dict(kind="sfyg_two_robot_ft_admittance",is_acceptance=False,
+    manifest = dict(kind="sfyg_two_robot_ft_admittance",schema_version=2,is_acceptance=False,
         policies=[dict(path=str(p.resolve()),policy_sha256=c["policy_sha256"],checkpoint_sha256=c["checkpoint_sha256"])
                   for p,c in zip(args.bundle_dir*2 if len(args.bundle_dir)==1 else args.bundle_dir,configs)],
         controller=args.controller,controller_inputs="each robot own grasp WORLD wrench and own base axes only",
         payload_mass_kg=args.payload_mass,total_mass_kg=float(scene.model.body_mass.sum()),
-        individual_payloads_removed=True,free_roots=3,attachment_model="two ideal closed grasp welds with massless .15m extensions",
+        individual_payloads_removed=True,free_roots=3,grasp_model=args.grasp_model,
+        attachment_model="two ideal closed grasp welds" if args.grasp_model=="weld" else "two ideal ball grips; CoM 0.04m below grasp line",
+        grasp_orientation_constrained=args.grasp_model=="weld",
+        wrench_measurement="own_robot_free_root_generalized_constraint_force_at_own_grasp",
         initial_grasp_errors_m=errors,initial_weld_residual_max=float(np.max(abs(grasp_rows))),
         physics_dt=configs[0]["physics_dt"],decimation=configs[0]["decimation"],
+        solver_dt=scene.model.opt.timestep,physics_substeps=args.physics_substeps,control_dt=configs[0]["physics_dt"]*configs[0]["decimation"],
         robot_delay_steps=[r.delays for r in scene.robots],
         admittance=dict(virtual_mass_kg=args.virtual_mass,damping_ns_m=args.damping,filter_tau_s=args.filter_tau,
                         yaw_inertia=.2,yaw_damping=1.,force_deadband_n=.15,torque_deadband_nm=.03,
@@ -92,7 +97,7 @@ def run(args):
     (output / "interface.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
     print(f"[COOP] two SFYG, free shared load {args.payload_mass}kg; total={manifest['total_mass_kg']:.4f}kg; output={output}",flush=True)
     if args.check_only:
-        print("[CHECK] 3 free roots, 2 aligned grasp welds, both policy interfaces loaded; no rollout",flush=True)
+        print(f"[CHECK] 3 free roots, 2 aligned {args.grasp_model} grips, both policy interfaces loaded; no rollout",flush=True)
         return output
     print("[KEYS] Focus MuJoCo window: W/S=Fx +/-; A/D=Fy +/-; Q/E=Tz +/-; X=release force; R=initial; P=pause",flush=True)
     print(f"[COOP] settle {args.settle_seconds}s, calibrate last {args.calibration_seconds}s; "
@@ -110,6 +115,7 @@ def run(args):
     next_frame,physical_steps = 0.,0
     rows,trace = [],[]
     reason,error = "completed",None
+    calibration=None
     try:
         if args.video:
             import imageio.v2 as imageio
@@ -128,6 +134,13 @@ def run(args):
                     continue
                 t = float(scene.data.time)
                 settling = t < args.settle_seconds
+                if not settling and calibration is None:
+                    calibration=calibration_quality(rows,args.settle_seconds,args.calibration_seconds,control_dt)
+                    print(f"[CALIBRATION] {calibration}",flush=True)
+                    if args.controller=="admittance" and not calibration["passed"]:
+                        reason="unsettled_calibration"
+                        print("[STOP] Zero-command carrying was not settled; use --controller hold to isolate the physical coupling",flush=True)
+                        break
                 releasing = t >= args.duration-args.release_tail
                 phase = "SETTLE" if settling else "RELEASE" if releasing else args.controller.upper()
                 target_force = np.zeros(3) if settling or releasing else requested
@@ -156,11 +169,13 @@ def run(args):
                     payload_position=scene.data.xpos[scene.payload].tolist(),grasp_errors_m=scene.grasp_errors(),
                     grasp_angles_deg=scene.grasp_angles(),
                     extraction_error=audit["extraction_max"],dynamics_residual=audit["dynamics_max"],
+                    robot_payload_moment_difference_nm=audit["robot_payload_moment_difference_nm"],
                     payload_grasp_world=audit["payload_grasp_world"],
                     robots=[dict(**state,command=command.tolist(),admittance_suggestion=suggestion.tolist(),
                                  grasp_world=reaction.tolist(),bias_world=controller.bias.tolist(),
+                                 legacy_payload_estimate_world=legacy,
                                  filtered_local_fx_fy_tz=controller.corrected_local.tolist())
-                            for state,command,suggestion,reaction,controller in zip(states,commands,suggestions,reactions,controllers)])
+                            for state,command,suggestion,reaction,controller,legacy in zip(states,commands,suggestions,reactions,controllers,audit["legacy_payload_estimates_world"])])
                 stream.write(json.dumps(row)+"\n")
                 rows.append(row)
                 if len(rows)%50==1:
@@ -217,11 +232,13 @@ def run(args):
         report = dict(kind="sfyg_two_robot_ft_admittance_diagnostic",is_acceptance=False,reason=reason,error=error,
             completed=reason=="completed" and scene.data.time>=args.duration-dt,
             duration_s=float(scene.data.time),controller=args.controller,
+            calibration=calibration,
             payload_displacement_world_m=(scene.data.xpos[scene.payload]-initial).tolist(),
             max_grasp_error_m=max([*scene.grasp_errors(),*[max(r["grasp_errors_m"]) for r in rows]]),
             max_grasp_angle_deg=max([*scene.grasp_angles(),*[max(r["grasp_angles_deg"]) for r in rows]]),
             max_extraction_error=max((r["extraction_error"] for r in rows),default=0),
             max_dynamics_residual=max((r["dynamics_residual"] for r in rows),default=0),
+            max_robot_payload_moment_difference_nm=max((max(r["robot_payload_moment_difference_nm"]) for r in rows),default=0),
             max_applied_horizontal_force_n=max((np.linalg.norm(r["applied_world_wrench"][:2]) for r in rows),default=0.),
             calibration_samples=[c.bias_samples for c in controllers],bias_world=[c.bias.tolist() for c in controllers],
             robots=[])
@@ -261,6 +278,8 @@ def parser():
     p.add_argument("--calibration_seconds",type=float,default=1.)
     p.add_argument("--release_tail",type=float,default=3.)
     p.add_argument("--payload_mass",type=float,default=1.)
+    p.add_argument("--grasp_model",choices=("weld","ball"),default="weld")
+    p.add_argument("--physics_substeps",type=int,choices=(1,2,4,8),default=1)
     p.add_argument("--spacing",type=float,default=1.)
     p.add_argument("--friction",type=float,default=.5)
     p.add_argument("--delay_steps",type=int,choices=range(5))

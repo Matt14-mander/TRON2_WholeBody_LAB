@@ -111,3 +111,21 @@ class LocalAdmittance:
         self.command = slew(current_local,target,dt,[self.acceleration,self.yaw_acceleration])
         self.command_world = np.r_[(r @ np.r_[self.command[:2],0.])[:2],self.command[2]]
         return self.command.copy()
+
+
+def calibration_quality(rows,settle_seconds,window_seconds,control_dt):
+    """A bias estimate from rotating/sliding robots is not a static calibration."""
+    selected=[r for r in rows if r["time_s"]>=settle_seconds-window_seconds-1e-9]
+    required=max(2,int(np.ceil(.8*window_seconds/control_dt-1e-9)))
+    result=dict(passed=len(selected)>=required,samples=len(selected),required_samples=required,
+                limits=dict(horizontal_rms_m_s=.05,yaw_rms_rad_s=.10,grasp_error_m=.01),robots=[])
+    for index in range(2):
+        v=np.array([r["robots"][index]["velocity_vx_vy_wz"] for r in selected],float)
+        linear=float(np.sqrt(np.mean(np.sum(v[:,:2]**2,axis=1)))) if len(v) else None
+        yaw=float(np.sqrt(np.mean(v[:,2]**2))) if len(v) else None
+        error=max((r["grasp_errors_m"][index] for r in selected),default=None)
+        passed=linear is not None and linear<=.05 and yaw<=.10 and error<=.01
+        result["robots"].append(dict(passed=passed,horizontal_rms_m_s=linear,yaw_rms_rad_s=yaw,
+                                     max_grasp_error_m=error))
+        result["passed"] = result["passed"] and passed
+    return result

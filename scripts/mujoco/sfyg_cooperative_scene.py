@@ -8,7 +8,9 @@ import numpy as np
 from sfyg_bridge import SFYGBridge, build_xml, named_id, numbers
 
 
-def build_scene_xml(configs, spacing=1., payload_mass=1., friction=.5):
+def build_scene_xml(configs, spacing=1., payload_mass=1., friction=.5, grasp_model="weld"):
+    if grasp_model not in ("weld","ball"):
+        raise ValueError("Grasp model must be weld or ball")
     if len(configs) != 2 or any(c["phase"] not in ("carry","robust") for c in configs):
         raise ValueError("Exactly two carry/robust deployment bundles are required")
     if (not np.isfinite([spacing,payload_mass,friction]).all()
@@ -74,6 +76,10 @@ def build_scene_xml(configs, spacing=1., payload_mass=1., friction=.5):
     if abs(points[1,1]-points[0,1]) < .6 or np.linalg.norm((points[1]-points[0])[[0,2]]) > 1e-5:
         raise ValueError("Nominal grasp frames must align in X/Z with sufficient lateral spacing")
     center = points.mean(0)
+    if grasp_model == "ball":
+        # Two ball grips leave rotation about their connecting line free.
+        # Put the CoM below the handles, giving that axis gravity restoration.
+        center[2] -= .04
     dimensions = np.array([.20,spacing+.12,.08])
     box = ET.SubElement(sections["worldbody"],"body",name="payload",pos=numbers(center))
     ET.SubElement(box,"freejoint",name="payload/free")
@@ -86,8 +92,16 @@ def build_scene_xml(configs, spacing=1., payload_mass=1., friction=.5):
     for index,point in enumerate(points):
         ET.SubElement(box,"site",name=f"payload/handle_{index}",pos=numbers(point-center),
                       quat=numbers(orientations[index]),size=".02",rgba="1 .5 .1 1")
-        ET.SubElement(sections["equality"],"weld",name=f"grasp_{index}",site1=f"r{index}/grasp_site",site2=f"payload/handle_{index}",
-                      active="false",solref=".02 1",solimp=".99 .999 .001",torquescale=".2")
+        constraint=ET.SubElement(sections["equality"],"weld" if grasp_model=="weld" else "connect",
+                      name=f"grasp_{index}",site1=f"r{index}/grasp_site",site2=f"payload/handle_{index}",
+                      active="false",solref=".02 1",solimp=".99 .999 .001")
+        if grasp_model=="weld":
+            constraint.set("torquescale",".2")
+        else:
+            # Constant impedance avoids a state-dependent stiffness transition
+            # in the ball-grip diagnostic's closed chain of two held arms.
+            constraint.set("solref",".04 1")
+            constraint.set("solimp",".99 .99 .001")
         for name in ("gripper_base_Link","gripper1_Link","gripper2_Link"):
             ET.SubElement(sections["contact"],"exclude",body1=f"r{index}/"+name,body2="payload")
     # Non-colliding 1 m progress marks, retained even with a following camera.
@@ -130,10 +144,15 @@ class SharedRobot(SFYGBridge):
 
 
 class CooperativeScene:
-    def __init__(self,configs,spacing=1.,payload_mass=1.,friction=.5,delay_steps=None,seed=42):
+    def __init__(self,configs,spacing=1.,payload_mass=1.,friction=.5,delay_steps=None,seed=42,
+                 grasp_model="weld",physics_substeps=1):
         if delay_steps is not None and delay_steps not in range(5):
             raise ValueError("Delay must be within 0--4 training physics steps")
-        root,assets,self.reference,self.xml_hash = build_scene_xml(configs,spacing,payload_mass,friction)
+        if physics_substeps not in (1,2,4,8):
+            raise ValueError("Solver substeps must be 1,2,4 or 8 per training physics tick")
+        root,assets,self.reference,self.xml_hash = build_scene_xml(configs,spacing,payload_mass,friction,grasp_model)
+        self.grasp_model,self.physics_substeps=grasp_model,physics_substeps
+        root.find("option").set("timestep",str(configs[0]["physics_dt"]/physics_substeps))
         self.model = mujoco.MjModel.from_xml_string(ET.tostring(root,encoding="unicode"),assets)
         self.data = mujoco.MjData(self.model)
         self.configs,self.spacing,self.mass = configs,spacing,payload_mass
@@ -158,7 +177,10 @@ class CooperativeScene:
             robot.write_controls()
         self.data.xfrc_applied[:] = 0
         self.data.xfrc_applied[self.payload] = wrench
-        mujoco.mj_step(self.model,self.data)
+        # Keep actuator queues at 200 Hz, including their 0--4 tick delays;
+        # only the integrator/constraint solver runs at the smaller time step.
+        for _ in range(self.physics_substeps):
+            mujoco.mj_step(self.model,self.data)
 
     def grasp_errors(self):
         return [float(np.linalg.norm(self.data.xpos[r.frame]-self.data.site_xpos[r.site])) for r in self.robots]
@@ -172,23 +194,51 @@ class CooperativeScene:
         return result
 
 
-def grasp_reaction(model,data,eq,payload):
-    """Payload->robot WORLD [F,T] at its grasp frame, from that weld only."""
+def _constraint_generalized(model,data,eq):
     rows = (data.efc_type == mujoco.mjtConstraint.mjCNSTR_EQUALITY) & (data.efc_id == eq)
-    if np.count_nonzero(rows) != 6:
-        raise ValueError("Expected six active grasp-weld constraint rows")
+    expected=6 if model.eq_type[eq]==mujoco.mjtEq.mjEQ_WELD else 3
+    if np.count_nonzero(rows) != expected:
+        raise ValueError(f"Expected {expected} active grasp constraint rows")
     jac = data.efc_J.reshape(data.nefc,model.nv)
-    generalized = jac[rows].T @ data.efc_force[rows]
-    start = model.jnt_dofadr[model.body_jntadr[payload]]
+    return jac[rows].T @ data.efc_force[rows]
+
+
+def _grasp_point(model,data,eq):
+    obj=model.eq_obj1id[eq]
+    if model.eq_objtype[eq]==mujoco.mjtObj.mjOBJ_SITE:
+        return data.site_xpos[obj],model.site_bodyid[obj]
+    return data.xpos[obj],obj
+
+
+def _root_wrench(model,data,point,body,generalized):
+    root=model.body_rootid[body]
+    joint=model.body_jntadr[root]
+    if joint<0 or model.jnt_type[joint]!=mujoco.mjtJoint.mjJNT_FREE:
+        raise ValueError("Wrench reconstruction requires the free root of this body tree")
+    start = model.jnt_dofadr[joint]
     dofs = np.arange(start,start+6)
     jp,jr = np.zeros((3,model.nv)),np.zeros((3,model.nv))
-    obj = model.eq_obj1id[eq]
-    point = data.site_xpos[obj] if model.eq_objtype[eq] == mujoco.mjtObj.mjOBJ_SITE else data.xpos[obj]
-    mujoco.mj_jac(model,data,jp,jr,point,payload)
-    wrench = -np.linalg.solve(np.vstack((jp[:,dofs],jr[:,dofs])).T,generalized[dofs])
+    mujoco.mj_jac(model,data,jp,jr,point,body)
+    wrench = np.linalg.solve(np.vstack((jp[:,dofs],jr[:,dofs])).T,generalized[dofs])
     if not np.isfinite(wrench).all():
         raise FloatingPointError("Nonfinite grasp reaction")
     return wrench
+
+
+def grasp_reaction(model,data,eq,payload):
+    """Own robot-side WORLD [F,T] at its actual grasp point, from this grasp only.
+
+    Read the generalized force on the robot's free root, not the negative
+    payload-side moment shifted across a possibly violated soft constraint.
+    """
+    point,body=_grasp_point(model,data,eq)
+    return _root_wrench(model,data,point,body,_constraint_generalized(model,data,eq))
+
+
+def payload_side_reaction(model,data,eq,payload):
+    """Legacy negative object-side wrench at robot point, for diagnostics only."""
+    point,_=_grasp_point(model,data,eq)
+    return -_root_wrench(model,data,point,payload,_constraint_generalized(model,data,eq))
 
 
 def audit_reactions(scene,reactions):
@@ -197,18 +247,29 @@ def audit_reactions(scene,reactions):
     jac = data.efc_J.reshape(data.nefc,model.nv)
     expected,reconstructed = np.zeros(model.nv),np.zeros(model.nv)
     wrench_at_com = np.zeros(6)
+    robot_errors,moment_differences,payload_estimates=[],[],[]
     for robot,wrench in zip(scene.robots,reactions):
         rows = (data.efc_type == mujoco.mjtConstraint.mjCNSTR_EQUALITY) & (data.efc_id == robot.eq)
-        expected += jac[rows].T @ data.efc_force[rows]
+        generalized=jac[rows].T @ data.efc_force[rows]
+        expected += generalized
         jp,jr = np.zeros((3,model.nv)),np.zeros((3,model.nv))
         point = data.xpos[robot.frame]
+        mujoco.mj_jac(model,data,jp,jr,point,robot.frame)
+        root=model.body_rootid[robot.frame]
+        start=model.jnt_dofadr[model.body_jntadr[root]]
+        robot_errors.append(float(np.max(abs((jp.T@wrench[:3]+jr.T@wrench[3:]-generalized)[start:start+6]))))
+        opposite=payload_side_reaction(model,data,robot.eq,scene.payload)
+        payload_estimates.append(opposite.tolist())
+        moment_differences.append(float(np.linalg.norm(wrench[3:]-opposite[3:])))
         mujoco.mj_jac(model,data,jp,jr,point,scene.payload)
-        reconstructed -= jp.T @ wrench[:3] + jr.T @ wrench[3:]
-        wrench_at_com -= np.r_[wrench[:3],wrench[3:]+np.cross(point-data.xipos[scene.payload],wrench[:3])]
+        reconstructed -= jp.T @ opposite[:3] + jr.T @ opposite[3:]
+        wrench_at_com -= np.r_[opposite[:3],opposite[3:]+np.cross(point-data.xipos[scene.payload],opposite[:3])]
     start = model.jnt_dofadr[model.body_jntadr[scene.payload]]
     dofs = np.arange(start,start+6)
     ma = np.zeros(model.nv)
     mujoco.mj_mulM(model,data,ma,data.qacc)
     residual = ma-data.qfrc_smooth-(data.qfrc_constraint-expected)-reconstructed
-    return dict(extraction_max=float(np.max(abs((expected-reconstructed)[dofs]))),
+    return dict(extraction_max=max([*robot_errors,float(np.max(abs((expected-reconstructed)[dofs])))]),
+                robot_payload_moment_difference_nm=moment_differences,
+                legacy_payload_estimates_world=payload_estimates,
                 dynamics_max=float(np.max(abs(residual[dofs]))),payload_grasp_world=wrench_at_com.tolist())

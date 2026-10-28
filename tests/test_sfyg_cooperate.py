@@ -8,6 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 import torch
@@ -17,23 +18,24 @@ import numpy as np
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/"scripts/mujoco"),str(ROOT/"tests"),str(ROOT/"rsl_rl")]
 from test_sfyg_mujoco import fixture_config,fixture_contract
-from sfyg_cooperative_control import PayloadKeyboard,LocalAdmittance
-from sfyg_cooperative_scene import CooperativeScene,SharedRobot,build_scene_xml,initialize,grasp_reaction,audit_reactions
+from sfyg_cooperative_control import PayloadKeyboard,LocalAdmittance,calibration_quality
+from sfyg_cooperative_scene import CooperativeScene,SharedRobot,build_scene_xml,initialize,grasp_reaction,audit_reactions,payload_side_reaction
 from sfyg_cooperative_visuals import draw
 from export_sfyg import export
 
 
-def supported_fixture():
+def supported_fixture(grasp_model="weld",physics_substeps=1):
     """Fixed base supports ONLY in this independent load-cell test, never the demo."""
     cfg=fixture_config()
-    root,assets,_,_=build_scene_xml([cfg,cfg])
+    root,assets,_,_=build_scene_xml([cfg,cfg],grasp_model=grasp_model)
+    root.find("option").set("timestep",str(.005/physics_substeps))
     for i in range(2):
         ET.SubElement(root.find("equality"),"weld",name=f"test_support_{i}",body1=f"r{i}/base_Link",solref=".01 1")
     model=mujoco.MjModel.from_xml_string(ET.tostring(root,encoding="unicode"),assets)
     data=mujoco.MjData(model)
     payload=initialize(model,data,[cfg,cfg])
     robots=[SharedRobot(cfg,model,data,i,0,42+i) for i in range(2)]
-    return types.SimpleNamespace(model=model,data=data,payload=payload,robots=robots)
+    return types.SimpleNamespace(model=model,data=data,payload=payload,robots=robots,physics_substeps=physics_substeps)
 
 
 def hold_and_step(scene,wrench,steps=400):
@@ -41,12 +43,64 @@ def hold_and_step(scene,wrench,steps=400):
         for r in scene.robots: r.write_controls()
         scene.data.xfrc_applied[:]=0
         scene.data.xfrc_applied[scene.payload]=wrench
-        mujoco.mj_step(scene.model,scene.data)
+        for _ in range(scene.physics_substeps):
+            mujoco.mj_step(scene.model,scene.data)
     mujoco.mj_forward(scene.model,scene.data)
     return [grasp_reaction(scene.model,scene.data,r.eq,scene.payload) for r in scene.robots]
 
 
 class CooperativeTests(unittest.TestCase):
+    def test_ball_grips_support_weight_without_point_torque(self):
+        s=supported_fixture("ball",physics_substeps=4)
+        reactions=hold_and_step(s,[0]*6,500)
+        audit=audit_reactions(s,reactions)
+        np.testing.assert_allclose(audit["payload_grasp_world"][:3],[0,0,9.81],atol=.08)
+        self.assertTrue(all(np.linalg.norm(w[3:])<1e-8 for w in reactions))
+        self.assertLess(audit["extraction_max"],1e-8)
+        self.assertTrue(np.all(s.model.eq_type[:2]==mujoco.mjtEq.mjEQ_CONNECT))
+
+    def test_robot_side_sensor_excludes_moment_from_soft_grasp_gap(self):
+        c=fixture_config()
+        s=CooperativeScene([c,c],grasp_model="ball")
+        r=s.robots[0]
+        root_q=s.model.jnt_qposadr[s.model.body_jntadr[r.base]]
+        s.data.qpos[root_q]+=.02
+        s.data.xfrc_applied[s.payload,2]=-10
+        mujoco.mj_forward(s.model,s.data)
+        own=grasp_reaction(s.model,s.data,r.eq,s.payload)
+        legacy=payload_side_reaction(s.model,s.data,r.eq,s.payload)
+        np.testing.assert_allclose(own[:3],legacy[:3],atol=1e-9)
+        self.assertLess(np.linalg.norm(own[3:]),1e-9)
+        self.assertGreater(np.linalg.norm(legacy[3:]-own[3:]),.001)
+        reactions=[grasp_reaction(s.model,s.data,b.eq,s.payload) for b in s.robots]
+        self.assertLess(audit_reactions(s,reactions)["extraction_max"],1e-8)
+
+    def test_solver_substeps_preserve_training_actuator_tick_and_delay(self):
+        c=fixture_config()
+        s=CooperativeScene([c,c],grasp_model="ball",physics_substeps=4,delay_steps=2)
+        self.assertAlmostEqual(s.model.opt.timestep,.00125)
+        s.step([0]*6)
+        self.assertAlmostEqual(s.data.time,.005)
+        for r in s.robots:r.set_action(np.ones(10))
+        s.step([0]*6)
+        np.testing.assert_allclose(s.data.ctrl[s.robots[0].motors[:10]],s.robots[0].defaults[:10])
+        s.step([0]*6)
+        np.testing.assert_allclose(s.data.ctrl[s.robots[0].motors[:10]],s.robots[0].defaults[:10])
+        s.step([0]*6)
+        np.testing.assert_allclose(s.data.ctrl[s.robots[0].motors[:10]],s.robots[0].defaults[:10]+.25)
+        self.assertAlmostEqual(s.data.time,.020)
+
+    def test_rotating_zero_command_is_not_a_static_calibration(self):
+        rows=[dict(time_s=2+i*.02,grasp_errors_m=[.003,.004],robots=[
+            dict(velocity_vx_vy_wz=[0,.02,.20]),dict(velocity_vx_vy_wz=[0,-.02,-.24])]) for i in range(50)]
+        result=calibration_quality(rows,3.,1.,.02)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["samples"],50)
+        for row in rows:
+            for robot in row["robots"]:robot["velocity_vx_vy_wz"][2]=.02
+        self.assertTrue(calibration_quality(rows,3.,1.,.02)["passed"])
+        self.assertEqual(calibration_quality(rows,.1,.05,.02)["required_samples"],2)
+
     def test_three_free_roots_single_mass_and_no_world_support(self):
         cfg=fixture_config()
         scene=CooperativeScene([cfg,cfg])
@@ -166,27 +220,40 @@ class CooperativeTests(unittest.TestCase):
                 torch.save(dict(sfyg_reset_contract=fixture_contract(),model_state_dict=actor.state_dict(),
                                 encoder_state_dict=encoder.state_dict()),stream)
             export(checkpoint,folder/"bundle")
-            for controller in ("admittance","hold"):
+            for controller,grasp,substeps in (("admittance","weld",1),("hold","weld",1),("admittance","ball",4)):
+                case=controller+"_"+grasp
                 result=subprocess.run([sys.executable,str(ROOT/"scripts/mujoco/run_sfyg_cooperate.py"),
                     "--bundle_dir",str(folder/"bundle"),"--headless","--duration",".3",
                     "--settle_seconds",".06","--calibration_seconds",".04","--release_tail",".04",
                     "--force_world","2","0","--force_slew","100","--controller",controller,"--trace",
-                    "--output_dir",str(folder/controller)],capture_output=True,text=True)
+                    "--grasp_model",grasp,"--physics_substeps",str(substeps),
+                    "--output_dir",str(folder/case)],capture_output=True,text=True)
                 self.assertEqual(result.returncode,0,result.stderr+result.stdout)
-                report=json.loads((folder/controller/"evaluation.json").read_text())
+                report=json.loads((folder/case/"evaluation.json").read_text())
                 self.assertFalse(report["is_acceptance"])
                 self.assertEqual(report["interface"]["free_roots"],3)
                 self.assertEqual(report["interface"]["controller"],controller)
-                rows=[json.loads(line) for line in (folder/controller/"steps.jsonl").read_text().splitlines()]
+                self.assertEqual(report["interface"]["grasp_model"],grasp)
+                self.assertAlmostEqual(report["interface"]["solver_dt"],.005/substeps)
+                rows=[json.loads(line) for line in (folder/case/"steps.jsonl").read_text().splitlines()]
                 self.assertTrue(any(r["applied_world_wrench"][0]>0 for r in rows))
                 self.assertLess(report["max_extraction_error"],1e-8)
                 if controller=="hold":
                     self.assertTrue(all(np.count_nonzero(bot["command"])==0 for row in rows for bot in row["robots"]))
                 else:
                     self.assertTrue(any(np.linalg.norm(bot["command"])>0 for row in rows for bot in row["robots"]))
-                with np.load(folder/controller/"trace.npz") as trace:
+                with np.load(folder/case/"trace.npz") as trace:
                     self.assertEqual(trace["history"].shape[1:],(10,42))
                     self.assertEqual(set(trace["robot"]),{0,1})
+            import run_sfyg_cooperate as cli
+            args=cli.parser().parse_args(["--bundle_dir",str(folder/"bundle"),"--headless","--duration",".3",
+                "--settle_seconds",".06","--calibration_seconds",".04","--release_tail",".04",
+                "--force_world","2","0","--output_dir",str(folder/"rejected")])
+            with patch.object(cli,"calibration_quality",return_value={"passed":False}):
+                cli.run(args)
+            rejected=json.loads((folder/"rejected/evaluation.json").read_text())
+            self.assertEqual(rejected["reason"],"unsettled_calibration")
+            self.assertEqual(rejected["max_applied_horizontal_force_n"],0)
 
 
 if __name__=="__main__":
