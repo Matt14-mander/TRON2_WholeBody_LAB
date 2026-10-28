@@ -119,7 +119,8 @@ def calibration_quality(rows,settle_seconds,window_seconds,control_dt):
     required=max(2,int(np.ceil(.8*window_seconds/control_dt-1e-9)))
     result=dict(passed=len(selected)>=required,samples=len(selected),required_samples=required,
                 limits=dict(horizontal_rms_m_s=.05,yaw_rms_rad_s=.10,grasp_error_m=.01),robots=[])
-    for index in range(2):
+    count = len(rows[0]["robots"]) if rows else 2
+    for index in range(count):
         v=np.array([r["robots"][index]["velocity_vx_vy_wz"] for r in selected],float)
         linear=float(np.sqrt(np.mean(np.sum(v[:,:2]**2,axis=1)))) if len(v) else None
         yaw=float(np.sqrt(np.mean(v[:,2]**2))) if len(v) else None

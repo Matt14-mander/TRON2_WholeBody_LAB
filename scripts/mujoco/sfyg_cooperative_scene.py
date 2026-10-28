@@ -1,4 +1,4 @@
-"""Two free SFYG bases, one free shared box and two ideal closed grasp welds."""
+"""Free SFYG teams with a single shared payload and explicit grasp constraints."""
 from copy import deepcopy
 import xml.etree.ElementTree as ET
 
@@ -8,16 +8,17 @@ import numpy as np
 from sfyg_bridge import SFYGBridge, build_xml, named_id, numbers
 
 
-def build_scene_xml(configs, spacing=1., payload_mass=1., friction=.5, grasp_model="weld"):
+def build_scene_xml(configs, spacing=1., payload_mass=1., friction=.5, grasp_model="weld", layout="side-by-side"):
     if grasp_model not in ("weld","ball"):
         raise ValueError("Grasp model must be weld or ball")
-    if len(configs) != 2 or any(c["phase"] not in ("carry","robust") for c in configs):
-        raise ValueError("Exactly two carry/robust deployment bundles are required")
+    counts = {"side-by-side":2,"leader-follow":2,"sofa":3}
+    if layout not in counts or len(configs) != counts[layout] or any(c["phase"] not in ("carry","robust") for c in configs):
+        raise ValueError("Expected two carry/robust robots for box/tandem, three for sofa")
     if (not np.isfinite([spacing,payload_mass,friction]).all()
             or spacing < .7 or payload_mass <= 0 or friction <= 0):
         raise ValueError("Positive mass/friction and base spacing >=0.7 m required")
     for key in ("physics_dt","decimation","names","usd_sources","defaults","root_quat"):
-        if configs[0][key] != configs[1][key]:
+        if any(configs[0][key] != c[key] for c in configs[1:]):
             raise ValueError(f"The two bundles must share physical timing/pose/interface: {key}")
     root = ET.Element("mujoco",model="sfyg_shared_payload")
     first, assets, reference, xml_hash = build_xml(configs[0],0.,friction)
@@ -30,7 +31,10 @@ def build_scene_xml(configs, spacing=1., payload_mass=1., friction=.5, grasp_mod
                 ("default","asset","worldbody","actuator","sensor","contact","equality")}
     references = {"name","class","childclass","mesh","material","texture","joint","joint1","joint2",
                   "body","body1","body2","site","site1","site2","objname","target","actuator","tendon"}
-    offsets = [-spacing/2,spacing/2]
+    offsets = [[0,-spacing/2],[0,spacing/2]]
+    if layout != "side-by-side":
+        from sfyg_team_scene import placements
+        offsets = placements(layout,spacing)
     for index,cfg in enumerate(configs):
         original,other_assets,_,_ = build_xml(cfg,0.,friction) if index else (first,assets,reference,xml_hash)
         assets.update(other_assets)
@@ -44,13 +48,16 @@ def build_scene_xml(configs, spacing=1., payload_mass=1., friction=.5, grasp_mod
                     node.set(key,prefix+value)
         base = clone.find(f"./worldbody/body[@name='{prefix}base_Link']")
         pos = np.array(cfg["root_pos"],float)
-        pos[1] += offsets[index]
+        pos[:2] += offsets[index]
         base.set("pos",numbers(pos))
         grip = clone.find(f".//body[@name='{prefix}gripper_base_Link']")
-        frame = ET.SubElement(grip,"body",name=prefix+"grasp_frame",pos=".15 0 0")
+        leader = layout != "side-by-side" and index == 0
+        attachment = base if leader else grip
+        offset = "-.22 0 .45" if leader else ".15 0 0"
+        frame = ET.SubElement(attachment,"body",name=prefix+"grasp_frame",pos=offset)
         ET.SubElement(frame,"site",name=prefix+"grasp_site",size=".015",rgba="1 .3 .1 1")
         # Explicit, massless ideal handle extension; no world support or collision.
-        ET.SubElement(grip,"geom",name=prefix+"grip_extension",type="capsule",fromto="0 0 0 .15 0 0",
+        ET.SubElement(attachment,"geom",name=prefix+"grip_extension",type="capsule",fromto="0 0 0 "+offset,
                       size=".008",density="0",contype="0",conaffinity="0",rgba=".3 .3 .3 1")
         for tag,destination in sections.items():
             source = clone.find(tag)
@@ -71,6 +78,10 @@ def build_scene_xml(configs, spacing=1., payload_mass=1., friction=.5, grasp_mod
         ids = [named_id(probe,mujoco.mjtObj.mjOBJ_JOINT,f"r{index}/"+n) for n in cfg["names"]]
         state.qpos[probe.jnt_qposadr[ids]] = cfg["defaults"]
     mujoco.mj_forward(probe,state)
+    if layout != "side-by-side":
+        from sfyg_team_scene import add_payload
+        add_payload(root,probe,state,len(configs),payload_mass,friction,grasp_model,layout,spacing)
+        return root,assets,reference,xml_hash
     points = np.array([state.xpos[probe.body(f"r{i}/grasp_frame").id].copy() for i in range(2)])
     orientations = [state.xquat[probe.body(f"r{i}/grasp_frame").id].copy() for i in range(2)]
     if abs(points[1,1]-points[0,1]) < .6 or np.linalg.norm((points[1]-points[0])[[0,2]]) > 1e-5:
@@ -120,7 +131,7 @@ def initialize(model,data,configs):
         data.ctrl[motors] = cfg["defaults"]
     mujoco.mj_forward(model,data)
     payload = model.body("payload").id
-    for i in range(2):
+    for i in range(len(configs)):
         eq = model.equality(f"grasp_{i}").id
         data.eq_active[eq] = True
     mujoco.mj_forward(model,data)
@@ -145,12 +156,13 @@ class SharedRobot(SFYGBridge):
 
 class CooperativeScene:
     def __init__(self,configs,spacing=1.,payload_mass=1.,friction=.5,delay_steps=None,seed=42,
-                 grasp_model="weld",physics_substeps=1):
+                 grasp_model="weld",physics_substeps=1,layout="side-by-side"):
         if delay_steps is not None and delay_steps not in range(5):
             raise ValueError("Delay must be within 0--4 training physics steps")
         if physics_substeps not in (1,2,4,8):
             raise ValueError("Solver substeps must be 1,2,4 or 8 per training physics tick")
-        root,assets,self.reference,self.xml_hash = build_scene_xml(configs,spacing,payload_mass,friction,grasp_model)
+        root,assets,self.reference,self.xml_hash = build_scene_xml(configs,spacing,payload_mass,friction,grasp_model,layout)
+        self.layout = layout
         self.grasp_model,self.physics_substeps=grasp_model,physics_substeps
         root.find("option").set("timestep",str(configs[0]["physics_dt"]/physics_substeps))
         self.model = mujoco.MjModel.from_xml_string(ET.tostring(root,encoding="unicode"),assets)
@@ -158,9 +170,9 @@ class CooperativeScene:
         self.configs,self.spacing,self.mass = configs,spacing,payload_mass
         self.payload = initialize(self.model,self.data,configs)
         self.robots = [SharedRobot(c,self.model,self.data,i,delay_steps,seed+i) for i,c in enumerate(configs)]
-        if (np.count_nonzero(self.model.jnt_type == mujoco.mjtJoint.mjJNT_FREE) != 3
-                or not np.isclose(self.model.body_mass.sum(),2*self.reference["total_mass_kg"]+payload_mass,atol=1e-5)):
-            raise ValueError("Expected two free complete robots plus exactly one free shared load")
+        if (np.count_nonzero(self.model.jnt_type == mujoco.mjtJoint.mjJNT_FREE) != len(configs)+1
+                or not np.isclose(self.model.body_mass.sum(),len(configs)*self.reference["total_mass_kg"]+payload_mass,atol=1e-5)):
+            raise ValueError("Expected complete free robots plus exactly one free shared load")
         if not all(np.isfinite(v).all() for v in (self.model.body_mass,self.model.body_ipos,self.model.body_inertia)):
             raise ValueError("Nonfinite shared physical model")
 
