@@ -30,7 +30,7 @@ def named_id(model, kind, name):
     return result
 
 
-def build_model(cfg, mass, friction):
+def build_xml(cfg, mass, friction):
     reference = load_reference()
     if cfg["usd_sources"] != reference["sources"]:
         raise ValueError("Export was created against a different USD asset")
@@ -125,8 +125,13 @@ def build_model(cfg, mass, friction):
         path = meshes / mesh.get("file")
         mesh.set("file", path.name)
         assets[path.name] = path.read_bytes()
+    return root, assets, reference, sha256(XML)
+
+
+def build_model(cfg, mass, friction):
+    root, assets, reference, xml_hash = build_xml(cfg, mass, friction)
     model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"), assets)
-    return model, reference, sha256(XML)
+    return model, reference, xml_hash
 
 
 class SFYGBridge:
@@ -146,12 +151,21 @@ class SFYGBridge:
                       self.model.body_iquat, self.model.jnt_axis):
             if not np.isfinite(value).all():
                 raise ValueError("Nonfinite physical model parameters")
-        self.base = named_id(self.model, mujoco.mjtObj.mjOBJ_BODY, "base_Link")
         self.payload = (named_id(self.model, mujoco.mjtObj.mjOBJ_BODY, "paint_payload_Link") if self.mass > 0 else None)
-        self.joints = np.array([named_id(self.model, mujoco.mjtObj.mjOBJ_JOINT, n) for n in cfg["names"]])
+        self.bind_robot("", delay_steps, seed)
+        self.reset()
+        expected = self.reference["total_mass_kg"] + self.mass
+        if not np.isclose(self.model.body_mass.sum(), expected, atol=1e-5):
+            raise ValueError("Model mass does not match authored USD plus payload")
+
+    def bind_robot(self, prefix, delay_steps, seed):
+        """Bind one controller to either a standalone or shared-world robot."""
+        cfg = self.cfg
+        self.base = named_id(self.model, mujoco.mjtObj.mjOBJ_BODY, prefix + "base_Link")
+        self.joints = np.array([named_id(self.model, mujoco.mjtObj.mjOBJ_JOINT, prefix + n) for n in cfg["names"]])
         self.qpos = self.model.jnt_qposadr[self.joints]
         self.qvel = self.model.jnt_dofadr[self.joints]
-        self.motors = np.array([named_id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "pd/" + n) for n in cfg["names"]])
+        self.motors = np.array([named_id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, prefix + "pd/" + n) for n in cfg["names"]])
         self.defaults = np.asarray(cfg["defaults"], float)
         self.history = ObservationHistory()
         rng = np.random.default_rng(seed)
@@ -164,21 +178,20 @@ class SFYGBridge:
                 sampled[key] = (0 if a["max_delay"] == 0 else delay_steps if delay_steps is not None
                                 else int(rng.integers(a["min_delay"], a["max_delay"] + 1)))
             self.delays.append(sampled[key])
-        self.reset()
-        expected = self.reference["total_mass_kg"] + self.mass
-        if not np.isclose(self.model.body_mass.sum(), expected, atol=1e-5):
-            raise ValueError("Model mass does not match authored USD plus payload")
 
     def reset(self):
         mujoco.mj_resetData(self.model, self.data)
         self.data.qpos[self.qpos] = self.defaults
         self.data.ctrl[self.motors] = self.defaults
+        self.reset_controller()
+        mujoco.mj_forward(self.model, self.data)
+
+    def reset_controller(self):
         self.previous_action = np.zeros(10, np.float32)
         self.target = self.defaults.copy()
         self.delay_queues = [deque(maxlen=d + 1) for d in self.delays]
         self.control_steps = 0
         self.history.reset()
-        mujoco.mj_forward(self.model, self.data)
 
     def base_state(self):
         r = self.data.xmat[self.base].reshape(3, 3)
@@ -201,13 +214,16 @@ class SFYGBridge:
         self.target = self.defaults.copy()
         self.target[:10] += .25 * action
 
-    def physics_step(self, force_world=None):
+    def write_controls(self):
         for index, queue in enumerate(self.delay_queues):
             if not queue:
                 queue.extend([self.target[index]] * queue.maxlen)
             else:
                 queue.append(self.target[index])
             self.data.ctrl[self.motors[index]] = queue[0]
+
+    def physics_step(self, force_world=None):
+        self.write_controls()
         self.data.xfrc_applied[:] = 0
         if force_world is not None:
             if self.payload is None:

@@ -6,6 +6,8 @@
 
 source/carry/robust checkpoint 的 CPU 导出、单机 MuJoCo 播放与诊断见 [单机 sim-to-sim 说明](docs/sfyg_mujoco.md)。
 
+单机通过后，可运行 [双机共享负载与键盘外力导纳演示](docs/sfyg_cooperate.md)：键盘给物体施力，两台机器人分别通过自身抓取反力生成速度指令。
+
 基于 [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) 的 LimX **TRON2A** 双足机器人强化学习训练栈，使用 PPO 训练 locomotion 策略。支持 SF / WF 两种基础形态（sole-foot / wheel-foot），以及带 6-DoF 机械臂 + 双指 gripper 的 SFYG / WFYG 形态（机械臂运行时锁死、不参与 RL）。
 
 ## 仓库结构
