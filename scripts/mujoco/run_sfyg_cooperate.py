@@ -58,8 +58,21 @@ def run(args):
         loaded *= 2  # Stateless network weights shared; controller histories remain separate.
     configs,policies = zip(*loaded)
     keyboard = PayloadKeyboard([*args.force_world,args.yaw_torque],args.force_step,args.torque_step,args.max_force,args.max_torque)
-    controllers = [LocalAdmittance(mass=args.virtual_mass,damping=args.damping,filter_tau=args.filter_tau,
-                                   max_speed=args.max_speed,max_yaw=args.max_yaw) for _ in range(2)]
+    teacher_mode=args.controller=='teacher'
+    teacher_paths=args.teacher_bundle
+    if teacher_mode:
+        if not teacher_paths or len(teacher_paths) not in (1,2) or args.teacher_input is None:
+            raise ValueError('Teacher requires 1/2 --teacher_bundle paths and --teacher_input grasp-proxy')
+        if len(teacher_paths)==1: teacher_paths=teacher_paths*2
+        from sfyg_team_control import make_follower
+        from sfyg_teacher_shared import validate_proxy_timing
+        controllers=[make_follower('teacher',teacher_bundle=p,low_config=c,teacher_input=args.teacher_input,
+            axes='forward',max_speed=args.max_speed) for p,c in zip(teacher_paths,configs)]
+        validate_proxy_timing(controllers,args.settle_seconds,args.delay_steps)
+    else:
+        if teacher_paths or args.teacher_input: raise ValueError('Teacher options require --controller teacher')
+        controllers = [LocalAdmittance(mass=args.virtual_mass,damping=args.damping,filter_tau=args.filter_tau,
+                                       max_speed=args.max_speed,max_yaw=args.max_yaw) for _ in range(2)]
     scene = CooperativeScene(configs,args.spacing,args.payload_mass,args.friction,args.delay_steps,args.seed,
                              args.grasp_model,args.physics_substeps)
     output = args.output_dir or ROOT / "logs/mujoco" / ("sfyg_cooperate_"+datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
@@ -73,10 +86,10 @@ def run(args):
     grasp_rows = scene.data.efc_pos[(scene.data.efc_type == mujoco.mjtConstraint.mjCNSTR_EQUALITY)]
     if np.max(abs(grasp_rows)) > 1e-6:
         raise ValueError("Nonzero initial weld residual")
-    manifest = dict(kind="sfyg_two_robot_ft_admittance",schema_version=2,is_acceptance=False,
+    manifest = dict(kind="sfyg_two_robot_teacher_proxy" if teacher_mode else "sfyg_two_robot_ft_admittance",schema_version=2,is_acceptance=False,
         policies=[dict(path=str(p.resolve()),policy_sha256=c["policy_sha256"],checkpoint_sha256=c["checkpoint_sha256"])
                   for p,c in zip(args.bundle_dir*2 if len(args.bundle_dir)==1 else args.bundle_dir,configs)],
-        controller=args.controller,controller_inputs="each robot own grasp WORLD wrench and own base axes only",
+        controller=args.controller,controller_inputs="own grasp WORLD wrench, base axes and own arm state" if teacher_mode else "each robot own grasp WORLD wrench and own base axes only",
         payload_mass_kg=args.payload_mass,total_mass_kg=float(scene.model.body_mass.sum()),
         individual_payloads_removed=True,free_roots=3,grasp_model=args.grasp_model,
         attachment_model="two ideal closed grasp welds" if args.grasp_model=="weld" else "two ideal ball grips; CoM 0.04m below grasp line",
@@ -90,12 +103,14 @@ def run(args):
                         yaw_inertia=.2,yaw_damping=1.,force_deadband_n=.15,torque_deadband_nm=.03,
                         acceleration_m_s2=.10,yaw_acceleration_rad_s2=.3,max_speed=args.max_speed,max_yaw=args.max_yaw),
         source_mjcf_sha256=scene.xml_hash,mujoco_version=mujoco.__version__,
-        arguments={k:str(v) if isinstance(v,Path) else [str(p) for p in v] if k=="bundle_dir" else v for k,v in vars(args).items()},
-        notes=["No learned PAINT teacher/student; reference FT admittance",
+        teacher_proxy=[c.metadata() for c in controllers] if teacher_mode else None,
+        arguments={k:str(v) if isinstance(v,Path) else [str(p) for p in v] if k in ("bundle_dir","teacher_bundle") and v else v for k,v in vars(args).items()},
+        notes=["EXPERIMENTAL teacher uses grasp proxy; not training external force or student" if teacher_mode else "No learned PAINT teacher/student; reference FT admittance",
                "No object force share, common velocity, base pose target, formation feedback or world weld",
                "Shared-load interaction torque and reaction peaks can exceed single-robot training conditions"])
     (output / "interface.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
     print(f"[COOP] two SFYG, free shared load {args.payload_mass}kg; total={manifest['total_mass_kg']:.4f}kg; output={output}",flush=True)
+    if teacher_mode: print('[TEACHER PROXY] EXPERIMENTAL: own grasp reaction replaces training external force; forward only; input clipped to 0--8N',flush=True)
     if args.check_only:
         print(f"[CHECK] 3 free roots, 2 aligned {args.grasp_model} grips, both policy interfaces loaded; no rollout",flush=True)
         return output
@@ -137,7 +152,7 @@ def run(args):
                 if not settling and calibration is None:
                     calibration=calibration_quality(rows,args.settle_seconds,args.calibration_seconds,control_dt)
                     print(f"[CALIBRATION] {calibration}",flush=True)
-                    if args.controller=="admittance" and not calibration["passed"]:
+                    if args.controller in ("admittance","teacher") and not calibration["passed"]:
                         reason="unsettled_calibration"
                         print("[STOP] Zero-command carrying was not settled; use --controller hold to isolate the physical coupling",flush=True)
                         break
@@ -149,8 +164,14 @@ def run(args):
                 commands,suggestions,states = [],[],[]
                 for robot,policy,controller,reaction in zip(scene.robots,policies,controllers,reactions):
                     r = scene.data.xmat[robot.base].reshape(3,3)
-                    suggestion = controller.update(reaction,r,control_dt,settling=settling,
-                        calibrating=settling and t>=args.settle_seconds-args.calibration_seconds)
+                    if teacher_mode:
+                        from sfyg_team_control import own_input,checked_action
+                        observation=own_input(scene,robot,reaction,control_dt,settling,
+                            settling and t>=args.settle_seconds-args.calibration_seconds)
+                        suggestion=checked_action(controller.update(observation),args.max_speed,args.max_yaw)
+                    else:
+                        suggestion = controller.update(reaction,r,control_dt,settling=settling,
+                            calibrating=settling and t>=args.settle_seconds-args.calibration_seconds)
                     command = np.zeros(3) if args.controller=="hold" else suggestion
                     # No requested/applied force, partner state or object pose is passed to the controller.
                     obs,history = robot.observation()
@@ -163,7 +184,9 @@ def run(args):
                     states.append(robot_state(scene,robot))
                     if args.trace:
                         trace.append(dict(time_s=t,robot=len(commands)-1,observation=obs,history=history,
-                                          command=command.copy(),action=action.copy()))
+                                          command=command.copy(),action=action.copy(),
+                                          teacher_observation=controller.teacher.observation.copy() if teacher_mode else np.zeros(147,np.float32),
+                                          teacher_raw=controller.teacher.raw.copy() if teacher_mode else np.zeros(9,np.float32)))
                 wrench = np.array([applied[0],applied[1],0,0,0,applied[2]])
                 row = dict(time_s=t,phase=phase,requested_fx_fy_tz=requested.tolist(),applied_world_wrench=wrench.tolist(),
                     payload_position=scene.data.xpos[scene.payload].tolist(),grasp_errors_m=scene.grasp_errors(),
@@ -171,10 +194,11 @@ def run(args):
                     extraction_error=audit["extraction_max"],dynamics_residual=audit["dynamics_max"],
                     robot_payload_moment_difference_nm=audit["robot_payload_moment_difference_nm"],
                     payload_grasp_world=audit["payload_grasp_world"],
-                    robots=[dict(**state,command=command.tolist(),admittance_suggestion=suggestion.tolist(),
+                    robots=[dict(**state,command=command.tolist(),admittance_suggestion=None if teacher_mode else suggestion.tolist(),
+                                 high_controller=controller.diagnostics() if teacher_mode else None,
                                  grasp_world=reaction.tolist(),bias_world=controller.bias.tolist(),
                                  legacy_payload_estimate_world=legacy,
-                                 filtered_local_fx_fy_tz=controller.corrected_local.tolist())
+                                 filtered_local_fx_fy_tz=None if teacher_mode else controller.corrected_local.tolist())
                             for state,command,suggestion,reaction,controller,legacy in zip(states,commands,suggestions,reactions,controllers,audit["legacy_payload_estimates_world"])])
                 stream.write(json.dumps(row)+"\n")
                 rows.append(row)
@@ -195,7 +219,8 @@ def run(args):
                 wrench = np.array([applied[0],applied[1],0,0,0,applied[2]])
                 if writer is not None and scene.data.time >= next_frame:
                     renderer.update_scene(scene.data,camera)
-                    draw(renderer.scene,scene.data.xpos[scene.payload],wrench,positions,commands,reactions,phase)
+                    draw(renderer.scene,scene.data.xpos[scene.payload],wrench,positions,commands,reactions,
+                         phase+' TEACHER-PROXY EXP' if teacher_mode else phase,'T-PROXY' if teacher_mode else 'FT')
                     writer.append_data(renderer.render())
                     next_frame += 1./args.fps
                 if viewer is not None:
@@ -204,7 +229,8 @@ def run(args):
                         if len(rows)==1:
                             viewer.cam.distance,viewer.cam.elevation,viewer.cam.azimuth = camera.distance,camera.elevation,camera.azimuth
                         viewer.user_scn.ngeom = 0
-                        draw(viewer.user_scn,scene.data.xpos[scene.payload],wrench,positions,commands,reactions,phase)
+                        draw(viewer.user_scn,scene.data.xpos[scene.payload],wrench,positions,commands,reactions,
+                             phase+' TEACHER-PROXY EXP' if teacher_mode else phase,'T-PROXY' if teacher_mode else 'FT')
                     viewer.sync()
                     time.sleep(max(0.,control_dt-(time.monotonic()-started)))
                 if not np.isfinite(scene.data.qpos).all() or not np.isfinite(scene.data.qvel).all():
@@ -229,7 +255,7 @@ def run(args):
         if renderer is not None:
             renderer.close()
         terminal = [robot_state(scene,r) for r in scene.robots]
-        report = dict(kind="sfyg_two_robot_ft_admittance_diagnostic",is_acceptance=False,reason=reason,error=error,
+        report = dict(kind="sfyg_two_robot_teacher_proxy_diagnostic" if teacher_mode else "sfyg_two_robot_ft_admittance_diagnostic",is_acceptance=False,reason=reason,error=error,
             completed=reason=="completed" and scene.data.time>=args.duration-dt,
             duration_s=float(scene.data.time),controller=args.controller,
             calibration=calibration,
@@ -255,6 +281,7 @@ def run(args):
                 peak_raw_horizontal_grasp_force_n=max((float(np.linalg.norm(r["grasp_world"][:2])) for r in robot_rows),default=0),
                 fraction_corrected_horizontal_force_above_training_2n=float(np.mean([
                     np.linalg.norm(np.array(r["grasp_world"][:2])-np.array(r["bias_world"][:2]))>2 for r in moving])) if moving else None))
+            if teacher_mode: report['robots'][-1]['teacher_proxy']=controllers[index].diagnostics()
         report["interface"]=manifest
         (output / "evaluation.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
         if trace:
@@ -272,7 +299,9 @@ def parser():
     p.add_argument("--fps",type=int,default=30)
     p.add_argument("--trace",action="store_true")
     p.add_argument("--check_only",action="store_true")
-    p.add_argument("--controller",choices=("admittance","hold"),default="admittance")
+    p.add_argument("--controller",choices=("admittance","hold","teacher"),default="admittance")
+    p.add_argument("--teacher_bundle",type=Path,nargs="+")
+    p.add_argument("--teacher_input",choices=("grasp-proxy",))
     p.add_argument("--duration",type=float,default=120.)
     p.add_argument("--settle_seconds",type=float,default=3.)
     p.add_argument("--calibration_seconds",type=float,default=1.)

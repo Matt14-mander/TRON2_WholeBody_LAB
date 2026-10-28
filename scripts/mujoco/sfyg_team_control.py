@@ -62,12 +62,26 @@ class AdmittanceFollower:
             bias_samples=c.bias_samples,filtered_local_fx_fy_tz=c.corrected_local.tolist())
 
 
-def make_follower(kind, **kwargs):
-    if kind in ('teacher','student'):
-        raise NotImplementedError(f'{kind} adapter is reserved, not deployed: validate observation/force '
-            'semantics and checkpoint manifest first. External applied force is NOT local grasp reaction.')
+def make_follower(kind, *, teacher_bundle=None, low_config=None, teacher_input=None, **kwargs):
+    if kind=='teacher':
+        if teacher_bundle is None or low_config is None or teacher_input is None:
+            raise NotImplementedError('Teacher requires --teacher_bundle and explicit --teacher_input grasp-proxy; '
+                'external applied force is NOT local grasp reaction')
+        from sfyg_teacher_shared import TeacherGraspProxy
+        return TeacherGraspProxy(teacher_bundle,low_config,input_mode=teacher_input,**kwargs)
+    if kind=='student':
+        raise NotImplementedError('Student has not been trained or deployed')
     if kind not in ('admittance','hold'): raise ValueError('Unknown follower policy')
     return AdmittanceFollower(hold=kind=='hold',**kwargs)
+
+
+def own_input(scene,robot,reaction,dt,settling,calibrating):
+    """Driver-side snapshot; the policy receives no scene object or partner data."""
+    return FollowerInput(float(scene.data.time),dt,settling,calibrating,reaction.copy(),
+        scene.data.xmat[robot.base].reshape(3,3).copy(),
+        (scene.data.qpos[robot.qpos[10:16]]-robot.defaults[10:16]).copy(),
+        scene.data.qvel[robot.qvel[10:16]].copy(),
+        (robot.target[10:16]-robot.defaults[10:16]).copy())
 
 
 def checked_action(action, max_speed, max_yaw):

@@ -48,10 +48,9 @@ follower在原gripper局部`(.15,0,0)m`连接，默认球铰；`--grasp_model we
 `FollowerInput`包含自身抓取世界wrench、base旋转、臂位置误差/速度/上一执行目标偏移及本地时间。
 `HighAction`输出本机坐标速度3和臂偏移6；本阶段非零臂输出会被拒绝，保留原固定臂执行。
 
-teacher/student接口位置已经保留，但没有声称接入现有T1权重。
-传`--follower teacher`或`student`会在仿真前明确报错，不静默退回导纳。
-后续适配必须校验checkpoint契约、历史与reset、力语义、动作范围，并实现独立适配器。
-当前T1真实外加力不等于共享负载抓取反力；不能直接替换输入，也不能将物体外力简单均分。
+当前teacher可通过显式的`--teacher_input grasp-proxy`进行实验接入，命令及输入转换见[多机teacher实验](sfyg_teacher_shared.md)。
+必须提供teacher_bundle并校验模型绑定；不带输入语义选项会明确报错，不静默退回导纳。
+student仍未实现。当前T1真实外加力不等于共享负载抓取反力，该代理适配明确标为输入分布变化，不将物体外力简单均分。
 策略先采用启动时选择；不支持运行中无缝切换。
 底层`--bundle_dir`支持一份共享权重，或按leader/followers顺序传2/3份兼容bundle。
 当前仅支持同构SFYG物理接口；不声称已经支持异构人形leader。

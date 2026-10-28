@@ -3,7 +3,7 @@ import mujoco
 import numpy as np
 
 
-def draw(scene,payload_position,applied,positions,commands,reactions,phase):
+def draw(scene,payload_position,applied,positions,commands,reactions,phase,controller_label='FT'):
     def geom(kind,pos,color):
         if scene.ngeom >= scene.maxgeom:
             return None
@@ -29,6 +29,6 @@ def draw(scene,payload_position,applied,positions,commands,reactions,phase):
           origin+[0,0,.25],[1,.8,.5,1])
     for i,(position,command,reaction) in enumerate(zip(positions,commands,reactions)):
         color = [.3,1,.5,1] if i == 0 else [.3,.7,1,1]
-        label(f"R{i+1} FT v=({command[0]:.2f},{command[1]:.2f}) w={command[2]:.2f}",
+        label(f"R{i+1} {controller_label} v=({command[0]:.2f},{command[1]:.2f}) w={command[2]:.2f}",
               np.asarray(position)+[0,0,.75],color)
         arrow(np.r_[reaction[:2],0.],np.asarray(position)+[0,0,.5],color,.03)
