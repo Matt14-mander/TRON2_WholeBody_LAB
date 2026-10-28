@@ -12,6 +12,8 @@ source/carry/robust checkpoint 的 CPU 导出、单机 MuJoCo 播放与诊断见
 
 冻结当前 SFYG 底层的 [T0 基线与 T1 固定臂前向 teacher](docs/sfyg_teacher_t0_t1.md) 已提供独立入口：先检查负载外力、跟随与停稳，再训练高层；不改原始 locomotion 源码。
 
+当前teacher可通过 [单机MuJoCo特权策略demo](docs/sfyg_teacher_mujoco.md) 直接查看推理效果，复用已导出的teacher与绑定的底层模型。
+
 基于 [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) 的 LimX **TRON2A** 双足机器人强化学习训练栈，使用 PPO 训练 locomotion 策略。支持 SF / WF 两种基础形态（sole-foot / wheel-foot），以及带 6-DoF 机械臂 + 双指 gripper 的 SFYG / WFYG 形态（机械臂运行时锁死、不参与 RL）。
 
 ## 仓库结构
