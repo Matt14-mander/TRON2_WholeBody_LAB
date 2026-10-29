@@ -16,6 +16,8 @@ source/carry/robust checkpoint 的 CPU 导出、单机 MuJoCo 播放与诊断见
 
 也可在 [三种多机demo的teacher实验模式](docs/sfyg_teacher_shared.md) 中测试当前策略：显式采用本机抓取反力代理输入，并记录它与训练真实外加力的差异及输入越界。
 
+[Student 独立训练管线](docs/sfyg_student_s1.md) 提供自身历史估计、独立 PPO/蒸馏、恢复、评估和 TorchScript 导出；当前为单机前向工程版本，多机 student 部署仍待接入。
+
 基于 [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) 的 LimX **TRON2A** 双足机器人强化学习训练栈，使用 PPO 训练 locomotion 策略。支持 SF / WF 两种基础形态（sole-foot / wheel-foot），以及带 6-DoF 机械臂 + 双指 gripper 的 SFYG / WFYG 形态（机械臂运行时锁死、不参与 RL）。
 
 ## 仓库结构

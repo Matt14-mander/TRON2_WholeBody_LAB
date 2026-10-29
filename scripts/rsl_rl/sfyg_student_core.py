@@ -1,4 +1,4 @@
-"""SFYG Student S0 building blocks; no training runner or accepted student yet.
+"""SFYG Student building blocks; runner lives in sfyg_student_runner.py.
 
 History is the CURRENT T1 eight-frame, oldest-first arm history (144 values).
 The estimated label is external payload-COM [Fx/40, Fy/40, Mz/10] in BASE
