@@ -36,6 +36,34 @@ class Config:
         return self
 
 
+@dataclass(frozen=True)
+class Actor4NConfig(Config):
+    learning_rate: float = 3e-5
+    raw_reference_weight: float = 1.
+
+    def validate(self):
+        super().validate()
+        if self.raw_reference_weight <= 0:
+            raise ValueError('Positive raw reference weight required')
+        return self
+
+
+def mix_training_forces(original, uniform):
+    """Keep zero and weak draws. Redistribute only the original moving episodes."""
+    moving = original >= 4.
+    mixed = original.clone()
+    mixed[moving & (uniform < .5)] = 4.
+    mixed[moving & (uniform >= .5) & (uniform < .625)] = 6.
+    mixed[moving & (uniform >= .625) & (uniform < .75)] = 8.
+    return mixed
+
+
+def raw_reference_loss(current_vx, eligible):
+    # The mask is fixed at rollout time. Each selected action keeps its 0.10
+    # target throughout this PPO update, even after first crossing the deadband.
+    return ((current_vx - .1).square() * eligible).sum() / eligible.sum().clamp_min(1)
+
+
 def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -68,6 +96,12 @@ class StudentRunner:
         self.critic = deepcopy(self.teacher.critic).requires_grad_(True)
         self.logstd = torch.nn.Parameter(self.teacher.logstd.detach().clone())
         self.parameters = list(self.policy.actor.parameters()) + list(self.critic.parameters()) + [self.logstd]
+        self.actor_4n = isinstance(self.cfg, Actor4NConfig)
+        if self.actor_4n:
+            self.policy.estimator.requires_grad_(False)
+            self.critic.requires_grad_(False)
+            self.logstd.requires_grad_(False)
+            self.parameters = list(self.policy.actor.parameters())
         self.optimizer = torch.optim.Adam(self.parameters, lr=self.cfg.learning_rate)
         self.est_optimizer = torch.optim.Adam(self.policy.estimator.parameters(), lr=self.cfg.estimator_learning_rate)
         self.contract = dict(schema='sfyg_student_v1', teacher_sha256=sha256(teacher_path),
@@ -109,6 +143,10 @@ class StudentRunner:
             record = dict(history=history, teacher=teacher, critic=critic, action=action.clone(),
                           mean=dist.mean.clone(), std=dist.stddev.clone(),
                           logprob=dist.log_prob(action).sum(-1).clone(), value=value.clone())
+            if self.actor_4n:
+                plateau = env.fixed_four_plateau()
+                record['four_plateau'] = plateau
+                record['raw_reference_mask'] = plateau & (dist.mean[:,0] <= self.contract['teacher_contract']['settings']['deadband'])
             obs, reward, failed, timeout, info = env.step(action)
             failed, timeout = failed.bool(), timeout.bool() & ~failed.bool()
             next_value = self.critic(obs['critic']).squeeze(-1)
@@ -134,6 +172,8 @@ class StudentRunner:
             raise ValueError('More minibatches than collected transitions')
         self.policy.train()
         sums = dict(policy=0., value=0., teacher_kl=0., entropy=0.)
+        if self.actor_4n:
+            sums['raw_reference_loss'] = 0.
         updates = 0
         # Hold estimator fixed throughout PPO. Update it in a separate phase,
         # then measure the induced policy drift; no custom KL early stopping.
@@ -152,6 +192,10 @@ class StudentRunner:
                 kl = latent_normal_kl(dist.mean,dist.stddev,teacher_mean,teacher_std).mean()
                 entropy = dist.entropy().sum(-1).mean()
                 loss = policy_loss+value_loss+self.cfg.distill_coef*kl-self.cfg.entropy_coef*entropy
+                if self.actor_4n:
+                    auxiliary = raw_reference_loss(dist.mean[:,0], data['raw_reference_mask'][ids])
+                    loss = policy_loss + self.cfg.distill_coef*kl + self.cfg.raw_reference_weight*auxiliary
+                    sums['raw_reference_loss'] += float(auxiliary.detach())
                 if not bool(torch.isfinite(loss)):
                     raise FloatingPointError('Nonfinite Student PPO loss')
                 self.optimizer.zero_grad(set_to_none=True)
@@ -165,10 +209,11 @@ class StudentRunner:
             before = self.distribution(probe)
             before_mean,before_std = before.mean.clone(),before.stddev.clone()
         losses = []
-        for _ in range(self.cfg.epochs):
-            for ids in torch.randperm(n,device=probe.device).tensor_split(self.cfg.batches):
-                losses.append(estimator_step(self.policy.estimator,self.est_optimizer,
-                                            data['history'][ids],data['teacher'][ids,-3:]))
+        if not self.actor_4n:
+            for _ in range(self.cfg.epochs):
+                for ids in torch.randperm(n,device=probe.device).tensor_split(self.cfg.batches):
+                    losses.append(estimator_step(self.policy.estimator,self.est_optimizer,
+                                                data['history'][ids],data['teacher'][ids,-3:]))
         with torch.no_grad():
             after = self.distribution(probe)
             drift = latent_normal_kl(before_mean,before_std,after.mean,after.stddev).mean()
@@ -177,11 +222,12 @@ class StudentRunner:
         self.iteration += 1
         self.assert_teacher_frozen()
         return dict(iteration=self.iteration,**{k:v/updates for k,v in sums.items()},
-                    estimator_loss=sum(losses)/len(losses),estimator_policy_kl=float(drift),
+                    estimator_loss=sum(losses)/len(losses) if losses else None,estimator_policy_kl=float(drift),
                     post_update_rollout_kl=float(rollout_kl),optimizer_steps=updates,estimator_steps=len(losses),
                     mean_reward=float(data['reward'].mean()),failures=int(data['failed'].sum()),
                     timeouts=int(data['timeout'].sum()),mean_noise_std=float(self.logstd.exp().mean()),
-                    **estimate)
+                    **estimate, **(dict(four_plateau_frames=int(data['four_plateau'].sum()),
+                                        raw_reference_frames=int(data['raw_reference_mask'].sum())) if self.actor_4n else {}))
 
     def save(self, path):
         self.assert_teacher_frozen()

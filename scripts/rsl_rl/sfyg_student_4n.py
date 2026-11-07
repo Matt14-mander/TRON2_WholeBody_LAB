@@ -20,11 +20,8 @@ def fill_zero(raw, command, reference, times, settings):
     return action, mask
 
 
-def case_metrics(rows, settings):
-    begin = settings.settle + settings.ramp
-    end = begin + settings.hold
-    plateau = [r for r in rows if begin <= round(r['action_time_s'], 4) < end]
-    zero = [r for r in plateau if r['student_command_same_state'][0] == 0]
+def low_speed_events(rows, settings):
+    end = settings.settle + settings.ramp + settings.hold
     active = [r for r in rows if settings.settle < round(r['time_s'], 4) <= end]
     vx = np.array([r['velocity'][0] for r in active])
     n = round(.5 / settings.dt)
@@ -45,6 +42,15 @@ def case_metrics(rows, settings):
             i += 1
             continue
         i += n
+    return stops, first_stop
+
+
+def case_metrics(rows, settings):
+    begin = settings.settle + settings.ramp
+    end = begin + settings.hold
+    plateau = [r for r in rows if begin <= round(r['action_time_s'], 4) < end]
+    zero = [r for r in plateau if r['student_command_same_state'][0] == 0]
+    stops, first_stop = low_speed_events(rows, settings)
     # Find the strongest raw dropout in the half second preceding the first
     # low-speed window. Compare all three raw outputs at that exact frame.
     pulse = [r for r in zero if first_stop is not None

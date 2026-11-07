@@ -11,7 +11,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'scripts/rsl_rl'),str(ROOT/'rsl_rl')]
-from sfyg_student_runner import StudentRunner,Config,gae
+from sfyg_student_runner import StudentRunner,Config,Actor4NConfig,gae,mix_training_forces,raw_reference_loss
 from sfyg_teacher_core import Settings,execution_contract,fingerprint
 from rsl_rl.modules import ActorCritic
 
@@ -71,6 +71,35 @@ class RunnerTests(unittest.TestCase):
         advantage,returns = gae(reward,value,nxt,failed,done,.9,.95)
         torch.testing.assert_close(advantage[0],torch.tensor([2.8,1.]))
         torch.testing.assert_close(returns,advantage)
+
+    def test_actor_finetune_preserves_other_weights_and_corrects_raw_output(self):
+        r = self.runner(Actor4NConfig(steps=3,epochs=2,batches=2,distill_coef=0.))
+        env = FakeEnv()
+        env.fixed_four_plateau = lambda: torch.tensor([True,False,False])
+        with torch.no_grad():
+            r.policy.actor[-1].weight.zero_()
+            r.policy.actor[-1].bias.fill_(-.3)
+        before = (fingerprint(r.policy.estimator), fingerprint(r.critic), fingerprint(r.teacher))
+        std = r.logstd.clone()
+        data,_ = r.collect(env,env.obs)
+        self.assertEqual(data['raw_reference_mask'].tolist(),[True,False,False]*3)
+        data['advantage'].zero_()
+        stats = r.update(data)
+        self.assertEqual(stats['estimator_steps'],0)
+        self.assertEqual(stats['raw_reference_frames'],3)
+        self.assertGreater(stats['raw_reference_loss'],0)
+        self.assertGreater(float(r.policy(data['history'])[:,0].mean()),-.3)
+        self.assertEqual(before,(fingerprint(r.policy.estimator),fingerprint(r.critic),fingerprint(r.teacher)))
+        torch.testing.assert_close(r.logstd,std)
+        raw = torch.tensor([-.3,.04,-.4],requires_grad=True)
+        raw_reference_loss(raw,torch.tensor([True,False,False])).backward()
+        torch.testing.assert_close(raw.grad,torch.tensor([-.8,0.,0.]))
+        self.assertEqual(float(raw_reference_loss(raw,torch.zeros(3,dtype=torch.bool))),0.)
+
+    def test_mixed_training_force_draws_preserve_zero_and_weak(self):
+        force = torch.tensor([0.,1.5,5.,5.,5.,5.])
+        mixed = mix_training_forces(force,torch.tensor([.1,.1,.1,.51,.70,.9]))
+        torch.testing.assert_close(mixed,torch.tensor([0.,1.5,4.,6.,8.,5.]))
 
     def test_actual_updates_resume_and_export(self):
         r,env = self.runner(),FakeEnv()

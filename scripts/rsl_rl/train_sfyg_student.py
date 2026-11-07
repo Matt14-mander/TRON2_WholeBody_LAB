@@ -28,7 +28,8 @@ def parser_for_task():
     p.add_argument('--forces',type=float,nargs='+',default=[0.,2.,4.,6.,8.])
     p.add_argument('--controllers',nargs='+',choices=('student','teacher','reference','hold'),default=['student','teacher'])
     p.add_argument('--distill_coef',type=float,default=.001)
-    p.add_argument('--learning_rate',type=float,default=1e-4)
+    p.add_argument('--learning_rate',type=float,help='Default 1e-4 for S1 or 3e-5 for actor fine-tuning')
+    p.add_argument('--finetune_actor_4n',action='store_true',help='Train only the loaded student actor; mixed fixed-4N episodes and raw-vx supervision')
     p.add_argument('--estimator_learning_rate',type=float,default=1e-3)
     p.add_argument('--output_dir',required=True)
     p.add_argument('--diagnose_4n',action='store_true',help='Eval student plus paired plateau zero-command intervention and same-history true-force probes')
@@ -36,6 +37,8 @@ def parser_for_task():
 
 
 def validate(args):
+    if args.finetune_actor_4n and (args.mode!='train' or not args.student_checkpoint):
+        raise ValueError('Actor fine-tuning requires train and a student checkpoint')
     if args.diagnose_4n and (args.mode!='eval' or args.controllers!=['student'] or args.forces!=[4.]):
         raise ValueError('--diagnose_4n uses --mode eval --controllers student --forces 4')
     if min(args.num_envs,args.max_iterations,args.save_interval,args.episodes) <= 0:
@@ -119,6 +122,9 @@ def evaluate(env, runner, args, app, settings, output):
                         prediction = torch.tensor([r['pre_action_estimate'] for r in data])
                         target = torch.tensor([r['pre_action_reference'] for r in data])
                         result.update(episode=episode,environment=i,estimator=estimator_metrics(prediction,target))
+                        if mode=='student' and force==4.:
+                            from sfyg_student_4n import low_speed_events
+                            result['low_speed_events'] = low_speed_events(data,settings)[0]
                         if args.diagnose_4n:
                             result['diagnostic_4n'] = diag.case_metrics(data,settings)
                         reports.append(result)
@@ -136,13 +142,15 @@ def evaluate(env, runner, args, app, settings, output):
 
 def main(args,app):
     import torch
-    from sfyg_student_runner import StudentRunner,Config,sha256
+    from sfyg_student_runner import StudentRunner,Config,Actor4NConfig,mix_training_forces,sha256
     from sfyg_teacher_core import Settings,execution_contract,fingerprint
     from sfyg_teacher_env import TeacherEnv,TeacherEnvCfg,controller,critic_observation
     from bipedal_locomotion.controllers.sfyg_reset import verify_source
     from bipedal_locomotion.controllers.paint_payload import create_payload_asset
     validate(args)
-    config = Config(learning_rate=args.learning_rate,estimator_learning_rate=args.estimator_learning_rate,
+    config_type = Actor4NConfig if args.finetune_actor_4n else Config
+    lr = config_type.learning_rate if args.learning_rate is None else args.learning_rate
+    config = config_type(learning_rate=lr,estimator_learning_rate=args.estimator_learning_rate,
                     distill_coef=args.distill_coef).validate()
     saved_teacher = torch.load(args.teacher_checkpoint,map_location='cpu',weights_only=False)
     settings = Settings(**saved_teacher['sfyg_teacher_contract']['settings']).validate()
@@ -162,6 +170,16 @@ def main(args,app):
             if len(active):
                 self.terminal_critics.append((active.clone(),critic_observation(self)[active].clone()))
             super()._reset_idx(ids)
+            if args.finetune_actor_4n:
+                target = controller(self).target_force
+                original = target[ids]
+                target[ids] = mix_training_forces(original,torch.rand_like(original))
+
+        def fixed_four_plateau(self):
+            term = controller(self)
+            time = term.time()
+            begin = settings.settle + settings.ramp
+            return (term.target_force == 4.) & (time >= begin) & (time < begin + settings.hold)
 
         def step(self,action):
             self.terminal_critics = []
@@ -186,9 +204,15 @@ def main(args,app):
         low_hash = fingerprint(term.low)
         contract = execution_contract(term.low_sha,term.low_cfg,settings)
         runner = StudentRunner(args.teacher_checkpoint,contract,args.device,config)
+        parent = {}
         if args.student_checkpoint:
             loaded_iteration = runner.load(args.student_checkpoint,args.resume)
             if args.mode=='eval': runner.iteration = loaded_iteration
+            parent = dict(iteration=loaded_iteration,sha256=sha256(args.student_checkpoint))
+        if args.finetune_actor_4n:
+            estimator_hash = fingerprint(runner.policy.estimator)
+            critic_hash = fingerprint(runner.critic)
+            original_logstd = runner.logstd.detach().clone()
         obs,_ = env.reset(seed=args.seed)
         if obs['policy'].shape[1]!=147 or obs['critic'].shape[1]!=177:
             raise ValueError('Wrong Student environment observations')
@@ -203,7 +227,7 @@ def main(args,app):
                    'exts/bipedal_locomotion/bipedal_locomotion/controllers/paint_payload.py',
                    'exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_sfyg_carry_env_cfg.py']
         hashes = {}
-        if args.diagnose_4n: sources.append('scripts/rsl_rl/sfyg_student_4n.py')
+        if args.mode=='eval': sources.append('scripts/rsl_rl/sfyg_student_4n.py')
         for name in sources:
             target = output/'sources'/name
             target.parent.mkdir(parents=True,exist_ok=True)
@@ -211,7 +235,7 @@ def main(args,app):
             hashes[name] = sha256(target)
         write_json(output/'run.json',dict(arguments=vars(args),config=asdict(config),sources=hashes,
                     environment=cfg.to_dict(),teacher_development_only=saved_teacher.get('development_only',False),
-                    started=datetime.now().isoformat(),is_acceptance=False))
+                    parent_student=parent,started=datetime.now().isoformat(),is_acceptance=False))
         if args.mode=='train':
             from torch.utils.tensorboard import SummaryWriter
             writer = SummaryWriter(str(output))
@@ -228,9 +252,16 @@ def main(args,app):
                         if isinstance(value,(int,float)): writer.add_scalar('Student/'+key,value,runner.iteration)
                         elif isinstance(value,list):
                             for axis,v in zip(('fx','fy','mz'),value): writer.add_scalar('Student/'+key+'/'+axis,v,runner.iteration)
-                    print(f'[STUDENT] {runner.iteration}/{end} reward={stats["mean_reward"]:.5f} '
-                          f'est_rmse={stats["physical_rmse"]} teacher_KL={stats["teacher_kl"]:.5f}',flush=True)
+                    progress = (f'[STUDENT] {runner.iteration}/{end} reward={stats["mean_reward"]:.5f} '
+                                f'est_rmse={stats["physical_rmse"]} teacher_KL={stats["teacher_kl"]:.5f}')
+                    if args.finetune_actor_4n:
+                        progress += (f' auxiliary_frames={stats["raw_reference_frames"]}/{stats["four_plateau_frames"]}'
+                                     f' raw_loss={stats["raw_reference_loss"]:.5f}')
+                    print(progress,flush=True)
                     if runner.iteration%args.save_interval==0 or runner.iteration==end:
+                        if args.finetune_actor_4n and (fingerprint(runner.policy.estimator)!=estimator_hash
+                                or fingerprint(runner.critic)!=critic_hash or not torch.equal(original_logstd,runner.logstd)):
+                            raise RuntimeError('A frozen student parameter changed during actor fine-tuning')
                         if fingerprint(term.low)!=low_hash: raise RuntimeError('Frozen low-level changed')
                         runner.save(output/f'model_{runner.iteration}.pt')
             runner.export(output/'exported'/f'model_{runner.iteration}')
@@ -240,7 +271,7 @@ def main(args,app):
         if fingerprint(term.low)!=low_hash: raise RuntimeError('Frozen low-level changed')
         verify_source(ROOT)
         write_json(output/'completion.json',dict(completed=True,mode=args.mode,iteration=runner.iteration,
-                   frozen_weights_verified=True,source_core_verified=True,is_acceptance=False))
+                   frozen_weights_verified=True,source_core_verified=True,actor_only=args.finetune_actor_4n,is_acceptance=False))
     finally:
         if writer is not None: writer.close()
         env.close()
