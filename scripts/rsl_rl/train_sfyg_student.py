@@ -31,10 +31,13 @@ def parser_for_task():
     p.add_argument('--learning_rate',type=float,default=1e-4)
     p.add_argument('--estimator_learning_rate',type=float,default=1e-3)
     p.add_argument('--output_dir',required=True)
+    p.add_argument('--diagnose_4n',action='store_true',help='Eval student plus paired plateau zero-command intervention and same-history true-force probes')
     return p
 
 
 def validate(args):
+    if args.diagnose_4n and (args.mode!='eval' or args.controllers!=['student'] or args.forces!=[4.]):
+        raise ValueError('--diagnose_4n uses --mode eval --controllers student --forces 4')
     if min(args.num_envs,args.max_iterations,args.save_interval,args.episodes) <= 0:
         raise ValueError('Positive counts required')
     if args.resume and (args.mode!='train' or not args.student_checkpoint):
@@ -61,7 +64,11 @@ def evaluate(env, runner, args, app, settings, output):
     reports = []
     runner.policy.eval()
     with (output/'steps.jsonl').open('w',encoding='utf-8') as stream,torch.inference_mode():
-        for mode in args.controllers:
+        modes = args.controllers
+        if args.diagnose_4n:
+            import sfyg_student_4n as diag
+            modes = ['student','student_fill_4n']
+        for mode in modes:
             for force in args.forces:
                 env.cfg.fixed_force = force
                 for episode in range(args.episodes):
@@ -74,7 +81,7 @@ def evaluate(env, runner, args, app, settings, output):
                         estimate = runner.policy.estimate(pre[:,:144])
                         teacher_raw = runner.teacher.actor(pre)
                         student_raw = runner.policy(pre[:,:144])
-                        action = {'student':student_raw,'teacher':teacher_raw,
+                        action = {'student':student_raw,'student_fill_4n':student_raw,'teacher':teacher_raw,
                                   'reference':torch.cat((pre[:,-3:],torch.zeros(env.num_envs,6,device=env.device)),-1),
                                   'hold':torch.zeros_like(student_raw)}[mode]
                         # These counterfactual actions use the SAME state; paired
@@ -82,6 +89,11 @@ def evaluate(env, runner, args, app, settings, output):
                         times = env.episode_length_buf*env.step_dt
                         teacher_cmd = process_action(teacher_raw,times,settings)
                         student_cmd = process_action(student_raw,times,settings)
+                        if args.diagnose_4n:
+                            oracle,fx_only = diag.shadow_actions(runner.policy.actor,pre,estimate)
+                            filled = torch.zeros_like(alive)
+                            if mode=='student_fill_4n':
+                                action,filled = diag.fill_zero(student_raw,student_cmd,pre[:,-3:],times,settings)
                         obs,reward,failed,timeout,info = env.step(action)
                         states = {k:v.cpu().tolist() for k,v in info['teacher_state'].items()}
                         costs = {k:v.cpu().tolist() for k,v in info['teacher_rewards'].items()}
@@ -95,6 +107,10 @@ def evaluate(env, runner, args, app, settings, output):
                                        teacher_command_same_state=teacher_cmd[i].cpu().tolist(),
                                        student_command_same_state=student_cmd[i].cpu().tolist())
                             rows[i].append(row)
+                            if args.diagnose_4n:
+                                row.update(action_time_s=float(times[i]),student_raw_vx=float(student_raw[i,0]),
+                                           true_fx_raw_vx=float(fx_only[i,0]),true_wrench_raw_vx=float(oracle[i,0]),
+                                           filled_zero=bool(filled[i]))
                             stream.write(json.dumps(row,allow_nan=False)+'\n')
                         alive &= ~(failed|timeout)
                         if not bool(alive.any()): break
@@ -103,6 +119,8 @@ def evaluate(env, runner, args, app, settings, output):
                         prediction = torch.tensor([r['pre_action_estimate'] for r in data])
                         target = torch.tensor([r['pre_action_reference'] for r in data])
                         result.update(episode=episode,environment=i,estimator=estimator_metrics(prediction,target))
+                        if args.diagnose_4n:
+                            result['diagnostic_4n'] = diag.case_metrics(data,settings)
                         reports.append(result)
                         print(f'[STUDENT EVAL] {mode} F={force:g} env={i} gate={result["gate"]}',flush=True)
     selected = [r for r in reports if r['controller']=='student' and r['force_n'] in (0,4,6,8)]
@@ -111,6 +129,8 @@ def evaluate(env, runner, args, app, settings, output):
                   required_task_cases_passed=full and all(r['gate']['passed'] for r in selected),
                   is_acceptance=False,scope='nominal forward single robot; estimator/generalization acceptance not established')
     write_json(output/'evaluation.json',result)
+    if args.diagnose_4n:
+        diag.print_comparison(reports)
     return result
 
 
@@ -183,6 +203,7 @@ def main(args,app):
                    'exts/bipedal_locomotion/bipedal_locomotion/controllers/paint_payload.py',
                    'exts/bipedal_locomotion/bipedal_locomotion/tasks/locomotion/robots/limx_sfyg_carry_env_cfg.py']
         hashes = {}
+        if args.diagnose_4n: sources.append('scripts/rsl_rl/sfyg_student_4n.py')
         for name in sources:
             target = output/'sources'/name
             target.parent.mkdir(parents=True,exist_ok=True)
