@@ -77,7 +77,7 @@ def parse_args(argv=None,*,student=False):
     else:
         p.add_argument('--bundle_dir',type=Path,required=True,help='Existing frozen SFYG low-level export')
         p.add_argument('--teacher_bundle',type=Path,required=True,help='Existing teacher exported/model_5000 directory')
-    p.add_argument('--force_n',type=float,default=8.)
+    p.add_argument('--force_n',type=float,default=8.,help='Forward payload pull in N (student playback up to 16 N)' if student else 'Forward payload pull in N')
     p.add_argument('--episodes',type=int,default=1)
     p.add_argument('--seed',type=int,default=42)
     p.add_argument('--headless',action='store_true')
@@ -101,7 +101,8 @@ def run(args):
         from sfyg_student_policy import S1_CHECKPOINT, StudentCheckpointPolicy
         policy=StudentCheckpointPolicy(S1_CHECKPOINT,cfg)
         metadata=dict(student_contract=policy.manifest,student_checkpoint=str(S1_CHECKPOINT),
-            student_checkpoint_sha256=policy.sha,iteration=500,
+            student_checkpoint_sha256=policy.sha,iteration=500,training_force_max_n=policy.settings.force_max,
+            outside_training_force_range=args.force_n>policy.settings.force_max,
             force_input='arm history144 only; estimator predicts BASE [Fx,Fy,Mz] from proprioception')
     else:
         policy=TeacherPolicy(args.teacher_bundle,cfg)

@@ -36,9 +36,13 @@ class ArmHistoryPolicy:
         if not isinstance(tick,(int,np.integer)) or tick<0: raise ValueError('Nonnegative integer control tick required')
         return torch.tensor([int(tick)],dtype=torch.long)*self.settings.dt
 
+    @property
+    def playback_force_limit_n(self):
+        return self.settings.force_max
+
     def force(self,tick,force_n):
-        if not np.isfinite(force_n) or not 0<=force_n<=self.settings.force_max:
-            raise ValueError('T1 supports forward external force 0--8 N only')
+        if not np.isfinite(force_n) or not 0<=force_n<=self.playback_force_limit_n:
+            raise ValueError(f'Forward playback force must be within 0--{self.playback_force_limit_n:g} N')
         return np.array([float(envelope(self.time(tick),self.settings)[0])*force_n,0.,0.],np.float32)
 
     def arm_history(self,arm_error,arm_velocity,previous_target_offset,tick):

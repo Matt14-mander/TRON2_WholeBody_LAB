@@ -187,14 +187,18 @@ class TeacherMujocoTests(unittest.TestCase):
             checkpoint=folder/'model_500.pt'
             torch.save(saved,checkpoint)
             args=cli.parse_args(['--bundle_dir',str(self.folder/'low'),'--output_dir',str(folder/'run'),
-                                 '--headless','--force_n','4','--episodes','2','--trace'],student=True)
+                                 '--headless','--force_n','16','--episodes','2','--trace'],student=True)
             with patch('sfyg_student_policy.S1_CHECKPOINT',checkpoint):
                 out=cli.run(args)
             report=json.loads((out/'evaluation.json').read_text())
             self.assertTrue(report['completed'])
             self.assertEqual(report['interface']['iteration'],500)
+            self.assertTrue(report['interface']['outside_training_force_range'])
+            self.assertEqual(report['interface']['training_force_max_n'],8.)
             rows=[json.loads(line) for line in (out/'steps.jsonl').read_text().splitlines()]
-            self.assertEqual(max(r['force_base'][0] for r in rows),4.)
+            self.assertEqual(max(r['force_base'][0] for r in rows),16.)
+            np.testing.assert_allclose([np.linalg.norm(r['last_applied_world_force']) for r in rows],
+                                       [r['force_base'][0] for r in rows],atol=1e-5)
             self.assertEqual(rows[-1]['force_base'][0],0.)
             with np.load(out/'trace.npz') as trace,torch.no_grad():
                 h=torch.from_numpy(trace['student_observation'])

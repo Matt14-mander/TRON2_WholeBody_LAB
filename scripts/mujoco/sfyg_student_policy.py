@@ -16,6 +16,8 @@ ROBUST_BUNDLE = ROOT / 'logs/rsl_rl/sfyg_robust_5000_gpu1_20261027_131013/export
 
 class StudentCheckpointPolicy(ArmHistoryPolicy):
     input_width = 144
+    # External load in MuJoCo only. Training and action limits come from the checkpoint.
+    playback_force_limit_n = 16.
 
     def __init__(self, checkpoint, low_config):
         saved = torch.load(Path(checkpoint), map_location='cpu', weights_only=True)
