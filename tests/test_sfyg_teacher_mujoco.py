@@ -220,6 +220,38 @@ class TeacherMujocoTests(unittest.TestCase):
             for key in ('vx','dx_world_m','foot_releases_lr'):
                 self.assertEqual(cases['student_8N'][key],cases['low_8N_vx0.00'][key])
             self.assertEqual(cases['low_16N_vx0.00']['cmd_vx'],0.)
+            with patch.object(diag,'S1_CHECKPOINT',checkpoint):
+                paired=diag.run(folder/'transfer',self.folder/'low',42,arm_transfer=True)['cases']
+            self.assertEqual(len(paired),5)
+            self.assertAlmostEqual(paired['student_8N_true_fx_closed_loop']['cmd_vx'],.23,places=5)
+            self.assertEqual(paired['student_8N']['cmd_vx'],0.)
+            oracle=[json.loads(s) for s in (folder/'transfer/student_8N_true_fx_closed_loop.jsonl').read_text().splitlines()]
+            for row in oracle:
+                self.assertAlmostEqual(row['cmd_vx'],row['shadow_raw_cmd_vx']['true_fx'][1])
+            # With force removed the fixture still commands +.03 due to estimated Fy.
+            self.assertAlmostEqual(oracle[-1]['cmd_vx'],.03,places=5)
+            from compare_sfyg_arm_hold import statistics
+            for f in (0,4,8):
+                held=[json.loads(s) for s in (folder/f'transfer/low_{f}N_vx0.00.jsonl').read_text().splitlines()]
+                stat=statistics(held,f,False,vars(settings))
+                self.assertEqual(stat['frames'],6)
+                self.assertAlmostEqual(stat['est'],-4.,places=5)
+                self.assertEqual(len(stat['q']),6)
+
+    def test_closed_loop_motion_and_release_metrics(self):
+        from diagnose_sfyg_student import motion_metrics
+        settings=core.Settings()
+        rows=[]
+        for tick in range(round(settings.horizon/settings.dt)):
+            t=tick*settings.dt
+            vx=.10 if 4<=t<6 or 7<=t<15 else 0.
+            rows.append(dict(tick=tick,action_time_s=t,vx=vx,vy=0.,wz=0.,cmd_vx=vx,termination=None))
+        metrics=motion_metrics(rows,settings)
+        self.assertEqual([e['event'] for e in metrics['motion_events']],['start','stop','start'])
+        self.assertTrue(metrics['release_stable'])
+        self.assertIsNone(motion_metrics(rows[:-1],settings)['release_stable'])
+        for r in rows[-75:]: r['wz']=.12
+        self.assertFalse(motion_metrics(rows,settings)['release_stable'])
 
     def test_single_student_checkpoint_playback_matches_training_policy(self):
         from rsl_rl.modules import ActorCritic

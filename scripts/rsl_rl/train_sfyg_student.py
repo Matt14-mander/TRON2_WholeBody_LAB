@@ -33,10 +33,13 @@ def parser_for_task():
     p.add_argument('--estimator_learning_rate',type=float,default=1e-3)
     p.add_argument('--output_dir',required=True)
     p.add_argument('--diagnose_4n',action='store_true',help='Eval student plus paired plateau zero-command intervention and same-history true-force probes')
+    p.add_argument('--record_arm_hold',action='store_true',help='Record pre-action arm q error and dq during zero-command evaluation')
     return p
 
 
 def validate(args):
+    if args.record_arm_hold and (args.mode!='eval' or args.controllers!=['hold']):
+        raise ValueError('--record_arm_hold requires --mode eval --controllers hold')
     if args.finetune_actor_4n and (args.mode!='train' or not args.student_checkpoint):
         raise ValueError('Actor fine-tuning requires train and a student checkpoint')
     if args.diagnose_4n and (args.mode!='eval' or args.controllers!=['student'] or args.forces!=[4.]):
@@ -90,6 +93,13 @@ def evaluate(env, runner, args, app, settings, output):
                         # These counterfactual actions use the SAME state; paired
                         # teacher rollouts are evaluated separately above.
                         times = env.episode_length_buf*env.step_dt
+                        if args.record_arm_hold:
+                            from sfyg_teacher_env import controller
+                            term = controller(env)
+                            arm_data = term._asset.data
+                            q_error = (arm_data.joint_pos[:,term.arm_ids]-term.nominal[:,:6]).cpu().tolist()
+                            dq_arm = arm_data.joint_vel[:,term.arm_ids].cpu().tolist()
+                            arm_names = [arm_data.joint_names[j] for j in term.arm_ids]
                         teacher_cmd = process_action(teacher_raw,times,settings)
                         student_cmd = process_action(student_raw,times,settings)
                         if args.diagnose_4n:
@@ -110,6 +120,9 @@ def evaluate(env, runner, args, app, settings, output):
                                        teacher_command_same_state=teacher_cmd[i].cpu().tolist(),
                                        student_command_same_state=student_cmd[i].cpu().tolist())
                             rows[i].append(row)
+                            if args.record_arm_hold:
+                                row.update(tick=step, action_time_s=step*settings.dt, arm_names=arm_names,
+                                           pre_arm_error_rad=q_error[i], pre_arm_velocity_rad_s=dq_arm[i])
                             if args.diagnose_4n:
                                 row.update(action_time_s=float(times[i]),student_raw_vx=float(student_raw[i,0]),
                                            true_fx_raw_vx=float(fx_only[i,0]),true_wrench_raw_vx=float(oracle[i,0]),
