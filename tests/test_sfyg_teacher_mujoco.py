@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import mujoco
 import numpy as np
@@ -171,6 +172,44 @@ class TeacherMujocoTests(unittest.TestCase):
             self.assertGreater(rows[-1]['command'][0],.1)
             self.assertTrue(rows[-1]['timeout'])
             self.assertFalse(record['is_acceptance'])
+
+    def test_single_student_checkpoint_playback_matches_training_policy(self):
+        from rsl_rl.modules import ActorCritic
+        from sfyg_student_core import StudentPolicy
+        from sfyg_student_policy import StudentCheckpointPolicy
+        with tempfile.TemporaryDirectory(dir=self.folder) as tmp,contextlib.redirect_stdout(io.StringIO()):
+            folder=Path(tmp)
+            settings=core.Settings(settle=.04,ramp=.04,hold=.12,release_hold=.06)
+            bound=core.execution_contract(self.cfg['checkpoint_sha256'],deployment_config(fixture_contract()),settings)
+            contract=dict(schema='sfyg_student_v1',teacher_contract=bound,actor_input=144,raw_output=9)
+            student=StudentPolicy(ActorCritic(147,177,9,**core.runner_config()['policy']).actor).eval()
+            saved=dict(policy=student.state_dict(),student_contract=contract,iteration=500)
+            checkpoint=folder/'model_500.pt'
+            torch.save(saved,checkpoint)
+            args=cli.parse_args(['--bundle_dir',str(self.folder/'low'),'--output_dir',str(folder/'run'),
+                                 '--headless','--force_n','4','--episodes','2','--trace'],student=True)
+            with patch('sfyg_student_policy.S1_CHECKPOINT',checkpoint):
+                out=cli.run(args)
+            report=json.loads((out/'evaluation.json').read_text())
+            self.assertTrue(report['completed'])
+            self.assertEqual(report['interface']['iteration'],500)
+            rows=[json.loads(line) for line in (out/'steps.jsonl').read_text().splitlines()]
+            self.assertEqual(max(r['force_base'][0] for r in rows),4.)
+            self.assertEqual(rows[-1]['force_base'][0],0.)
+            with np.load(out/'trace.npz') as trace,torch.no_grad():
+                h=torch.from_numpy(trace['student_observation'])
+                self.assertEqual(h.shape,(len(rows),144))
+                for ep in (0,1):
+                    self.assertFalse(h[np.flatnonzero(trace['episode']==ep)[0]].any())
+                raw=student(h)
+                times=torch.tensor([r['action_time_s'] for r in rows])
+                np.testing.assert_allclose(trace['raw'],raw.numpy(),atol=1e-6)
+                np.testing.assert_allclose(trace['command'],core.process_action(raw,times,settings).numpy(),atol=1e-6)
+                np.testing.assert_allclose([r['estimated_base_fx_fy_mz'] for r in rows],
+                    (student.estimate(h)*torch.tensor([40.,40.,10.])).numpy(),atol=1e-5)
+            torch.save(dict(saved,iteration=200),checkpoint)
+            with self.assertRaisesRegex(ValueError,'iteration-500'):
+                StudentCheckpointPolicy(checkpoint,self.cfg)
 
 
 if __name__=='__main__': unittest.main()

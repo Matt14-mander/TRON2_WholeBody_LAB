@@ -76,8 +76,29 @@ teacher 文件改变会拒绝直接恢复；新 teacher 需要新训练或后续
 - `steps.jsonl`：当前动作前估计/标签，以及同一状态下 teacher/student 指令，
   与执行后的速度、复位前终止状态分别记录。
 
-本阶段完成后仍需独立的 MuJoCo student 加载器和多机验证；现有 demo 的 student 入口继续明确拒绝未实现的部署。
+单机 MuJoCo 使用下方的 S1 入口。多机 student 的接入与验证仍待完成。
 固定臂 PD 为800/40，弱外力可观测性、步态引起的偏置和仿真差异需要实际测试。
+
+## 单机 MuJoCo 回放原版 500 轮 student
+
+在仓库根目录运行。脚本固定读取
+`logs/rsl_rl/sfyg_student_s1_gpu0_500_20261107_141132/train/model_500.pt`。
+底层使用同一 robust checkpoint 的 MuJoCo 导出，并在加载时核对绑定的 SHA256。
+
+```bash
+LOW=logs/rsl_rl/sfyg_robust_5000_gpu1_20261027_131013/model_5000.pt
+BUNDLE="${LOW%/*}/exported/model_5000"
+if [ ! -f "$BUNDLE/deployment.json" ]; then
+  python scripts/mujoco/export_sfyg.py --checkpoint "$LOW" --output_dir "$BUNDLE"
+fi
+python scripts/mujoco/run_sfyg_student.py --force_n 8
+```
+
+切换 `--force_n 4` 可观察临界起步和停步。无桌面时加 `--headless --video`，
+在 Linux 可用 `MUJOCO_GL=egl` 运行。每次回放在 `logs/mujoco/sfyg_student_*`
+下写入独立的 `interface.json`、`steps.jsonl` 和 `evaluation.json`，开启录像时写入 `preview.mp4`。
+外力施加在实体负载质心。每个控制周期只向 student 输入 144 维机械臂历史。
+`steps.jsonl` 记录动作前时刻、真实施力、估计的底座系 Fx/Fy (N) 与 Mz (N·m)、raw 动作、执行指令和步进后的实测速度。
 
 ## 2026-10-29 开发验证
 

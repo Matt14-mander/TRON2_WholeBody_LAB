@@ -51,7 +51,7 @@ def contact_failure(bridge):
     return None
 
 
-def draw(scene,position,force,world_force,force_point,command,velocity,time_s):
+def draw(scene,position,force,world_force,force_point,command,velocity,time_s,label='TEACHER'):
     def geom(kind,pos,color):
         if scene.ngeom>=scene.maxgeom: return None
         g=scene.geoms[scene.ngeom]
@@ -60,7 +60,7 @@ def draw(scene,position,force,world_force,force_point,command,velocity,time_s):
         return g
     pos=np.asarray(position)+[0,0,.9]
     g=geom(mujoco.mjtGeom.mjGEOM_LABEL,pos,[1,.85,.4,1])
-    if g is not None: g.label=f'TEACHER t={time_s:.1f}s F={force[0]:.1f}N cmd={command[0]:.2f} vx={velocity[0]:.2f}'
+    if g is not None: g.label=f'{label} t={time_s:.1f}s F={force[0]:.1f}N cmd={command[0]:.2f} vx={velocity[0]:.2f}'
     if force[0]>.01:
         start=np.asarray(force_point)
         g=geom(mujoco.mjtGeom.mjGEOM_ARROW,start,[1,.3,.1,1])
@@ -68,10 +68,15 @@ def draw(scene,position,force,world_force,force_point,command,velocity,time_s):
         if g is not None: mujoco.mjv_connector(g,mujoco.mjtGeom.mjGEOM_ARROW,.018,start,start+direction*min(.6,force[0]*.06))
 
 
-def parse_args(argv=None):
-    p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--bundle_dir',type=Path,required=True,help='Existing frozen SFYG low-level export')
-    p.add_argument('--teacher_bundle',type=Path,required=True,help='Existing teacher exported/model_5000 directory')
+def parse_args(argv=None,*,student=False):
+    p=argparse.ArgumentParser(description='Single-robot MuJoCo playback of the frozen S1 model_500 student' if student else __doc__)
+    p.set_defaults(student=student)
+    if student:
+        from sfyg_student_policy import ROBUST_BUNDLE
+        p.add_argument('--bundle_dir',type=Path,default=ROBUST_BUNDLE,help='Matching frozen robust SFYG export')
+    else:
+        p.add_argument('--bundle_dir',type=Path,required=True,help='Existing frozen SFYG low-level export')
+        p.add_argument('--teacher_bundle',type=Path,required=True,help='Existing teacher exported/model_5000 directory')
     p.add_argument('--force_n',type=float,default=8.)
     p.add_argument('--episodes',type=int,default=1)
     p.add_argument('--seed',type=int,default=42)
@@ -90,27 +95,38 @@ def run(args):
     if args.smoke_steps is not None and args.smoke_steps not in range(1,101): raise ValueError('Smoke is limited to 1--100 steps')
     torch.set_num_threads(1)
     cfg,low=load_bundle(args.bundle_dir)
-    teacher=TeacherPolicy(args.teacher_bundle,cfg)
-    settings=teacher.settings
-    teacher.force(0,args.force_n)  # Validate requested force before creating a world.
+    student=args.student
+    kind='student' if student else 'teacher'
+    if student:
+        from sfyg_student_policy import S1_CHECKPOINT, StudentCheckpointPolicy
+        policy=StudentCheckpointPolicy(S1_CHECKPOINT,cfg)
+        metadata=dict(student_contract=policy.manifest,student_checkpoint=str(S1_CHECKPOINT),
+            student_checkpoint_sha256=policy.sha,iteration=500,
+            force_input='arm history144 only; estimator predicts BASE [Fx,Fy,Mz] from proprioception')
+    else:
+        policy=TeacherPolicy(args.teacher_bundle,cfg)
+        metadata=dict(teacher_contract=policy.manifest,teacher_policy_sha256=policy.sha,
+            teacher_bundle=str(args.teacher_bundle.resolve()),
+            force_input='known external force at own payload COM, BASE axes /40; NOT measured grasp reaction')
+    settings=policy.settings
+    policy.force(0,args.force_n)  # Validate requested force before creating a world.
     bridge=SFYGBridge(cfg,settings.payload_mass,cfg['friction_coefficient'],settings.delay_steps,args.seed)
     audit=bridge.audit()
     if max(audit[k] for k in ('authored_mass_error_kg','authored_com_error_m','authored_inertia_error'))>1e-6:
         raise ValueError('Original robot mass/COM/inertia audit failed')
-    output=args.output_dir or ROOT/'logs/mujoco'/('sfyg_teacher_'+datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
+    output=args.output_dir or ROOT/'logs/mujoco'/(f'sfyg_{kind}_'+datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
     if output.exists() and any(output.iterdir()): raise FileExistsError('Use a new output directory')
     output.mkdir(parents=True,exist_ok=True)
-    interface=dict(schema='sfyg_teacher_mujoco_v1',is_acceptance=False,teacher_contract=teacher.manifest,
-        teacher_policy_sha256=teacher.sha,low_policy_sha256=cfg['policy_sha256'],low_checkpoint_sha256=cfg['checkpoint_sha256'],
-        teacher_bundle=str(args.teacher_bundle.resolve()),low_bundle=str(args.bundle_dir.resolve()),
-        force_input='known external force at own payload COM, BASE axes /40; NOT measured grasp reaction',
+    interface=dict(schema=f'sfyg_{kind}_mujoco_v1',is_acceptance=False,**metadata,
+        low_policy_sha256=cfg['policy_sha256'],low_checkpoint_sha256=cfg['checkpoint_sha256'],
+        low_bundle=str(args.bundle_dir.resolve()),
         physical_force='amplitude held per control interval; re-rotated from BASE every physics tick; zero torque',
-        teacher_hz=50,low_hz=50,physics_hz=200,bridge=audit,mujoco_version=mujoco.__version__,
+        **{f'{kind}_hz':50},low_hz=50,physics_hz=200,bridge=audit,mujoco_version=mujoco.__version__,
         smoke_only=args.smoke_steps is not None,force_n=args.force_n,
-        limitations=['Single robot privileged teacher only; no student or shared-load controller',
+        limitations=['Single robot with fixed arm and forward payload force',
             'PhysX/MuJoCo contact and implicit PD differ; use as migration diagnostic'])
     write_json(output/'interface.json',interface)
-    print(f'[MJ TEACHER] actor147 -> raw9 -> vx -> frozen SFYG; F={args.force_n:g}N; '
+    print(f'[MJ {kind.upper()}] input{policy.input_width} -> raw9 -> vx -> frozen SFYG; F={args.force_n:g}N; '
         f'payload={settings.payload_mass:g}kg; output={output}',flush=True)
     if args.check_only: return output
     context=nullcontext(None)
@@ -132,7 +148,7 @@ def run(args):
             writer=imageio.get_writer(str(output/'preview.mp4'),fps=args.fps,codec='libx264')
         with (output/'steps.jsonl').open('w',encoding='utf-8') as stream,context as viewer,torch.inference_mode():
             for episode in range(args.episodes):
-                bridge.reset();teacher.reset();previous_raw[:]=0
+                bridge.reset();policy.reset();previous_raw[:]=0
                 initial=bridge.data.xpos[bridge.base].copy()
                 rows=[]
                 horizon=round(settings.horizon/settings.dt)
@@ -140,11 +156,14 @@ def run(args):
                 for tick in range(steps):
                     start=time.monotonic()
                     if viewer is not None and not viewer.is_running(): reason='viewer_closed';break
-                    force=teacher.force(tick,args.force_n)
+                    force=policy.force(tick,args.force_n)
                     arm=bridge.data.qpos[bridge.qpos[10:16]]-bridge.defaults[10:16]
                     dq=bridge.data.qvel[bridge.qvel[10:16]]
                     previous_target=bridge.target[10:16]-bridge.defaults[10:16]
-                    command=teacher.command(arm,dq,previous_target,force,tick)
+                    if student:
+                        command=policy.command(arm,dq,previous_target,tick)
+                    else:
+                        command=policy.command(arm,dq,previous_target,force,tick)
                     obs,history=bridge.observation()
                     action=low(torch.from_numpy(obs[None]),torch.from_numpy(history[None]),
                         torch.from_numpy(command[None]))[0].numpy().copy()
@@ -166,24 +185,27 @@ def run(args):
                     timeout=tick+1==horizon and not failed
                     reference=force/40.
                     terms=reward_terms(torch.from_numpy(actual[None]),torch.from_numpy(reference[None]),
-                        torch.from_numpy(command[None]),torch.from_numpy(teacher.raw[None]),
+                        torch.from_numpy(command[None]),torch.from_numpy(policy.raw[None]),
                         torch.from_numpy(previous_raw[None]),torch.tensor(gravity[None],dtype=torch.float32))
                     costs={k:float(v[0])*settings.dt for k,v in terms.items()}
                     costs['failure']=-50. if failed else 0.
-                    row=dict(episode=episode,environment=0,controller='teacher',force_n=args.force_n,
+                    row=dict(episode=episode,environment=0,controller=kind,force_n=args.force_n,
                         time_s=float(bridge.data.time),velocity=actual.tolist(),command=command.tolist(),reference=reference.tolist(),
-                        raw_action=teacher.raw.tolist(),arm_error=(bridge.data.qpos[bridge.qpos[10:16]]-bridge.defaults[10:16]).tolist(),
+                        raw_action=policy.raw.tolist(),arm_error=(bridge.data.qpos[bridge.qpos[10:16]]-bridge.defaults[10:16]).tolist(),
                         tilt_deg=tilt,position=position.tolist(),force_base=force.tolist(),last_applied_world_force=world_force.tolist(),
                         failed=failed,timeout=timeout,termination=terminal,rewards=costs,reward=sum(costs.values()))
+                    if student:
+                        row.update(action_time_s=tick*settings.dt,estimated_base_fx_fy_mz=policy.estimated_wrench)
                     rows.append(row);stream.write(json.dumps(row,allow_nan=False)+'\n')
-                    if args.trace: trace.append(dict(episode=episode,time_s=row['time_s'],teacher_observation=teacher.observation.copy(),
-                        low_observation=obs.copy(),low_history=history.copy(),command=command.copy(),raw=teacher.raw.copy(),leg_action=action.copy()))
-                    previous_raw[:]=teacher.raw
+                    if args.trace: trace.append(dict(episode=episode,time_s=row['time_s'],**{f'{kind}_observation':policy.observation.copy()},
+                        low_observation=obs.copy(),low_history=history.copy(),command=command.copy(),raw=policy.raw.copy(),leg_action=action.copy()))
+                    previous_raw[:]=policy.raw
                     if tick%50==0:
-                        print(f'[MJ TEACHER] ep={episode} t={row["time_s"]:.2f} F={force[0]:.2f} '
+                        estimate=f'estFx={policy.estimated_wrench[0]:+.2f}N ' if student else ''
+                        print(f'[MJ {kind.upper()}] ep={episode} t={row["time_s"]:.2f} F={force[0]:.2f} {estimate}'
                             f'cmd={command[0]:+.3f} actual={np.round(actual,3)} tilt={tilt:.2f}',flush=True)
                     camera.lookat[:]=position+[0,0,.15]
-                    draw_args=(position,force,world_force,bridge.data.xipos[bridge.payload],command,actual,row['time_s'])
+                    draw_args=(position,force,world_force,bridge.data.xipos[bridge.payload],command,actual,row['time_s'],kind.upper())
                     if writer is not None and global_step*settings.dt>=next_frame:
                         renderer.update_scene(bridge.data,camera);draw(renderer.scene,*draw_args)
                         frame=renderer.render()
@@ -197,7 +219,7 @@ def run(args):
                             viewer.user_scn.ngeom=0;draw(viewer.user_scn,*draw_args)
                         viewer.sync();time.sleep(max(0.,settings.dt-(time.monotonic()-start)))
                     if failed: reason=terminal;break
-                result=summarize(rows,settings,args.force_n,'teacher')
+                result=summarize(rows,settings,args.force_n,kind)
                 result.update(episode=episode,environment=0,displacement_world_m=(bridge.data.xpos[bridge.base]-initial).tolist())
                 reports.append(result)
                 if reason!='completed': break
@@ -208,7 +230,7 @@ def run(args):
         if writer is not None: writer.close()
         if renderer is not None: renderer.close()
         complete=bool(len(reports)==args.episodes and all(r['completed'] for r in reports) and reason=='completed')
-        write_json(output/'evaluation.json',dict(schema='sfyg_teacher_mujoco_report_v1',is_acceptance=False,
+        write_json(output/'evaluation.json',dict(schema=f'sfyg_{kind}_mujoco_report_v1',is_acceptance=False,
             completed=complete,reason='smoke_only' if args.smoke_steps and reason=='completed' else reason,
             error=error,interface=interface,reports=reports))
         if trace: np.savez_compressed(output/'trace.npz',**{k:np.array([r[k] for r in trace]) for k in trace[0]})
@@ -216,9 +238,13 @@ def run(args):
     return output
 
 
-if __name__=='__main__':
-    output=run(parse_args())
+def main(*,student=False):
+    output=run(parse_args(student=student))
     report=output/'evaluation.json'
     if report.exists():
         result=json.loads(report.read_text(encoding='utf-8'))
         if not result['completed'] and result['reason']!='smoke_only': raise SystemExit(2)
+
+
+if __name__=='__main__':
+    main()
