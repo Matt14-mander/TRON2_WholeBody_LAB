@@ -173,6 +173,54 @@ class TeacherMujocoTests(unittest.TestCase):
             self.assertTrue(rows[-1]['timeout'])
             self.assertFalse(record['is_acceptance'])
 
+    def test_student_shadow_and_direct_speed_sweep(self):
+        import diagnose_sfyg_student as diag
+        from rsl_rl.modules import ActorCritic
+        from sfyg_student_core import StudentPolicy
+
+        with tempfile.TemporaryDirectory(dir=self.folder) as tmp,contextlib.redirect_stdout(io.StringIO()):
+            folder=Path(tmp)
+            settings=core.Settings(settle=.04,ramp=.04,hold=.12,release_hold=.06)
+            bound=core.execution_contract(self.cfg['checkpoint_sha256'],deployment_config(fixture_contract()),settings)
+            contract=dict(schema='sfyg_student_v1',teacher_contract=bound,actor_input=144,raw_output=9)
+            student=StudentPolicy(ActorCritic(147,177,9,**core.runner_config()['policy']).actor)
+            # Analytically distinguish all three conditions: raw vx = Fx_norm + Fy_norm.
+            with torch.no_grad():
+                for param in student.parameters():
+                    param.zero_()
+                student.estimator.network[-1].bias.copy_(torch.tensor([-.10,.03,0.]))
+                student.actor[0].weight[0,144:146]=1.
+                student.actor[0].bias[0]=1.
+                for layer in (student.actor[2],student.actor[4],student.actor[6]):
+                    layer.weight[0,0]=1.
+                student.actor[-1].bias[0]=-1.
+            checkpoint=folder/'model_500.pt'
+            torch.save(dict(policy=student.state_dict(),student_contract=contract,iteration=500),checkpoint)
+            output=folder/'controls'
+            with patch.object(diag,'S1_CHECKPOINT',checkpoint):
+                report=diag.run(output,self.folder/'low',42)
+            cases=report['cases']
+            self.assertEqual(len(cases),15)
+            shadow=cases['student_8N']['shadow']
+            for mode,raw,cmd in [('estimated',-.07,0.),('true_fx',.23,.23),('true_wrench',.2,.2)]:
+                self.assertAlmostEqual(shadow[mode]['raw_vx'],raw,places=5)
+                self.assertAlmostEqual(shadow[mode]['cmd_vx'],cmd,places=5)
+            for name,case in cases.items():
+                rows=[json.loads(s) for s in (output/f'{name}.jsonl').read_text().splitlines()]
+                self.assertTrue(case['completed'])
+                self.assertEqual(case['plateau_frames'],round(settings.hold/settings.dt))
+                self.assertAlmostEqual(max(np.linalg.norm(r['applied_world_force']) for r in rows),case['force_n'])
+                self.assertEqual(rows[0]['cmd_vx'],0.)
+                self.assertEqual(rows[-1]['cmd_vx'],0.)
+                if case['direct_vx'] is not None:
+                    self.assertAlmostEqual(case['cmd_vx'],case['direct_vx'])
+                    self.assertFalse(any('estimated_fx_n' in r for r in rows))
+            # The native fixture always commands zero. The two independent 8 N
+            # rollouts must coincide even though one also computes the shadows.
+            for key in ('vx','dx_world_m','foot_releases_lr'):
+                self.assertEqual(cases['student_8N'][key],cases['low_8N_vx0.00'][key])
+            self.assertEqual(cases['low_16N_vx0.00']['cmd_vx'],0.)
+
     def test_single_student_checkpoint_playback_matches_training_policy(self):
         from rsl_rl.modules import ActorCritic
         from sfyg_student_core import StudentPolicy

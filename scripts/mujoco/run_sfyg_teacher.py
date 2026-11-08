@@ -51,6 +51,25 @@ def contact_failure(bridge):
     return None
 
 
+def step_frozen_low(bridge,low,command,force):
+    obs,history=bridge.observation()
+    action=low(torch.from_numpy(obs[None]),torch.from_numpy(history[None]),
+        torch.from_numpy(command[None]))[0].numpy().copy()
+    bridge.set_action(action)
+    for _ in range(bridge.cfg['decimation']):
+        world_force=physics_tick(bridge,force)
+    bridge.control_steps+=1
+    if not all(np.isfinite(v).all() for v in (bridge.data.qpos,bridge.data.qvel,bridge.data.qacc)):
+        raise FloatingPointError('Nonfinite MuJoCo state')
+    return obs,history,action,world_force
+
+
+def termination(bridge,tilt,dt):
+    if bridge.data.time<bridge.control_steps*dt-1e-6: return 'simulator_reset'
+    if tilt>35 or bridge.data.xpos[bridge.base,2]<.45: return 'fall'
+    return contact_failure(bridge)
+
+
 def draw(scene,position,force,world_force,force_point,command,velocity,time_s,label='TEACHER'):
     def geom(kind,pos,color):
         if scene.ngeom>=scene.maxgeom: return None
@@ -165,23 +184,13 @@ def run(args):
                         command=policy.command(arm,dq,previous_target,tick)
                     else:
                         command=policy.command(arm,dq,previous_target,force,tick)
-                    obs,history=bridge.observation()
-                    action=low(torch.from_numpy(obs[None]),torch.from_numpy(history[None]),
-                        torch.from_numpy(command[None]))[0].numpy().copy()
-                    bridge.set_action(action)
-                    for _ in range(cfg['decimation']): world_force=physics_tick(bridge,force)
-                    bridge.control_steps+=1
+                    obs,history,action,world_force=step_frozen_low(bridge,low,command,force)
                     global_step+=1
-                    finite=all(np.isfinite(v).all() for v in (bridge.data.qpos,bridge.data.qvel,bridge.data.qacc))
-                    if not finite: raise FloatingPointError('Nonfinite MuJoCo state')
                     linear,angular,gravity=bridge.base_state()
                     actual=np.r_[linear[:2],angular[2]].astype(np.float32)
                     position=bridge.data.xpos[bridge.base].copy()
                     tilt=float(np.rad2deg(np.arccos(np.clip(-gravity[2],-1,1))))
-                    terminal=None
-                    if bridge.data.time<bridge.control_steps*settings.dt-1e-6: terminal='simulator_reset'
-                    elif tilt>35 or position[2]<.45: terminal='fall'
-                    else: terminal=contact_failure(bridge)
+                    terminal=termination(bridge,tilt,settings.dt)
                     failed=terminal is not None
                     timeout=tick+1==horizon and not failed
                     reference=force/40.
