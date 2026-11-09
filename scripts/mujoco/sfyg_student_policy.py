@@ -19,13 +19,17 @@ class StudentCheckpointPolicy(ArmHistoryPolicy):
     # External load in MuJoCo only. Training and action limits come from the checkpoint.
     playback_force_limit_n = 16.
 
-    def __init__(self, checkpoint, low_config):
+    def __init__(self, checkpoint, low_config=None):
         saved = torch.load(Path(checkpoint), map_location='cpu', weights_only=True)
         self.manifest = saved['student_contract']
         if (saved['iteration'] != 500 or self.manifest['schema'] != 'sfyg_student_v1'
                 or self.manifest['actor_input'] != 144 or self.manifest['raw_output'] != 9):
             raise ValueError('Expected the S1 iteration-500 history144 student checkpoint')
-        super().__init__(self.manifest['teacher_contract'], low_config)
+        teacher = self.manifest['teacher_contract']
+        if low_config is None:
+            # State-only observation has no attached locomotion policy.
+            low_config = dict(teacher['low_interface'], checkpoint_sha256=teacher['low_sha256'])
+        super().__init__(teacher, low_config)
         sys.path.insert(0, str(ROOT / 'rsl_rl'))
         from rsl_rl.modules import ActorCritic
         template = ActorCritic(147, 177, 9, **runner_config()['policy'])

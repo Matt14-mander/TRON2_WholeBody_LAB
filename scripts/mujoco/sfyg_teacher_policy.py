@@ -6,8 +6,7 @@ import sys
 import numpy as np
 import torch
 
-from sfyg_bridge import ROOT
-from sfyg_policy import sha256
+from sfyg_policy import ROOT, sha256
 
 sys.path.insert(0,str(ROOT/'scripts/rsl_rl'))
 from sfyg_teacher_core import Settings, History, execution_contract, envelope, process_action

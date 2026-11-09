@@ -73,6 +73,31 @@ teacher 文件改变会拒绝直接恢复；新 teacher 需要新训练或后续
 - `evaluation.json`：逐 case 物理/跟踪/停车门槛和估计误差。
   `required_task_cases_passed` 要求 student 的0/4/6/8N案例齐全且通过，2N仍是诊断。
   `is_acceptance=false` 保留，因为估计器泛化、多机和真机验收尚未建立。
+
+## PIPER X 真机只读推理
+
+`scripts/hardware/shadow_sfyg_student.py` 在连接松灵 PIPER X 的 Linux 主机上监听已有 SocketCAN 接口。
+外部控制器保持与 checkpoint 一致的搬运目标。脚本将 J1～J6 依次对应 arm1～arm6，按训练时的关节零位和正方向解释反馈；
+现场需核对安装和关节定义。启动时打印 checkpoint 的目标角。默认单轴偏离目标超过 0.10 rad 即结束记录。
+这是采集判据，脚本没有设置姿态、使能或下发控制指令的入口。
+
+依赖 NumPy、CPU 可用的 PyTorch（支持 `torch.load(weights_only=True)`）及 `python-can>=4.3,<5`。
+默认 CAN ID 为 0x2A5～0x2A7（角度，0.001 度）和 0x251～0x256（高速反馈速度，0.001 rad/s），
+分别转为 rad 和 rad/s。采用同一批次齐全的九个反馈报文，记录报文时间跨度，并在源时间戳上以 50 Hz 取样。
+若接口没有完整反馈或丢失一个控制周期，保留已记录的行并在报告中写明原因。
+字段定义见[松灵协议解码实现](https://github.com/agilexrobotics/piper_sdk/blob/master/piper_sdk/protocol/protocol_v2/piper_protocol_v2.py)和[松灵关节反馈节点](https://github.com/agilexrobotics/piper_ros/blob/humble/src/piper/piper/piper_ctrl_single_node.py)。
+
+```bash
+python scripts/hardware/shadow_sfyg_student.py --can can0 \
+  --checkpoint ~/sfyg-shadow/model_500.pt --calibration ~/sfyg-shadow/handoff6.json \
+  --seconds 30 --output-dir "$RUN"
+```
+
+校正文件使用 `student500_6N_handoff_20261109_143239_149054/summary.json`，脚本核对原 student 及绑定的底层 SHA。
+`steps.jsonl` 保存同帧的关节角、关节速度、CAN 时间戳、两个版本各自的 history144、Fx、raw_vx 和 cmd_vx。
+`native` 使用原始输入，`mujoco_cal` 按报告加入六轴 q 偏置，同时以 `min(8, (Fx-zero_n)*1.5444)` 替换 actor 的 Fx 输入。
+两组都执行 checkpoint 的启动屏蔽、裁剪和死区。回放时用 `--replay "$RUN/steps.jsonl"` 代替 `--can can0`，
+并指定新输出目录。两组估计都没有使用真机力传感器数据，测力计读数需按时间另行记录。
 - `steps.jsonl`：当前动作前估计/标签，以及同一状态下 teacher/student 指令，
   与执行后的速度、复位前终止状态分别记录。
 
