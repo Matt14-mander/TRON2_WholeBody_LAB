@@ -1,0 +1,15 @@
+{
+  "policy_sha256": "7e349aa6b3fe2cc62a77e874a26bb4c5742bd774d669d2120bab162d9d17809b",
+  "operator": "",
+  "joint_mapping_checked": false,
+  "arm_in_carry_pose_and_payload_0p5kg": false,
+  "low_level_dev_mode": false,
+  "gantry_and_emergency_stop_ready": false,
+  "sdk_names": [
+    "proximal_pitch_L_Joint", "proximal_roll_L_Joint", "proximal_yaw_L_Joint", "knee_L_Joint", "ankle_pitch_L_Joint",
+    "proximal_pitch_R_Joint", "proximal_roll_R_Joint", "proximal_yaw_R_Joint", "knee_R_Joint", "ankle_pitch_R_Joint"
+  ],
+  "zero_rad": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "sign": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+  "imu_to_base": [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+}
