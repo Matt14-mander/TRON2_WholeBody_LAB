@@ -1,0 +1,15 @@
+{
+  "operator": "",
+  "mapping_checked": false,
+  "piper_v2_firmware_checked": false,
+  "exclusive_arm_control": false,
+  "low_level_dev_mode": false,
+  "gantry_and_arm_support_ready": false,
+  "path_clear": false,
+  "payload_and_gripper_secured": false,
+  "sdk_to_sim": [0, 1, 2, 3, 4, 5],
+  "sign": [1, 1, 1, 1, 1, 1],
+  "zero_rad": [0, 0, 0, 0, 0, 0],
+  "sdk_min_rad": [-2.6179, 0, -2.967, -1.745, -1.22, -2.09439],
+  "sdk_max_rad": [2.6179, 3.14, 0, 1.745, 1.22, 2.09439]
+}

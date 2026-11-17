@@ -4,6 +4,10 @@
 `sfyg_robust_5000_gpu1_20261027_131013/model_5000.pt`，与 student 的
 `model_500.pt` 无关。默认不下发电机；`--execute` 也只在明确输入准备命令后开始下发。
 
+2026-11-17：已新增[独立机械臂 carry 保持](sfyg_arm_hold.md)。腿部 `--execute`
+现在必须提供 `--arm_status_file` 并持续收到同主机机械臂 HOLD 心跳；先启动臂、再启动腿，
+退出先腿后臂。下述原仿真结果不包含新机械臂硬件控制器的实机验收。
+
 ## 官方参考与适配范围
 
 参考 [LimX SolefootController.py](https://github.com/limxdynamics/tron2_rl_deploy_python/blob/master/controllers/SolefootController.py)
@@ -168,6 +172,7 @@ cd ~/workspace/TRON2_WholeBody_LAB
 python3 -u scripts/hardware/run_sfyg_lifecycle.py \
   --bundle_dir "$HOME/models/sfyg_robust5000" \
   --preflight "$HOME/sfyg_shadow/config/robust5000.json" \
+  --arm_status_file "$HOME/sfyg_shadow/run/arm_hold.json" \
   --robot_ip 10.192.1.2 --execute \
   --output_dir "$HOME/sfyg_shadow/logs/lifecycle_$(date +%Y%m%d_%H%M%S)"
 ```

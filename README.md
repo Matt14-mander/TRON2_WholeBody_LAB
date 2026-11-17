@@ -8,6 +8,8 @@ source/carry/robust checkpoint 的 CPU 导出、单机 MuJoCo 播放与诊断见
 
 单机通过后，可运行 [双机共享负载与键盘外力导纳演示](docs/sfyg_cooperate.md)：键盘给物体施力，两台机器人分别通过自身抓取反力生成速度指令。
 
+实机受支撑接管见 [robust_5000 部署状态机](docs/sfyg_lifecycle.md) 与 [机械臂 carry 保持](docs/sfyg_arm_hold.md)：先臂 HOLD、再腿接管，当前仍需实机验证。
+
 新增 [双机前后 leader–follower 与三机轻量沙发 demo](docs/sfyg_team_demos.md)：只控制 leader，followers 使用各自 FT 导纳，保留 teacher/student 高层适配接口。
 
 冻结当前 SFYG 底层的 [T0 基线与 T1 固定臂前向 teacher](docs/sfyg_teacher_t0_t1.md) 已提供独立入口：先检查负载外力、跟随与停稳，再训练高层；不改原始 locomotion 源码。

@@ -12,6 +12,7 @@ import numpy as np
 
 from shadow_sfyg_locomotion import Samples, Coordinates, subscribe
 from sfyg_lifecycle import Lifecycle, CommandRejected, load_bundle, sdk_packet
+from sfyg_arm_guard import ArmGuard
 
 
 CHECKS = ("joint_mapping_checked", "arm_in_carry_pose_and_payload_0p5kg",
@@ -24,8 +25,9 @@ class MotorLease:
     Best-effort host watchdog, NOT a replacement for robot-side command timeout
     or the physical emergency stop. SDK/network failure can prevent delivery.
     """
-    def __init__(self, send, samples, coords, kd, clock=time.monotonic):
+    def __init__(self, send, samples, coords, kd, clock=time.monotonic, arm_guard=None):
         self.send, self.samples, self.coords, self.clock = send, samples, coords, clock
+        self.arm_guard = arm_guard
         self.kd = list(kd)
         self.lock = threading.Lock()
         self.packet = None
@@ -76,6 +78,8 @@ class MotorLease:
                 self.fault = self.fault or "remote heartbeat missing"
             packet = self.packet
         try:
+            if self.arm_guard:
+                self.arm_guard.check()
             fresh = self.samples.snapshot(.04, .015)
             if fresh is None:
                 self.abort("joint/IMU stale or skewed")
@@ -144,6 +148,12 @@ def validate_preflight(args, cfg):
 def run(args):
     cfg, policy = load_bundle(args.bundle_dir)
     profile = validate_preflight(args, cfg)
+    arm_path = getattr(args, "arm_status_file", None)
+    if args.execute and arm_path is None:
+        raise ValueError("--execute requires --arm_status_file from hold_sfyg_arm.py on this host")
+    arm_guard = ArmGuard(arm_path, cfg["policy_sha256"]) if arm_path else None
+    if args.execute:
+        arm_guard.check()
     coords = Coordinates(args.preflight)
     ctl = Lifecycle(cfg, policy)
     out = args.output_dir
@@ -156,7 +166,7 @@ def run(args):
         prepare_target=ctl.default.tolist(), hardware_acceptance=False), indent=2), encoding="utf-8")
     samples = Samples()
     robot = subscribe(args.robot_ip, samples)
-    lease = MotorLease(make_sender(robot), samples, coords, ctl.kd) if args.execute else None
+    lease = MotorLease(make_sender(robot), samples, coords, ctl.kd, arm_guard=arm_guard) if args.execute else None
     if lease:
         if robot.subscribeSensorJoy(lease.joystick) is False:
             raise RuntimeError("SDK joystick subscription failed")
@@ -226,6 +236,8 @@ def run(args):
                             print("Unknown command", flush=True)
                 if lease and event == "prepare_supported" and (lease.joy_at is None or now-lease.joy_at > 2.):
                     raise RuntimeError("No live remote heartbeat; prepare refused")
+                if lease and event in {"prepare_supported", "start_grounded"}:
+                    arm_guard.check()
                 rejected = None
                 try:
                     packet = ctl.tick(now-start, q, dq, angular, gravity, event, request)
@@ -279,4 +291,5 @@ if __name__ == "__main__":
     parser.add_argument("--robot_ip", default="10.192.1.2")
     parser.add_argument("--preflight", type=Path, help="Coordinates and manually reviewed hardware checks")
     parser.add_argument("--execute", action="store_true", help="Enable motor publishing AFTER explicit prepare command")
+    parser.add_argument("--arm_status_file", type=Path, help="Required for execute: live same-host arm HOLD heartbeat")
     run(parser.parse_args())
