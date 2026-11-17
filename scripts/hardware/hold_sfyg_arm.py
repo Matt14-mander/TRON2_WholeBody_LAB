@@ -171,7 +171,8 @@ def run(args):
 
 
 def run_locked(args, profile, can):
-    feedback, hold, commands = Feedback(), Hold(profile), queue.Queue()
+    factory = getattr(args, "controller_factory", Hold)
+    feedback, hold, commands = Feedback(), factory(profile), queue.Queue()
     session = uuid.uuid4().hex
     sender = None
     active = False
@@ -192,6 +193,8 @@ def run_locked(args, profile, can):
         report()
         print("Passive WAIT. Commands: prepare supported | quit supported | abort", flush=True)
         print("Mapped carry target (SDK radians):", profile.target.tolist(), flush=True)
+        if hasattr(hold, "instructions"):
+            print(hold.instructions, flush=True)
         filters = [dict(can_id=i, can_mask=0x7FF, extended=False) for i in sorted(Feedback.IDS)]
         with can.Bus(interface="socketcan", channel=args.can, can_filters=filters, ignore_config=True) as bus:
             started = due = time.monotonic()
@@ -216,7 +219,13 @@ def run_locked(args, profile, can):
                     if not active and now-started < 3:
                         continue
                     raise
-                if command == "prepare supported":
+                if hasattr(hold, "handle") and command:
+                    prime = hold.handle(command, q, dq, now)
+                    if prime:
+                        sender = Sender(args.can)
+                        active = True
+                        sender.start(q)
+                elif command == "prepare supported":
                     if not args.execute:
                         print("Read-only: restart with --execute after preflight", flush=True)
                     else:
