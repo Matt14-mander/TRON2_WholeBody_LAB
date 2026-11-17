@@ -1,5 +1,11 @@
 # PIPER X 直接使能和 carry 调试
 
+模式握手修正：显式关闭 SDK 运行时自动切换，使用 `set_motion_mode(OPTIONS.MOTION_MODE.J)`。
+合法恢复目标使能前预置，使能确认后再重发 J 模式和同一目标；此时才开始独立3秒模式确认窗口。
+等待期间每0.5秒显示 ctrl_mode/mode_feedback/motion_status，失败时异常包含实际模式码。
+保留 CAN=0x01/J=0x01 门槛，不接受 UNKNOWN=0xFF，不自动 reset 清除上一次快速停止。
+现场原报错未记录实际模式码，因此不能把握手修正当作已证明硬件成功；须按新日志验证。
+
 入口 `scripts/hardware/piper_x_carry.py` 使用官方 pyAgxArm 的
 `ArmModel.PIPER_X`、`PiperFW.DEFAULT`、`move_j`（关节位置速度模式，弧度）。
 参考 https://github.com/agilexrobotics/pyAgxArm/blob/master/docs/piper/piper_api.md 。

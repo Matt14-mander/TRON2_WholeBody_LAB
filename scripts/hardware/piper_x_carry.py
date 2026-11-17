@@ -66,6 +66,7 @@ def run(robot, execute, carry, commands, clock=time.monotonic, sleep=time.sleep)
     target = entry
     last_enable = -float("inf")
     ack_until = None
+    last_mode_print = -float("inf")
     try:
         while True:
             measured, status = sample(robot)
@@ -81,12 +82,15 @@ def run(robot, execute, carry, commands, clock=time.monotonic, sleep=time.sleep)
                 # Preload the explicitly displayed legal entry, not an out-of-limit angle
                 # which a different SDK version might silently clamp.
                 active = True
+                robot.set_auto_set_motion_mode_enabled(False)
                 robot.set_speed_percent(5)
+                robot.set_motion_mode(robot.OPTIONS.MOTION_MODE.J)
                 robot.move_j(entry)
                 state, deadline, stable = "ENABLING", now+10, None
-                ack_until = now+2
+                print("[ENABLING] preload legal recovery target; waiting for enable acknowledgement", flush=True)
             elif command == "CARRY" and state == "READY":
                 target = carry
+                robot.set_motion_mode(robot.OPTIONS.MOTION_MODE.J)
                 robot.move_j(target)
                 state, deadline, stable = "CARRYING", now+120, None
                 ack_until = now+2
@@ -97,12 +101,25 @@ def run(robot, execute, carry, commands, clock=time.monotonic, sleep=time.sleep)
                     enabled = robot.enable()
                     last_enable = now
                     if enabled:
+                        # Enabling and mode selection are separate handshakes. Some
+                        # firmware may not retain the mode sent before enabling.
+                        robot.set_motion_mode(robot.OPTIONS.MOTION_MODE.J)
+                        robot.move_j(entry)
                         state = "RECOVERING"
+                        ack_until = clock()+3
+                        deadline = clock()+10
+                        print("[RECOVERING] enable acknowledged; J mode and recovery target reissued", flush=True)
             if state in {"RECOVERING", "READY", "CARRYING", "HOLD"}:
                 if int(status.ctrl_mode) != 1 or int(status.mode_feedback) != 1:
+                    if now-last_mode_print >= .5:
+                        print(f"[MODE] state={state} ctrl_mode={int(status.ctrl_mode):#04x} "
+                              f"mode_feedback={int(status.mode_feedback):#04x} "
+                              f"motion_status={int(status.motion_status):#04x}", flush=True)
+                        last_mode_print = now
                     # Allow mode feedback a bounded acknowledgement interval.
                     if now > ack_until:
-                        raise RuntimeError("CAN/J mode not acknowledged")
+                        raise RuntimeError(f"CAN/J mode not acknowledged: ctrl_mode={int(status.ctrl_mode):#04x}, "
+                                           f"mode_feedback={int(status.mode_feedback):#04x}; no carry sent unless CARRYING")
                 error = max(abs(a-b) for a, b in zip(measured, target))
                 settled = error < .02 and int(status.motion_status) == 0 and int(status.mode_feedback) == 1
                 stable = (now if stable is None else stable) if settled else None

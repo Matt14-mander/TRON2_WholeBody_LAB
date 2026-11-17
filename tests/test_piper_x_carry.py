@@ -16,10 +16,13 @@ class Fake:
     def __init__(self):
         self.q = [0, -.10, .04, .59, 0, 0]
         self.calls = []
+        self.OPTIONS = NS(MOTION_MODE=NS(J="j"))
     def get_joint_angle_vel_limits(self, i):
         a, b = LIMITS[i-1]
         return NS(msg=NS(min_angle_limit=a, max_angle_limit=b))
     def set_speed_percent(self, v): self.calls.append(("speed", v))
+    def set_auto_set_motion_mode_enabled(self, value): self.calls.append(("auto_mode", value))
+    def set_motion_mode(self, mode): self.calls.append(("mode", mode))
     def move_j(self, v):
         direct.validate_target(v, LIMITS)
         self.calls.append(("move", list(v)))
@@ -62,7 +65,9 @@ class DirectTests(unittest.TestCase):
                        clock=lambda: now[0], sleep=sleep)
         names = [c[0] for c in robot.calls]
         self.assertLess(names.index("move"), names.index("enable"))
-        self.assertEqual(names.count("move"), 2)
+        self.assertEqual(names.count("move"), 3)
+        enable_index = names.index("enable")
+        self.assertEqual(names[enable_index+1:enable_index+3], ["mode", "move"])
         self.assertEqual(names[-1], "stop")
 
     def test_fault_after_enable_stops(self):
@@ -77,6 +82,33 @@ class DirectTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "feedback lost"):
                 direct.run(robot, True, [0, 1.57, -1.48, 0, 0, 0], commands, sleep=lambda _: None)
         self.assertEqual(robot.calls[-1], ("stop",))
+
+    def test_slow_enable_gets_new_ack_window_and_unknown_mode_still_rejected(self):
+        for acknowledge in (True, False):
+            robot, commands = Fake(), queue.Queue()
+            commands.put("ENABLE")
+            now = [0.]
+            original_enable = robot.enable
+            def enable():
+                now[0] += 2.5
+                return original_enable()
+            robot.enable = enable
+            def read(r):
+                mode = 1 if acknowledge and now[0] >= 4.5 else 255
+                return r.q.copy(), NS(ctrl_mode=1, mode_feedback=mode, motion_status=0)
+            def sleep(dt):
+                now[0] += dt
+                if acknowledge and now[0] > 6: commands.put("STOP SUPPORTED")
+            with patch.object(direct, "sample", read):
+                if acknowledge:
+                    direct.run(robot, True, [0, 1.57, -1.48, 0, 0, 0], commands,
+                               clock=lambda: now[0], sleep=sleep)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "mode_feedback=0xff"):
+                        direct.run(robot, True, [0, 1.57, -1.48, 0, 0, 0], commands,
+                                   clock=lambda: now[0], sleep=sleep)
+            self.assertEqual(robot.calls[-1], ("stop",))
+            self.assertFalse(any(c[0] == "move" and c[1][1] > 1 for c in robot.calls))
 
 
 if __name__ == "__main__": unittest.main()
