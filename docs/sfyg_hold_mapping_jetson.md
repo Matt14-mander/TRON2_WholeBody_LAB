@@ -34,9 +34,10 @@
 准备角[0,0,-pi,0,0,0,0,+pi,0,0]，动作转换default+0.25*action，与本策略导出一致。
 本项目zero/sign以**policy顺序**存储；sdk_names是**SDK数组顺序**。
 
-官方通过SciPy `Rotation.from_quat`默认xyzw解析SDK姿态，然后将世界重力逆旋转到机身；gyro直接使用，
-SF配置安装旋转为零。原入口固定按wxyz，存在适配差异。本次增加quaternion_order，模板显式xyzw。
-不带配置的旧只读行为仍保持wxyz以复现旧日志；旧日志sdk_quat_wxyz实际上是原始数组，不可相信字段名。
+更正：完整官方代码的imu_data_callback先将原始wxyz重排为xyzw，随后才调用SciPy。
+原SDK顺序是wxyz，与datatypes.h及2026-11-19实测加速度一致性检查一致。
+此前漏看回调而建议xyzw是不正确的；模板现已更正为wxyz，不覆盖用户既有配置。
+gyro直接使用，SF配置安装旋转为零。不带配置的旧只读行为仍保持wxyz。
 新日志同时记录sdk_quat_raw及quaternion_order。真实电机执行要求显式四元数顺序，旧配置不再默认通过。
 
 这是**源码一致性核对，不是实机映射验收**。不同SDK版本、安装和实机标定仍须核对。
@@ -74,15 +75,15 @@ PYTHONPATH=scripts/hardware python3 -c 'from pathlib import Path; from sfyg_arm_
 
 另存映射候选文件，避免覆盖已有审核结果：
 ```bash
-cp -n scripts/hardware/sfyg_robust5000_preflight.example.json ~/sfyg_shadow/config/robust5000_xyzw_candidate.json
-OUT="$HOME/sfyg_shadow/logs/xyzw_shadow_$(date +%Y%m%d_%H%M%S)"
-python3 -u scripts/hardware/shadow_sfyg_locomotion.py --bundle_dir "$HOME/models/sfyg_robust5000" --robot_ip 10.192.1.2 --coordinates "$HOME/sfyg_shadow/config/robust5000_xyzw_candidate.json" --command 0 0 0 --duration 10 --output_dir "$OUT"
-python3 scripts/hardware/audit_sfyg_coordinates.py --steps "$OUT/steps.jsonl" --coordinates "$HOME/sfyg_shadow/config/robust5000_xyzw_candidate.json" --bundle_dir "$HOME/models/sfyg_robust5000" > "$OUT/coordinate_audit.json"
+cp -n scripts/hardware/sfyg_robust5000_preflight.example.json ~/sfyg_shadow/config/robust5000_wxyz_candidate.json
+OUT="$HOME/sfyg_shadow/logs/wxyz_shadow_$(date +%Y%m%d_%H%M%S)"
+python3 -u scripts/hardware/shadow_sfyg_locomotion.py --bundle_dir "$HOME/models/sfyg_robust5000" --robot_ip 10.192.1.2 --coordinates "$HOME/sfyg_shadow/config/robust5000_wxyz_candidate.json" --command 0 0 0 --duration 10 --output_dir "$OUT"
+python3 scripts/hardware/audit_sfyg_coordinates.py --steps "$OUT/steps.jsonl" --coordinates "$HOME/sfyg_shadow/config/robust5000_wxyz_candidate.json" --bundle_dir "$HOME/models/sfyg_robust5000" > "$OUT/coordinate_audit.json"
 cat "$OUT/coordinate_audit.json"
 ```
 
 审核工具永远返回hardware_mapping_verified=false，不会用准备窗口/重力方向冒充实机验收。
-修正四元数顺序后需重新检查动作，不能直接沿用旧wxyz日志结论。
+修正为wxyz后需重新检查动作，不能沿用xyzw候选日志结论。
 
 实际安装0.5kg负载、Low-Level Dev、映射和支撑全部核实后，使用人工审核过的preflight：
 ```bash

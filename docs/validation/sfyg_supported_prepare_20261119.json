@@ -1,0 +1,386 @@
+[
+  {
+    "passed": true,
+    "mass": 0.0,
+    "delay_steps": 0,
+    "stop_at": null,
+    "final_state": "DONE",
+    "reason": "",
+    "events": [
+      {
+        "state": "CAPTURE",
+        "time_s": 0.0
+      },
+      {
+        "state": "MOVE",
+        "time_s": 1.0
+      },
+      {
+        "state": "SETTLE",
+        "time_s": 17.0
+      },
+      {
+        "state": "HOLD",
+        "time_s": 19.0
+      },
+      {
+        "state": "RELEASE",
+        "time_s": 22.02
+      },
+      {
+        "state": "DAMP",
+        "time_s": 24.02
+      },
+      {
+        "state": "DONE",
+        "time_s": 25.02
+      }
+    ],
+    "peak_speed": 0.33871769881171554,
+    "peak_tracking_error": 0.06465405379424569,
+    "peak_torque": 5.333790770961343,
+    "peak_active_tracking_error": 0.039121597880706016,
+    "peak_fixture_tilt_deg": 0.04203152993278505,
+    "max_target_step": 0.0017380849454627922,
+    "contacts": 0,
+    "fixture": "fixed base at 1.6m, feet clear; NOT compliant gantry or ground stance",
+    "policy_calls": 0,
+    "hardware_validated": false
+  },
+  {
+    "passed": true,
+    "mass": 0.0,
+    "delay_steps": 0,
+    "stop_at": 7.0,
+    "final_state": "DONE",
+    "reason": "",
+    "events": [
+      {
+        "state": "CAPTURE",
+        "time_s": 0.0
+      },
+      {
+        "state": "MOVE",
+        "time_s": 1.0
+      },
+      {
+        "state": "PAUSING",
+        "time_s": 7.0
+      },
+      {
+        "state": "PAUSED",
+        "time_s": 9.0
+      },
+      {
+        "state": "RELEASE",
+        "time_s": 12.02
+      },
+      {
+        "state": "DAMP",
+        "time_s": 14.02
+      },
+      {
+        "state": "DONE",
+        "time_s": 15.02
+      }
+    ],
+    "peak_speed": 0.33871769881171554,
+    "peak_tracking_error": 0.2984312910955623,
+    "peak_torque": 5.333790770961343,
+    "peak_active_tracking_error": 0.039121597880706016,
+    "peak_fixture_tilt_deg": 0.04203152993278505,
+    "max_target_step": 0.0015214685194218092,
+    "contacts": 0,
+    "fixture": "fixed base at 1.6m, feet clear; NOT compliant gantry or ground stance",
+    "policy_calls": 0,
+    "hardware_validated": false
+  },
+  {
+    "passed": true,
+    "mass": 0.0,
+    "delay_steps": 4,
+    "stop_at": null,
+    "final_state": "DONE",
+    "reason": "",
+    "events": [
+      {
+        "state": "CAPTURE",
+        "time_s": 0.0
+      },
+      {
+        "state": "MOVE",
+        "time_s": 1.0
+      },
+      {
+        "state": "SETTLE",
+        "time_s": 17.0
+      },
+      {
+        "state": "HOLD",
+        "time_s": 19.0
+      },
+      {
+        "state": "RELEASE",
+        "time_s": 22.02
+      },
+      {
+        "state": "DAMP",
+        "time_s": 24.02
+      },
+      {
+        "state": "DONE",
+        "time_s": 25.02
+      }
+    ],
+    "peak_speed": 0.3486819510092495,
+    "peak_tracking_error": 0.06398244503210121,
+    "peak_torque": 5.461682982794528,
+    "peak_active_tracking_error": 0.04371404581213878,
+    "peak_fixture_tilt_deg": 0.042370934611022856,
+    "max_target_step": 0.0017380849454627922,
+    "contacts": 0,
+    "fixture": "fixed base at 1.6m, feet clear; NOT compliant gantry or ground stance",
+    "policy_calls": 0,
+    "hardware_validated": false
+  },
+  {
+    "passed": true,
+    "mass": 0.0,
+    "delay_steps": 4,
+    "stop_at": 7.0,
+    "final_state": "DONE",
+    "reason": "",
+    "events": [
+      {
+        "state": "CAPTURE",
+        "time_s": 0.0
+      },
+      {
+        "state": "MOVE",
+        "time_s": 1.0
+      },
+      {
+        "state": "PAUSING",
+        "time_s": 7.0
+      },
+      {
+        "state": "PAUSED",
+        "time_s": 9.0
+      },
+      {
+        "state": "RELEASE",
+        "time_s": 12.02
+      },
+      {
+        "state": "DAMP",
+        "time_s": 14.02
+      },
+      {
+        "state": "DONE",
+        "time_s": 15.02
+      }
+    ],
+    "peak_speed": 0.3486819510092495,
+    "peak_tracking_error": 0.2961562237981421,
+    "peak_torque": 5.461682982794528,
+    "peak_active_tracking_error": 0.04371404581213878,
+    "peak_fixture_tilt_deg": 0.042370934611022856,
+    "max_target_step": 0.0015214685194218092,
+    "contacts": 0,
+    "fixture": "fixed base at 1.6m, feet clear; NOT compliant gantry or ground stance",
+    "policy_calls": 0,
+    "hardware_validated": false
+  },
+  {
+    "passed": true,
+    "mass": 0.5,
+    "delay_steps": 0,
+    "stop_at": null,
+    "final_state": "DONE",
+    "reason": "",
+    "events": [
+      {
+        "state": "CAPTURE",
+        "time_s": 0.0
+      },
+      {
+        "state": "MOVE",
+        "time_s": 1.0
+      },
+      {
+        "state": "SETTLE",
+        "time_s": 17.0
+      },
+      {
+        "state": "HOLD",
+        "time_s": 19.0
+      },
+      {
+        "state": "RELEASE",
+        "time_s": 22.02
+      },
+      {
+        "state": "DAMP",
+        "time_s": 24.02
+      },
+      {
+        "state": "DONE",
+        "time_s": 25.02
+      }
+    ],
+    "peak_speed": 0.3387456685354789,
+    "peak_tracking_error": 0.06465259964977592,
+    "peak_torque": 5.332839769071171,
+    "peak_active_tracking_error": 0.03913047965977112,
+    "peak_fixture_tilt_deg": 0.04577271477037819,
+    "max_target_step": 0.0017380849454627922,
+    "contacts": 0,
+    "fixture": "fixed base at 1.6m, feet clear; NOT compliant gantry or ground stance",
+    "policy_calls": 0,
+    "hardware_validated": false
+  },
+  {
+    "passed": true,
+    "mass": 0.5,
+    "delay_steps": 0,
+    "stop_at": 7.0,
+    "final_state": "DONE",
+    "reason": "",
+    "events": [
+      {
+        "state": "CAPTURE",
+        "time_s": 0.0
+      },
+      {
+        "state": "MOVE",
+        "time_s": 1.0
+      },
+      {
+        "state": "PAUSING",
+        "time_s": 7.0
+      },
+      {
+        "state": "PAUSED",
+        "time_s": 9.0
+      },
+      {
+        "state": "RELEASE",
+        "time_s": 12.02
+      },
+      {
+        "state": "DAMP",
+        "time_s": 14.02
+      },
+      {
+        "state": "DONE",
+        "time_s": 15.02
+      }
+    ],
+    "peak_speed": 0.3387456685354789,
+    "peak_tracking_error": 0.2984431482636115,
+    "peak_torque": 5.332839769071171,
+    "peak_active_tracking_error": 0.03913047965977112,
+    "peak_fixture_tilt_deg": 0.04577271477037819,
+    "max_target_step": 0.0015214685194218092,
+    "contacts": 0,
+    "fixture": "fixed base at 1.6m, feet clear; NOT compliant gantry or ground stance",
+    "policy_calls": 0,
+    "hardware_validated": false
+  },
+  {
+    "passed": true,
+    "mass": 0.5,
+    "delay_steps": 4,
+    "stop_at": null,
+    "final_state": "DONE",
+    "reason": "",
+    "events": [
+      {
+        "state": "CAPTURE",
+        "time_s": 0.0
+      },
+      {
+        "state": "MOVE",
+        "time_s": 1.0
+      },
+      {
+        "state": "SETTLE",
+        "time_s": 17.0
+      },
+      {
+        "state": "HOLD",
+        "time_s": 19.0
+      },
+      {
+        "state": "RELEASE",
+        "time_s": 22.02
+      },
+      {
+        "state": "DAMP",
+        "time_s": 24.02
+      },
+      {
+        "state": "DONE",
+        "time_s": 25.02
+      }
+    ],
+    "peak_speed": 0.3487132333301314,
+    "peak_tracking_error": 0.06398095721588071,
+    "peak_torque": 5.460746431643216,
+    "peak_active_tracking_error": 0.04372060609043371,
+    "peak_fixture_tilt_deg": 0.04607691074980905,
+    "max_target_step": 0.0017380849454627922,
+    "contacts": 0,
+    "fixture": "fixed base at 1.6m, feet clear; NOT compliant gantry or ground stance",
+    "policy_calls": 0,
+    "hardware_validated": false
+  },
+  {
+    "passed": true,
+    "mass": 0.5,
+    "delay_steps": 4,
+    "stop_at": 7.0,
+    "final_state": "DONE",
+    "reason": "",
+    "events": [
+      {
+        "state": "CAPTURE",
+        "time_s": 0.0
+      },
+      {
+        "state": "MOVE",
+        "time_s": 1.0
+      },
+      {
+        "state": "PAUSING",
+        "time_s": 7.0
+      },
+      {
+        "state": "PAUSED",
+        "time_s": 9.0
+      },
+      {
+        "state": "RELEASE",
+        "time_s": 12.02
+      },
+      {
+        "state": "DAMP",
+        "time_s": 14.02
+      },
+      {
+        "state": "DONE",
+        "time_s": 15.02
+      }
+    ],
+    "peak_speed": 0.3487132333301314,
+    "peak_tracking_error": 0.29616823475778803,
+    "peak_torque": 5.460746431643216,
+    "peak_active_tracking_error": 0.04372060609043371,
+    "peak_fixture_tilt_deg": 0.04607691074980905,
+    "max_target_step": 0.0015214685194218092,
+    "contacts": 0,
+    "fixture": "fixed base at 1.6m, feet clear; NOT compliant gantry or ground stance",
+    "policy_calls": 0,
+    "hardware_validated": false
+  }
+]
