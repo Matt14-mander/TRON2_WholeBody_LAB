@@ -4,6 +4,7 @@ No SDK construction, enable, target, reset, disable or stop commands. Quitting
 invalidates the leg heartbeat; it does NOT stop the arm. Stop legs first.
 """
 import argparse
+from collections import deque
 import hashlib
 import json
 from pathlib import Path
@@ -32,11 +33,22 @@ class Monitor:
         self.target = np.asarray(target)
         self.stable = None
         self.ready = False
+        self.velocity_window = deque()
+        self.velocity_spike_samples = 0
+        self.velocity_bad_samples = 0
 
     def tick(self, q, dq, enabled, mode, now):
+        speed = float(np.max(np.abs(dq)))
+        # At the 20 ms monitor cadence: three bad samples within 100 ms
+        # detect sustained speed or repeated spikes, without latching on one.
+        self.velocity_window.append((now, speed >= .05))
+        while self.velocity_window and now-self.velocity_window[0][0] > .100001:
+            self.velocity_window.popleft()
+        self.velocity_bad_samples = sum(bad for _, bad in self.velocity_window)
+        velocity_fault = speed >= .5 or self.velocity_bad_samples >= 3
         if (not enabled or not mode or not np.isfinite(q).all()
                 or not np.isfinite(dq).all()
-                or max(abs(q-self.target)) >= .04 or max(abs(dq)) >= .05):
+                or max(abs(q-self.target)) >= .04 or velocity_fault):
             self.ready = False
             error = np.asarray(q)-self.target
             raise RuntimeError(
@@ -45,7 +57,16 @@ class Monitor:
                 f"q_finite={bool(np.isfinite(q).all())} "
                 f"dq_finite={bool(np.isfinite(dq).all())}; "
                 f"error_rad={error.tolist()} (abs must be <0.04); "
-                f"dq_rad_s={np.asarray(dq).tolist()} (abs must be <0.05)")
+                f"dq_rad_s={np.asarray(dq).tolist()}; "
+                f"velocity_bad_samples_100ms={self.velocity_bad_samples} "
+                "(fault: >=3 samples at abs>=0.05, or one at abs>=0.5)")
+        if speed >= .05:
+            self.velocity_spike_samples += 1
+            print(f"[ARM VELOCITY] transient sample dq_rad_s={np.asarray(dq).tolist()} "
+                  f"bad_samples_100ms={self.velocity_bad_samples}", flush=True)
+            if not self.ready:
+                self.stable = None
+                return False
         self.stable = now if self.stable is None else self.stable
         self.ready = now-self.stable >= 2
         return self.ready
@@ -81,6 +102,8 @@ def run(args):
             state=state, ready=state == "HOLD", motor_output=False,
             enabled=state == "HOLD", can_j=state == "HOLD", policy_sha256=POLICY_SHA,
             reason=reason, q_sdk_rad=None if q is None else q.tolist(),
+            velocity_spike_samples=monitor.velocity_spike_samples,
+            velocity_bad_samples_100ms=monitor.velocity_bad_samples,
             dq_sdk_rad=None if dq is None else dq.tolist(), target_sdk_rad=profile.target.tolist(),
             raw_can={hex(i): {"age_s": time.monotonic()-stamp, "hex": raw.hex(" ")}
                      for i, (stamp, raw) in feedback.frames.items()}))

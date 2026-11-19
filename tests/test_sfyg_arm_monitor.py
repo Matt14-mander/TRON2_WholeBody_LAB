@@ -21,7 +21,7 @@ class MonitorTests(unittest.TestCase):
             self.assertTrue(m.tick(np.zeros(6), np.zeros(6), True, True, 2))
             q, dq = np.zeros(6), np.zeros(6)
             if fault == "q": q[2] = .041
-            if fault == "dq": dq[0] = .051
+            if fault == "dq": dq[0] = .5
             if fault == "nan": q[0] = np.nan
             with self.assertRaises(RuntimeError) as raised:
                 m.tick(q, dq, fault != "enable", fault != "mode", 3)
@@ -30,6 +30,38 @@ class MonitorTests(unittest.TestCase):
             if fault == "enable": self.assertIn("enabled=False", str(raised.exception))
             if fault == "mode": self.assertIn("can_j=False", str(raised.exception))
             self.assertFalse(m.ready)
+
+    def test_isolated_spikes_preserve_hold(self):
+        m = Monitor(np.zeros(6))
+        m.tick(np.zeros(6), np.zeros(6), True, True, 0)
+        for i in range(1, 501):
+            dq = np.zeros(6)
+            if i in (219, 426): dq[4] = -.134
+            ready = m.tick(np.zeros(6), dq, True, True, i*.02)
+            if i >= 100: self.assertTrue(ready)
+        self.assertEqual(m.velocity_spike_samples, 2)
+
+    def test_sustained_and_repeated_speed_fault(self):
+        for samples in ((.051, .051, .051), (.051, 0, .051, 0, .051)):
+            m = Monitor(np.zeros(6))
+            m.tick(np.zeros(6), np.zeros(6), True, True, 0)
+            m.tick(np.zeros(6), np.zeros(6), True, True, 2)
+            for i, value in enumerate(samples):
+                dq = np.full(6, value)
+                if i == len(samples)-1:
+                    with self.assertRaisesRegex(RuntimeError, "velocity_bad_samples_100ms=3"):
+                        m.tick(np.zeros(6), dq, True, True, 2.02+i*.02)
+                else:
+                    self.assertTrue(m.tick(np.zeros(6), dq, True, True, 2.02+i*.02))
+            self.assertFalse(m.ready)
+
+    def test_spike_restarts_initial_settling(self):
+        m = Monitor(np.zeros(6))
+        m.tick(np.zeros(6), np.zeros(6), True, True, 0)
+        self.assertFalse(m.tick(np.zeros(6), np.full(6, .1), True, True, 1.9))
+        self.assertFalse(m.tick(np.zeros(6), np.zeros(6), True, True, 2))
+        self.assertFalse(m.tick(np.zeros(6), np.zeros(6), True, True, 3.9))
+        self.assertTrue(m.tick(np.zeros(6), np.zeros(6), True, True, 4))
 
     def test_guard_stale_restart_and_not_ready(self):
         with tempfile.TemporaryDirectory() as d:
