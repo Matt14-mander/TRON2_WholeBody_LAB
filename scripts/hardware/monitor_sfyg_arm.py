@@ -38,7 +38,14 @@ class Monitor:
                 or not np.isfinite(dq).all()
                 or max(abs(q-self.target)) >= .04 or max(abs(dq)) >= .05):
             self.ready = False
-            raise RuntimeError("Carry hold lost: enable, mode, position or velocity")
+            error = np.asarray(q)-self.target
+            raise RuntimeError(
+                "Carry hold lost: "
+                f"enabled={bool(enabled)} can_j={bool(mode)}; "
+                f"q_finite={bool(np.isfinite(q).all())} "
+                f"dq_finite={bool(np.isfinite(dq).all())}; "
+                f"error_rad={error.tolist()} (abs must be <0.04); "
+                f"dq_rad_s={np.asarray(dq).tolist()} (abs must be <0.05)")
         self.stable = now if self.stable is None else self.stable
         self.ready = now-self.stable >= 2
         return self.ready
@@ -67,19 +74,21 @@ def run(args):
     signal.signal(signal.SIGTERM, stop)
     session = uuid.uuid4().hex
     state, reason, q, dq = "WAIT", "", None, None
+    feedback = Feedback()
     def report():
         publish_status(args.status_file, dict(
             schema="sfyg_arm_monitor_v1", session=session, monotonic_s=time.monotonic(),
             state=state, ready=state == "HOLD", motor_output=False,
             enabled=state == "HOLD", can_j=state == "HOLD", policy_sha256=POLICY_SHA,
             reason=reason, q_sdk_rad=None if q is None else q.tolist(),
-            dq_sdk_rad=None if dq is None else dq.tolist(), target_sdk_rad=profile.target.tolist()))
+            dq_sdk_rad=None if dq is None else dq.tolist(), target_sdk_rad=profile.target.tolist(),
+            raw_can={hex(i): {"age_s": time.monotonic()-stamp, "hex": raw.hex(" ")}
+                     for i, (stamp, raw) in feedback.frames.items()}))
     with args.status_file.with_suffix(".monitor.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
             report()
             bridge_stopped()
-            feedback = Feedback()
             filters = [dict(can_id=i, can_mask=0x7FF, extended=False) for i in sorted(Feedback.IDS)]
             with can.Bus(interface="socketcan", channel=args.can, can_filters=filters,
                          ignore_config=True) as bus:

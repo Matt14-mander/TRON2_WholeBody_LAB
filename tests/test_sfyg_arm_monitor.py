@@ -23,8 +23,12 @@ class MonitorTests(unittest.TestCase):
             if fault == "q": q[2] = .041
             if fault == "dq": dq[0] = .051
             if fault == "nan": q[0] = np.nan
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(RuntimeError) as raised:
                 m.tick(q, dq, fault != "enable", fault != "mode", 3)
+            self.assertIn("error_rad=", str(raised.exception))
+            self.assertIn("dq_rad_s=", str(raised.exception))
+            if fault == "enable": self.assertIn("enabled=False", str(raised.exception))
+            if fault == "mode": self.assertIn("can_j=False", str(raised.exception))
             self.assertFalse(m.ready)
 
     def test_guard_stale_restart_and_not_ready(self):
