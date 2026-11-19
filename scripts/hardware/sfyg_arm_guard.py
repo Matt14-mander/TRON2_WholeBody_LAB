@@ -14,8 +14,12 @@ class ArmGuard:
         age = now - float(data["monotonic_s"])
         if not math.isfinite(age) or not 0 <= age <= .25:
             raise RuntimeError("Arm heartbeat stale or clock invalid")
-        if (data.get("schema") != "sfyg_arm_hold_v1" or data.get("state") != "HOLD"
-                or data.get("execute") is not True or data.get("ready") is not True
+        controller = data.get("schema") == "sfyg_arm_hold_v1" and data.get("execute") is True
+        monitor = (data.get("schema") == "sfyg_arm_monitor_v1"
+                   and data.get("motor_output") is False
+                   and data.get("enabled") is True and data.get("can_j") is True)
+        if (not (controller or monitor) or data.get("state") != "HOLD"
+                or data.get("ready") is not True
                 or data.get("policy_sha256") != self.policy_sha):
             raise RuntimeError("Arm is not actively holding verified carry pose")
         session = data.get("session")

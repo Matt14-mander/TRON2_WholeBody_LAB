@@ -85,6 +85,9 @@ class Coordinates:
         self.zero = vec(self.config["zero_rad"], 10)
         self.sign = vec(self.config["sign"], 10)
         self.rotation = np.asarray(self.config["imu_to_base"], dtype=float)
+        self.quaternion_order = self.config.get("quaternion_order", "wxyz")
+        if self.quaternion_order not in ("wxyz", "xyzw"):
+            raise ValueError("quaternion_order must be wxyz or xyzw")
         if not np.isin(self.sign, [-1., 1.]).all():
             raise ValueError("Expected joint directions +1 or -1")
         if (self.rotation.shape != (3, 3)
@@ -96,6 +99,8 @@ class Coordinates:
         q = (vec(joint[2], 10)[self.order] - self.zero) * self.sign
         dq = vec(joint[3], 10)[self.order] * self.sign
         quat = vec(imu[2], 4)
+        if self.quaternion_order == "xyzw":
+            quat = quat[[3, 0, 1, 2]]
         norm = np.linalg.norm(quat)
         if not .9 <= norm <= 1.1:
             raise ValueError("Invalid SDK wxyz quaternion norm")
@@ -181,6 +186,7 @@ def run(args, connect=subscribe):
                            joint_stamp=joint[0], imu_stamp=imu[0], joint_rx_s=joint[1], imu_rx_s=imu[1],
                            sdk_q=list(map(float, joint[2])), sdk_dq=list(map(float, joint[3])),
                            sdk_quat_wxyz=list(map(float, imu[2])), sdk_gyro=list(map(float, imu[3])),
+                           sdk_quat_raw=list(map(float, imu[2])), quaternion_order=coords.quaternion_order,
                            q=q.tolist(), dq=dq.tolist(), gravity=gravity.tolist(), angular=angular.tolist(),
                            observation=obs.tolist(), history=hist.tolist(), command=cmd.tolist(),
                            action=previous.tolist())

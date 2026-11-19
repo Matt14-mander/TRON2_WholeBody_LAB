@@ -141,6 +141,8 @@ def validate_preflight(args, cfg):
             or any(profile.get(key) is not True for key in CHECKS)
             or not str(profile.get("operator", "")).strip()):
         raise ValueError("Preflight incomplete; bare robot must remain read-only with this loaded policy")
+    if profile.get("quaternion_order") not in ("xyzw", "wxyz"):
+        raise ValueError("Preflight must explicitly review quaternion_order; old implicit mapping is not accepted")
     Coordinates(args.preflight)  # Validate before SDK initialization or any motor output.
     return profile
 
