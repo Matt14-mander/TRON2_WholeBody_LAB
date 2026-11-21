@@ -1,7 +1,7 @@
 # 吊架承重、双脚离地的独立准备动作
 
-只读预览使用 `scripts/hardware/prepare_sfyg_legs.py`，仅校验正式 robust5000 bundle 并输出计划。
-实机执行统一使用 `scripts/hardware/run_sfyg_lifecycle.py --suspended-prepare`。吊架插值、保持和策略接管共用一个腿部发布线程。
+统一入口是 `scripts/hardware/run_sfyg_lifecycle.py`。`--preview-suspended` 仅订阅关节和 IMU，校验正式 robust5000 bundle，采集 10 秒后输出计划并自动退出。预览不加载策略，不需要机械臂 HOLD 心跳。
+实机执行使用 `--suspended-prepare --execute`。吊架插值、保持和策略接管共用一个腿部发布线程。
 
 ## 工况边界
 
@@ -17,7 +17,7 @@
 
 ## 状态与退出
 
-- 默认只读 10 秒，输出 `preview.json` 和 `steps.jsonl`。预览记录实测起点、最大关节速度、机身倾角和起点拒绝原因。通过起点检查时，另给出 MOVE 阶段的时长和五个插值采样点。预览通过仅代表该帧通过起点检查，执行时会从收到命令的最新反馈重新检查并生成轨迹。WAIT 不发送电机指令。
+- `--preview-suspended` 只读采集 10 秒，输出 `preview.json` 和 `steps.jsonl` 后自动退出。预览记录实测起点、最大关节速度、机身倾角和起点拒绝原因。通过起点检查时，另给出 MOVE 阶段的时长和五个插值采样点。预览通过仅代表该帧通过起点检查，执行时会从收到命令的最新反馈重新检查并生成轨迹。WAIT 不发送电机指令。
 - `--execute`仍停在WAIT，输入`prepare suspended`后才开始。
 - CAPTURE：目标从实测q开始，Kp在0.25秒平滑建立，保持起点至1秒。
 - MOVE：至少16秒五次平滑插值；参考速度<=0.1rad/s、参考加速度<=0.1rad/s²。
@@ -50,13 +50,14 @@
 cd ~/workspace/TRON2_WholeBody_LAB
 git pull --ff-only origin sim2real
 cp -n scripts/hardware/sfyg_supported_prepare.example.json ~/sfyg_shadow/config/legs_prepare.json
-python3 -u scripts/hardware/prepare_sfyg_legs.py \
+python3 -u scripts/hardware/run_sfyg_lifecycle.py \
+  --preview-suspended \
   --bundle_dir "$HOME/models/sfyg_robust5000" \
-  --profile "$HOME/sfyg_shadow/config/legs_prepare.json" \
+  --preflight "$HOME/sfyg_shadow/config/legs_prepare.json" \
   --output_dir "$HOME/sfyg_shadow/logs/legs_preview_$(date +%Y%m%d_%H%M%S)"
 ```
 
-机械臂monitor持续运行。核对预览和现场条件后编辑配置operator、实际payload_mass_kg和所有检查。
+核对预览后，如果继续实机执行，再启动机械臂监测并确认 HOLD，按现场条件填写配置中的 operator、实际 payload_mass_kg 和检查项。
 不要一键把所有检查改true；尚未确认项会阻止执行，这是预期行为。
 
 ```bash

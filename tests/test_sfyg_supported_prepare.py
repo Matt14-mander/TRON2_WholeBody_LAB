@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT/'scripts/hardware'))
 from sfyg_supported_prepare import SupportedPrepare, RECORDED, CommandRejected
 from run_sfyg_lifecycle import validate_preflight, SUSPENDED_CHECKS
 from sfyg_lifecycle import Lifecycle
-import prepare_sfyg_legs as hardware
+import run_sfyg_lifecycle as hardware
 
 
 def config():
@@ -99,7 +99,7 @@ class PrepareTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_preflight(args, config())
 
-    def test_preview_never_constructs_sender(self):
+    def test_preview_runs_for_ten_seconds_without_loading_policy_or_arming(self):
         class Clock:
             t = 0.
             def now(self): return self.t
@@ -114,18 +114,39 @@ class PrepareTests(unittest.TestCase):
             root = Path(d)
             profile = root/'profile.json'
             profile.write_text((ROOT/'scripts/hardware/sfyg_supported_prepare.example.json').read_text())
-            a = SimpleNamespace(bundle_dir=root, profile=profile, output_dir=root/'out', robot_ip='test')
-            with patch.object(hardware,'configuration',return_value=config()), \
-                 patch.object(hardware,'Samples',Samples), \
-                 patch.object(hardware,'subscribe',return_value=object()), \
-                 patch.object(hardware.time,'monotonic',clock.now), \
-                 patch.object(hardware.time,'sleep',clock.sleep):
-                hardware.run(a)
-            report = json.loads((a.output_dir/'summary.json').read_text())
+            out = root/'out'
+            cli = ['run_sfyg_lifecycle.py', '--preview-suspended', '--bundle_dir', str(root),
+                   '--preflight', str(profile), '--output_dir', str(out), '--robot_ip', 'test']
+            with patch.object(sys, 'argv', cli), \
+                 patch.object(hardware, 'configuration', return_value=config()), \
+                 patch.object(hardware, 'load_bundle', side_effect=AssertionError('loaded policy')), \
+                 patch.object(hardware, 'ArmGuard', side_effect=AssertionError('arm heartbeat required')), \
+                 patch.object(hardware, 'make_sender', side_effect=AssertionError('created sender')), \
+                 patch.object(hardware, 'Samples', Samples), \
+                 patch.object(hardware, 'subscribe', return_value=object()), \
+                 patch.object(hardware.time, 'monotonic', clock.now), \
+                 patch.object(hardware.time, 'sleep', clock.sleep):
+                hardware.main()
+            self.assertGreaterEqual(clock.t, 10.)
+            self.assertLess(clock.t, 10.021)
+            report = json.loads((out/'summary.json').read_text())
+            self.assertEqual(report['reason'], 'completed')
+            rows = [json.loads(row) for row in (out/'steps.jsonl').read_text().splitlines()]
+            self.assertEqual(report['frames'], len(rows))
+            self.assertGreaterEqual(rows[-1]['time_s'], 10.)
             self.assertFalse(report['motor_output'])
             self.assertEqual(report['policy_calls'],0)
             self.assertEqual(report['state'],'WAIT')
-            preview = json.loads((a.output_dir/'preview.json').read_text())
+            preview = json.loads((out/'preview.json').read_text())
             self.assertTrue(preview['start_gate_passed'])
             self.assertEqual(preview['move_waypoints'][0]['q_rad'], RECORDED.tolist())
             np.testing.assert_allclose(preview['move_waypoints'][-1]['q_rad'], config()['defaults'])
+
+    def test_preview_and_execute_cannot_be_combined(self):
+        cli = ['run_sfyg_lifecycle.py', '--preview-suspended', '--execute',
+               '--bundle_dir', 'bundle', '--preflight', 'profile', '--output_dir', 'out']
+        with patch.object(sys, 'argv', cli), patch.object(hardware, 'run') as run:
+            with self.assertRaises(SystemExit) as rejected:
+                hardware.main()
+            self.assertEqual(rejected.exception.code, 2)
+            run.assert_not_called()
