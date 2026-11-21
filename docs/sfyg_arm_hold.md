@@ -1,7 +1,6 @@
 # robust_5000 的独立机械臂 carry 保持
 
-2026-11-17：从自然折叠状态分段准备请使用[分段准备入口](sfyg_arm_prepare.md)。
-本入口仍限于 carry 附近。分段入口最终持续 HOLD 后直接接腿，不要切换机械臂发送进程。
+本入口适用于机械臂已接近 carry 的工况。Piper X 到位调试见 [pyAgxArm carry 调试](piper_x_carry.md)，到位后可按 [只读 HOLD 监测](sfyg_hold_mapping_jetson.md) 核对心跳。
 
 新增 `scripts/hardware/hold_sfyg_arm.py`，用于安装 Piper/PIPER X 且协议已核对的
 SFYG。原 `shadow_sfyg_student.py` 只读 CAN，不保持机械臂；训练/仿真中的 800/40
