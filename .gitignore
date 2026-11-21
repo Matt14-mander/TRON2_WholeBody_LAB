@@ -18,6 +18,13 @@
 !.vscode
 
 # Outputs
+/log/
+/tmp/
+/artifacts/v3_contact_*/
+/episodes/
+/rollout_manifest.csv
+/split.json
+/MUJOCO_LOG.TXT
 /.test-temp/
 **/runs/*
 **/logs/*
