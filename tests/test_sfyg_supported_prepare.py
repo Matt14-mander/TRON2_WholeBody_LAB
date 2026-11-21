@@ -10,7 +10,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'scripts/hardware'))
 from sfyg_supported_prepare import SupportedPrepare, RECORDED, CommandRejected
-from prepare_sfyg_legs import validate, CHECKS
+from run_sfyg_lifecycle import validate_preflight, SUSPENDED_CHECKS
 from sfyg_lifecycle import Lifecycle
 import prepare_sfyg_legs as hardware
 
@@ -83,14 +83,21 @@ class PrepareTests(unittest.TestCase):
         self.assertNotIn('HOLD', [e['state'] for e in c.events])
 
     def test_preflight_does_not_assume_enable(self):
-        profile = dict(quaternion_order='wxyz')
-        validate(profile, config(), False)
-        with self.assertRaises(ValueError): validate(profile, config(), True)
-        profile.update({k:True for k in CHECKS})
-        profile.update(operator='reviewed', policy_sha256='test',payload_mass_kg=0)
-        validate(profile,config(),True)
-        for key in CHECKS:
-            with self.assertRaises(ValueError): validate(profile|{key:False},config(),True)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d)/'profile.json'
+            profile = json.loads((ROOT/'scripts/hardware/sfyg_supported_prepare.example.json').read_text())
+            args = SimpleNamespace(preflight=path, execute=True, suspended_prepare=True)
+            path.write_text(json.dumps(profile))
+            with self.assertRaises(ValueError):
+                validate_preflight(args, config())
+            profile.update({key: True for key in SUSPENDED_CHECKS})
+            profile.update(operator='reviewed', policy_sha256='test', payload_mass_kg=0)
+            path.write_text(json.dumps(profile))
+            self.assertEqual(validate_preflight(args, config()), profile)
+            for key in SUSPENDED_CHECKS + ('payload_mass_kg', 'quaternion_order'):
+                path.write_text(json.dumps(profile | {key: False}))
+                with self.assertRaises(ValueError):
+                    validate_preflight(args, config())
 
     def test_preview_never_constructs_sender(self):
         class Clock:
@@ -107,12 +114,10 @@ class PrepareTests(unittest.TestCase):
             root = Path(d)
             profile = root/'profile.json'
             profile.write_text((ROOT/'scripts/hardware/sfyg_supported_prepare.example.json').read_text())
-            a = SimpleNamespace(bundle_dir=root,profile=profile,execute=False,
-                output_dir=root/'out',arm_status_file=root/'missing.json',robot_ip='test')
+            a = SimpleNamespace(bundle_dir=root, profile=profile, output_dir=root/'out', robot_ip='test')
             with patch.object(hardware,'configuration',return_value=config()), \
                  patch.object(hardware,'Samples',Samples), \
                  patch.object(hardware,'subscribe',return_value=object()), \
-                 patch.object(hardware,'make_sender',side_effect=AssertionError('motor sender')), \
                  patch.object(hardware.time,'monotonic',clock.now), \
                  patch.object(hardware.time,'sleep',clock.sleep):
                 hardware.run(a)

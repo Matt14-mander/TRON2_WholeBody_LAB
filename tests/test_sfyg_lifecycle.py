@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts/hardware"))
 import sfyg_lifecycle as core
 import run_sfyg_lifecycle as hardware
+from sfyg_supported_prepare import SupportedPrepare, RECORDED
 
 
 class ConstantPolicy(torch.nn.Module):
@@ -159,6 +160,59 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(self.ctl.state, "FAULT")
         np.testing.assert_equal(p["kp"], np.zeros(10))
 
+    def suspended_hold(self, allow_policy=True):
+        cfg = config()
+        cfg["defaults"][2], cfg["defaults"][7] = -np.pi, np.pi
+        policy = ConstantPolicy()
+        self.ctl = core.Lifecycle(cfg, policy, suspended=SupportedPrepare(cfg), allow_policy=allow_policy)
+        q = RECORDED.copy()
+        start = self.tick("prepare_suspended", q=q)
+        np.testing.assert_array_equal(start["q"], q)
+        np.testing.assert_array_equal(start["kp"], np.zeros(10))
+        while self.ctl.state != "HOLD" and self.now < 21.:
+            packet = self.tick(q=q)
+            q = np.asarray(packet["q"])
+        self.assertEqual(self.ctl.state, "HOLD")
+        self.assertEqual(self.ctl.step, 0)
+        return q, packet
+
+    def test_suspended_handoff_until_zero_policy(self):
+        q, hold = self.suspended_hold()
+        for event, position in (("prepare_supported", q), ("start_grounded", q+.10)):
+            when = self.now+.02
+            with self.assertRaises(core.CommandRejected):
+                self.ctl.tick(when, position, np.zeros(10), np.zeros(3), [0., 0., -1.], event)
+            hold = self.tick(q=q)
+        first = self.tick("start_grounded", q=q)
+        self.assertEqual(first, dict(hold, state="BLEND"))
+        self.assertEqual(self.ctl.step, 0)
+        self.tick(q=q)
+        self.assertEqual(self.ctl.step, 1)
+        np.testing.assert_array_equal(self.ctl.hist, [self.ctl.obs]*10)
+        for _ in range(19):
+            self.tick(q=q)
+        self.assertEqual(self.ctl.state, "POLICY")
+        np.testing.assert_array_equal(self.ctl.command, np.zeros(3))
+
+    def test_suspended_without_payload_can_hold_and_release_only(self):
+        q, _ = self.suspended_hold(allow_policy=False)
+        with self.assertRaisesRegex(core.CommandRejected, "0.5 kg"):
+            self.ctl.tick(self.now+.02, q, np.zeros(10), np.zeros(3), [0., 0., -1.], "start_grounded")
+        self.tick("release_supported", q=q)
+        for _ in range(160):
+            packet = self.tick(q=q)
+        self.assertEqual(self.ctl.state, "DONE")
+        self.assertEqual(self.ctl.step, 0)
+        np.testing.assert_array_equal(packet["kp"], np.zeros(10))
+
+    def test_suspended_handoff_cannot_bypass_deadline(self):
+        q, _ = self.suspended_hold()
+        self.now += .1
+        packet = self.tick("start_grounded", q=q)
+        self.assertEqual(self.ctl.state, "FAULT")
+        self.assertEqual(self.ctl.step, 0)
+        np.testing.assert_array_equal(packet["kp"], np.zeros(10))
+
     def test_inverse_coordinates_and_gain_order(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d)/"coords.json"
@@ -228,6 +282,21 @@ class HardwareTest(unittest.TestCase):
             result = json.loads((args.output_dir/"summary.json").read_text())
             self.assertFalse(result["motor_output"])
             self.assertEqual(result["publish_count"], 0)
+
+    def test_second_execution_refused_before_starting_runner(self):
+        def occupied(lock, flags):
+            self.assertEqual(flags, 6)
+            raise BlockingIOError
+
+        cli = ["run_sfyg_lifecycle.py", "--bundle_dir", "bundle", "--output_dir", "out", "--execute"]
+        fcntl_stub = SimpleNamespace(LOCK_EX=2, LOCK_NB=4, flock=occupied)
+        with tempfile.TemporaryDirectory() as d, patch.object(Path, "home", return_value=Path(d)), \
+             patch.dict(sys.modules, {"fcntl": fcntl_stub}), patch.object(sys, "argv", cli), \
+             patch.object(hardware, "run") as run, patch.object(sys, "stderr", io.StringIO()):
+            with self.assertRaises(SystemExit) as refused:
+                hardware.main()
+            self.assertEqual(refused.exception.code, 1)
+            run.assert_not_called()
 
     def test_execute_refuses_absent_arm_and_unverified_coordinates(self):
         with tempfile.TemporaryDirectory() as d:

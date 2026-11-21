@@ -81,6 +81,9 @@ class SupportedPrepare:
             ]
         return report
 
+    def settled(self, q, dq):
+        return max(abs(q-self.target)) < .08 and max(abs(dq)) < .1
+
     def tick(self, now, q, dq, gravity, event=None):
         q, dq, gravity = vec(q, 10), vec(dq, 10), vec(gravity, 3)
         tilt = tilt_degrees(gravity)
@@ -132,8 +135,7 @@ class SupportedPrepare:
         elif self.state == 'DONE': kp *= 0
         elif self.state in ('PAUSING', 'PAUSED'): kp *= self.paused_gain
         if self.state in ('SETTLE', 'PAUSING'):
-            settled = max(abs(q-self.target)) < .08 and max(abs(dq)) < .1
-            self.stable = (now if self.stable is None else self.stable) if settled else None
+            self.stable = (now if self.stable is None else self.stable) if self.settled(q, dq) else None
             if self.stable is not None and now-self.stable >= 2.:
                 self.transition('HOLD' if self.state == 'SETTLE' else 'PAUSED', now)
             elif now-self.since > 12.: self.fault('settling timeout', now)

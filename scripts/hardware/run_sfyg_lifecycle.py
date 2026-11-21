@@ -13,10 +13,16 @@ import numpy as np
 from shadow_sfyg_locomotion import Samples, Coordinates, subscribe
 from sfyg_lifecycle import Lifecycle, CommandRejected, load_bundle, sdk_packet
 from sfyg_arm_guard import ArmGuard
+from sfyg_supported_prepare import SupportedPrepare
 
 
 CHECKS = ("joint_mapping_checked", "arm_in_carry_pose_and_payload_0p5kg",
           "low_level_dev_mode", "gantry_and_emergency_stop_ready")
+SUSPENDED_CHECKS = (
+    "joint_mapping_checked", "imu_mapping_checked", "low_level_dev_mode",
+    "drive_enable_semantics_confirmed", "exclusive_leg_control", "gantry_supports_full_weight",
+    "feet_clear_entire_path", "emergency_stop_and_robot_timeout_verified", "arm_carry_verified",
+)
 
 
 class MotorLease:
@@ -137,6 +143,16 @@ def validate_preflight(args, cfg):
     if not args.preflight:
         raise ValueError("--execute requires a reviewed --preflight JSON")
     profile = json.loads(args.preflight.read_text(encoding="utf-8"))
+    if getattr(args, "suspended_prepare", False):
+        mass = profile.get("payload_mass_kg")
+        if (profile.get("policy_sha256") != cfg["policy_sha256"]
+                or not str(profile.get("operator", "")).strip()
+                or any(profile.get(key) is not True for key in SUSPENDED_CHECKS)
+                or type(mass) not in (int, float) or mass not in (0, .5)
+                or profile.get("quaternion_order") != "wxyz"):
+            raise ValueError("Review every suspended preparation check, including payload and raw SDK wxyz")
+        Coordinates(args.preflight)
+        return profile
     if (profile.get("policy_sha256") != cfg["policy_sha256"]
             or any(profile.get(key) is not True for key in CHECKS)
             or not str(profile.get("operator", "")).strip()):
@@ -152,12 +168,14 @@ def run(args):
     profile = validate_preflight(args, cfg)
     arm_path = getattr(args, "arm_status_file", None)
     if args.execute and arm_path is None:
-        raise ValueError("--execute requires --arm_status_file from hold_sfyg_arm.py on this host")
+        raise ValueError("--execute requires --arm_status_file with a live arm HOLD status on this host")
     arm_guard = ArmGuard(arm_path, cfg["policy_sha256"]) if arm_path else None
     if args.execute:
         arm_guard.check()
     coords = Coordinates(args.preflight)
-    ctl = Lifecycle(cfg, policy)
+    suspended = SupportedPrepare(cfg) if getattr(args, "suspended_prepare", False) else None
+    allow_policy = not args.execute or suspended is None or profile["payload_mass_kg"] == .5
+    ctl = Lifecycle(cfg, policy, suspended=suspended, allow_policy=allow_policy)
     out = args.output_dir
     out.mkdir(parents=True, exist_ok=False)
     (out/"interface.json").write_text(json.dumps(dict(
@@ -165,7 +183,8 @@ def run(args):
         motor_output=args.execute, preflight=profile, coordinates=coords.config,
         policy_period_s=.02, publisher_period_s=.005, host_lease_s=.06,
         previous_action="requested action after startup blend, before torque projection; raw actor in steady policy",
-        prepare_target=ctl.default.tolist(), hardware_acceptance=False), indent=2), encoding="utf-8")
+        prepare_target=ctl.default.tolist(), suspended_prepare=suspended is not None,
+        policy_handoff_allowed=allow_policy, hardware_acceptance=False), indent=2), encoding="utf-8")
     samples = Samples()
     robot = subscribe(args.robot_ip, samples)
     lease = MotorLease(make_sender(robot), samples, coords, ctl.kd, arm_guard=arm_guard) if args.execute else None
@@ -189,7 +208,8 @@ def run(args):
         commands.put("abort")
     old_handlers = {s: signal.signal(s, interrupt) for s in (signal.SIGINT, signal.SIGTERM)}
     print("[SFYG] motor_output=", args.execute, "output=", out, flush=True)
-    print("Commands (Enter): prepare supported | start grounded | vx 0.15 | stop | release supported | abort | quit", flush=True)
+    prepare_command = "prepare suspended" if suspended is not None else "prepare supported"
+    print(f"Commands (Enter): {prepare_command} | start grounded | vx 0.15 | stop | release supported | abort | quit", flush=True)
     print("WAIT sends no motor commands. Remote L1+square/cross aborts; terminal stop ramps to zero policy.", flush=True)
     start_wait = time.monotonic()
     start = last_stamp = due = None
@@ -223,10 +243,11 @@ def run(args):
                 if input_line == "quit":
                     if ctl.state == "WAIT":
                         break
-                    print("Use stop, wait ZERO, attach support, release supported. abort is emergency damping.", flush=True)
+                    print("While suspended: release from HOLD/PAUSED with support. During policy: stop, wait ZERO, then release supported.", flush=True)
                 elif input_line:
-                    mapping = {"prepare supported": "prepare_supported", "start grounded": "start_grounded",
-                               "stop": "stop", "release supported": "release_supported", "abort": "abort"}
+                    mapping = {"prepare supported": "prepare_supported", "prepare suspended": "prepare_suspended",
+                               "start grounded": "start_grounded", "stop": "stop",
+                               "release supported": "release_supported", "abort": "abort"}
                     if input_line.startswith("vx "):
                         try:
                             request = [float(input_line.split()[1]), 0., 0.]
@@ -236,9 +257,9 @@ def run(args):
                         event = mapping.get(input_line)
                         if event is None:
                             print("Unknown command", flush=True)
-                if lease and event == "prepare_supported" and (lease.joy_at is None or now-lease.joy_at > 2.):
+                if lease and event in {"prepare_supported", "prepare_suspended"} and (lease.joy_at is None or now-lease.joy_at > 2.):
                     raise RuntimeError("No live remote heartbeat; prepare refused")
-                if lease and event in {"prepare_supported", "start_grounded"}:
+                if lease and event in {"prepare_supported", "prepare_suspended", "start_grounded"}:
                     arm_guard.check()
                 rejected = None
                 try:
@@ -286,7 +307,7 @@ def run(args):
         print("[SUMMARY]", summary, flush=True)
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle_dir", type=Path, required=True)
     parser.add_argument("--output_dir", type=Path, required=True)
@@ -294,4 +315,23 @@ if __name__ == "__main__":
     parser.add_argument("--preflight", type=Path, help="Coordinates and manually reviewed hardware checks")
     parser.add_argument("--execute", action="store_true", help="Enable motor publishing AFTER explicit prepare command")
     parser.add_argument("--arm_status_file", type=Path, help="Required for execute: live same-host arm HOLD heartbeat")
-    run(parser.parse_args())
+    parser.add_argument("--suspended-prepare", action="store_true",
+                        help="Start with the feet-clear suspended preparation sequence")
+    args = parser.parse_args()
+    if not args.execute:
+        run(args)
+        return
+
+    import fcntl
+    lock_path = Path.home() / "sfyg_shadow/run/supported_prepare.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            parser.exit(1, "A local SFYG leg publisher is already running.\n")
+        run(args)
+
+
+if __name__ == "__main__":
+    main()

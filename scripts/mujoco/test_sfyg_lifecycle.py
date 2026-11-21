@@ -10,13 +10,15 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hardware"))
 from sfyg_lifecycle import Lifecycle, load_bundle
+from sfyg_supported_prepare import SupportedPrepare, RECORDED
 from sfyg_bridge import SFYGBridge
 
 
 def run(args):
     cfg, policy = load_bundle(args.bundle_dir)
     env = SFYGBridge(cfg, delay_steps=args.delay_steps)
-    ctl = Lifecycle(cfg, policy)
+    suspended = args.initial_pose == "suspended"
+    ctl = Lifecycle(cfg, policy, suspended=SupportedPrepare(cfg) if suspended else None)
     out = args.output_dir
     out.mkdir(parents=True, exist_ok=False)
     # A test fixture holds the base while legs move from a bent preparation pose.
@@ -34,7 +36,12 @@ def run(args):
             print(result)
             return
         raise AssertionError("Deep folded preparation must be refused")
+    if suspended:
+        bent = RECORDED
+        env.data.qpos[2] = 1.6
     env.data.qpos[env.qpos[:10]] = bent
+    if suspended:
+        env.data.ctrl[env.motors[:10]] = bent
     mujoco.mj_forward(env.model, env.data)
     root_pose = env.data.qpos[:7].copy()
     queue = deque(maxlen=args.delay_steps+1)
@@ -43,6 +50,8 @@ def run(args):
     last_state = None
     feet = [env.model.body(n).id for n in ("ankle_pitch_L_Link", "ankle_pitch_R_Link")]
     releases, last_contact = np.zeros(2, int), None
+    grounded_since = None
+    suspended_contacts = 0
     with (out / "steps.jsonl").open("w", encoding="utf-8") as stream:
         for tick in range(int(55/cfg["physics_dt"])):
             now = tick*cfg["physics_dt"]
@@ -50,8 +59,20 @@ def run(args):
                 linear, angular, gravity = env.base_state()
                 q = env.data.qpos[env.qpos[:10]].copy()
                 dq = env.data.qvel[env.qvel[:10]].copy()
-                event = "prepare_supported" if tick == 0 else None
+                contacting = np.zeros(2, bool)
+                for contact in env.data.contact:
+                    b1, b2 = env.model.geom_bodyid[[contact.geom1, contact.geom2]]
+                    for i, body in enumerate(feet):
+                        contacting[i] |= (b1 == body and b2 == 0) or (b2 == body and b1 == 0)
+                event = ("prepare_suspended" if suspended else "prepare_supported") if tick == 0 else None
                 command = None
+                if suspended and ctl.state in {"WAIT", "CAPTURE", "MOVE", "SETTLE"}:
+                    suspended_contacts += int(contacting.any())
+                if suspended and ctl.state == "HOLD":
+                    settled_on_ground = contacting.all() and ctl.suspended.settled(q, dq)
+                    grounded_since = (now if grounded_since is None else grounded_since) if settled_on_ground else None
+                    if grounded_since is not None and now-grounded_since >= .3:
+                        event = "start_grounded"
                 if ctl.state == "READY" and ctl.ready:
                     event = "start_grounded"
                 if ctl.state == "POLICY" and walk_start is None:
@@ -63,16 +84,11 @@ def run(args):
                     event, release_time = "release_supported", now
                     root_pose = env.data.qpos[:7].copy()
                 packet = ctl.tick(now, q, dq, angular, gravity, event, command)
-                contacting = np.zeros(2, bool)
-                for contact in env.data.contact:
-                    b1, b2 = env.model.geom_bodyid[[contact.geom1, contact.geom2]]
-                    for i, body in enumerate(feet):
-                        contacting[i] |= (b1 == body and b2 == 0) or (b2 == body and b1 == 0)
                 if last_contact is not None and ctl.state in ctl.POLICY_STATES:
                     releases += last_contact & ~contacting
                 last_contact = contacting
                 row = dict(time_s=now, state=ctl.state, q=q.tolist(), dq=dq.tolist(),
-                           target=packet["q"], kp=packet["kp"], command=ctl.command.tolist(),
+                           target=packet["q"], kp=packet["kp"], kd=packet["kd"], command=ctl.command.tolist(),
                            raw_action=ctl.raw.tolist(), applied_action=ctl.previous.tolist(),
                            velocity=linear.tolist(), angular=angular.tolist(),
                            tilt_deg=float(np.degrees(np.arccos(np.clip(-gravity[2], -1, 1)))),
@@ -95,6 +111,8 @@ def run(args):
             env.data.ctrl[env.motors[10:]] = env.defaults[10:]
             mujoco.mj_step(env.model, env.data)
             if ctl.state not in ctl.POLICY_STATES:
+                if suspended and ctl.state == "HOLD" and not last_contact.all():
+                    root_pose[2] = max(.70, root_pose[2]-.15*cfg["physics_dt"])
                 env.data.qpos[:7] = root_pose
                 env.data.qvel[:6] = 0
             mujoco.mj_forward(env.model, env.data)
@@ -109,9 +127,16 @@ def run(args):
                   for a, b in zip(rows, rows[1:]) if a["state"] != b["state"]]
     passed = (ctl.state == "DONE" and bool(plateau) and bool(tail) and max_tilt < 20
               and (mean_vx > .1 if args.vx else abs(mean_vx) < .05) and tail_rms[0] < .05)
+    suspended_handoff = None
+    if suspended:
+        handoff = next(((a, b) for a, b in zip(rows, rows[1:])
+                        if (a["state"], b["state"]) == ("HOLD", "BLEND")), None)
+        continuous = handoff is not None and all(handoff[0][k] == handoff[1][k] for k in ("target", "kp", "kd"))
+        passed = passed and continuous and suspended_contacts == 0
+        suspended_handoff = dict(continuous=continuous, preparation_ground_contact_frames=suspended_contacts)
     summary = dict(passed=passed, final_state=ctl.state, fault=ctl.reason, events=ctl.events,
                    policy_sha256=cfg["policy_sha256"], delay_steps=args.delay_steps,
-                   initial_pose=args.initial_pose,
+                   initial_pose=args.initial_pose, suspended_handoff=suspended_handoff,
                    requested_vx=args.vx, mean_vx=mean_vx, tail_rms_xyz=tail_rms,
                    max_free_tilt_deg=max_tilt, foot_releases=releases.tolist(),
                    boundary_target_changes=boundaries,
@@ -130,5 +155,5 @@ if __name__ == "__main__":
     p.add_argument("--output_dir", type=Path, required=True)
     p.add_argument("--delay_steps", type=int, choices=range(5), default=0)
     p.add_argument("--vx", type=float, choices=[0., .2], default=.2)
-    p.add_argument("--initial_pose", choices=["bent", "folded_supported"], default="bent")
+    p.add_argument("--initial_pose", choices=["bent", "folded_supported", "suspended"], default="bent")
     run(p.parse_args())

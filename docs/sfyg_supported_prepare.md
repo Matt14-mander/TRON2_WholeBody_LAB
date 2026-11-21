@@ -1,7 +1,7 @@
 # 吊架承重、双脚离地的独立准备动作
 
-入口：`scripts/hardware/prepare_sfyg_legs.py`。不加载或调用actor，只读取并校验正式robust5000
-导出中的目标、PD增益、力矩上限和文件哈希。policy.pt、训练源码、原Lifecycle的0.6rad检查不变。
+只读预览使用 `scripts/hardware/prepare_sfyg_legs.py`，仅校验正式 robust5000 bundle 并输出计划。
+实机执行统一使用 `scripts/hardware/run_sfyg_lifecycle.py --suspended-prepare`。吊架插值、保持和策略接管共用一个腿部发布线程。
 
 ## 工况边界
 
@@ -10,11 +10,10 @@
 脚接触无法从现有SDK自动确认，必须现场核实，不能把preflight布尔值当作传感器。
 现有SDK没有明确逐电机使能位；`drive_enable_semantics_confirmed`要求核实厂家的低层控制语义，
 不是假装读取到了使能。程序不发送另行的使能/复位命令。
-本脚本可记录0kg或0.5kg负载工况，但这不取消后续policy的0.5kg负载要求。
+准备可以在 0 kg 或 0.5 kg 负载下执行。实机策略接管只允许使用已核对的 0.5 kg 负载。
 
 所有preflight默认false。现场确认关节顺序/方向、wxyz与IMU安装、独占控制权、急停及机器人端
-通信超时行为后才可执行。不得与run_sfyg_lifecycle、官方部署控制器等同时发布腿部命令。
-进程锁只排除本脚本的第二个实例，不能证明其他控制器不存在。
+通信超时行为后才可执行。实机入口持有同一用户下的本机发布锁，阻止重复启动统一入口。现场仍须确认官方控制器或其他进程已释放腿部控制权。
 
 ## 状态与退出
 
@@ -24,7 +23,7 @@
 - MOVE：至少16秒五次平滑插值；参考速度<=0.1rad/s、参考加速度<=0.1rad/s²。
   实际关节捕获速度不等于参考速度，实机必须监测反馈。
 - SETTLE：位置误差<0.08rad、速度<0.1rad/s连续2秒后进入HOLD，之后持续保持。
-- 无policy/start命令、无自动接管。`stop`冻结当前参考并等待PAUSED，不回零，不自动恢复。
+- 吊架准备和 HOLD 阶段由位置控制保持。若准备中输入 `stop`，控制器冻结当前参考并等待 PAUSED。PAUSED 只允许受支撑释放。
   停止参考速度会变为0，故不是带加速度约束的重新规划；位置目标连续。
 - HOLD/PAUSED下，确认支撑后`release supported`：2秒卸载Kp，1秒阻尼后退出；腿可能下垂。
 - `abort`、Ctrl+C、EOF、远端L1+square/cross或心跳/通信故障触发尽力阻尼，不能保证姿态保持。
@@ -54,7 +53,6 @@ cp -n scripts/hardware/sfyg_supported_prepare.example.json ~/sfyg_shadow/config/
 python3 -u scripts/hardware/prepare_sfyg_legs.py \
   --bundle_dir "$HOME/models/sfyg_robust5000" \
   --profile "$HOME/sfyg_shadow/config/legs_prepare.json" \
-  --arm_status_file "$HOME/sfyg_shadow/run/arm_monitor.json" \
   --output_dir "$HOME/sfyg_shadow/logs/legs_preview_$(date +%Y%m%d_%H%M%S)"
 ```
 
@@ -63,16 +61,18 @@ python3 -u scripts/hardware/prepare_sfyg_legs.py \
 
 ```bash
 nano ~/sfyg_shadow/config/legs_prepare.json
-python3 -u scripts/hardware/prepare_sfyg_legs.py \
+python3 -u scripts/hardware/run_sfyg_lifecycle.py \
   --bundle_dir "$HOME/models/sfyg_robust5000" \
-  --profile "$HOME/sfyg_shadow/config/legs_prepare.json" \
+  --preflight "$HOME/sfyg_shadow/config/legs_prepare.json" \
   --arm_status_file "$HOME/sfyg_shadow/run/arm_monitor.json" \
   --output_dir "$HOME/sfyg_shadow/logs/legs_prepare_$(date +%Y%m%d_%H%M%S)" \
-  --execute
+  --suspended-prepare --execute
 ```
 
-输入`prepare suspended`。HOLD后保持本终端，不启动另一个腿部控制器。
-本次没有实现跨进程无缝交接；退出后不能假定腿仍然在准备角。后续policy交接需另行验证。
+输入 `prepare suspended`，等待 `HOLD preparation_settled=True`。接下来可以在同一终端选择：
+
+- 只验收准备时，吊架继续承重，在 HOLD 下输入 `release supported`。
+- 接入零速策略时，先现场确认双脚已承重、吊架保留防跌、机械臂 HOLD 有效且安装了 0.5 kg 负载，再输入 `start grounded`。SDK 没有接地判断，命令表示操作者已确认。控制器延续最后一帧保持指令，随后用约 300 ms 混入零速策略。正常退出依次为 `stop`、等待 ZERO、吊架重新承重、`release supported`。
 
 ## MuJoCo与测试
 
@@ -87,4 +87,11 @@ python scripts/mujoco/test_sfyg_supported_prepare.py \
 8组覆盖负载0/0.5kg、延迟0/4物理步、完整动作/7秒中途stop，全部到保持并受支撑释放，policy调用0。
 实测起点完整动作19秒进入HOLD，保持3秒后测试释放；机器人脚与环境无接触。
 这不是弹性吊绳模型、不是双脚承重，也不是实机验收。
-单元测试覆盖拒绝超范围起点、持续保持不进入policy、旧0.6rad窗口仍拒绝该起点、故障阻尼和预览不创建发送器。
+夹具在准备时抬高机身，在 HOLD 后下降，模拟双脚接地后才触发零速接管。测试核对 HOLD→BLEND 的位置目标和增益连续，并检查准备阶段双脚离地。
+
+```bash
+python scripts/mujoco/test_sfyg_lifecycle.py \
+  --bundle_dir logs/hardware_bundles/sfyg_robust5000 \
+  --initial_pose suspended --delay_steps 4 --vx 0 \
+  --output_dir logs/mujoco/suspended_lifecycle_zero
+```

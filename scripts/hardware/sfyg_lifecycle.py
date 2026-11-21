@@ -64,8 +64,12 @@ def sdk_packet(packet, coords):
 class Lifecycle:
     POLICY_STATES = {"BLEND", "POLICY", "STOPPING", "ZERO"}
 
-    def __init__(self, cfg, policy):
+    def __init__(self, cfg, policy, suspended=None, allow_policy=True):
         self.cfg, self.policy = cfg, policy
+        self.suspended = suspended
+        self.allow_policy = allow_policy
+        self.suspended_active = False
+        self.hold_packet = self.blend_start = None
         self.default = np.asarray(cfg["defaults"][:10], float)
         self.kp = np.array([a["kp"] for a in cfg["actuators"][:10]])
         self.kd = np.array([a["kd"] for a in cfg["actuators"][:10]])
@@ -96,10 +100,54 @@ class Lifecycle:
             self.reason = str(reason)
             self.transition("FAULT", now)
 
+    def begin_blend(self, now):
+        self.history.reset()
+        self.previous.fill(0)
+        self.step = 0
+        self.command.fill(0)
+        self.requested.fill(0)
+        self.transition("BLEND", now)
+
+    def tick_suspended(self, now, q, dq, gravity, tilt, event, requested):
+        if requested is not None:
+            raise CommandRejected("Velocity command requires completed zero-command blend")
+        if event == "prepare_suspended":
+            if self.suspended is None or self.state != "WAIT":
+                raise CommandRejected("Suspended preparation requires suspended mode and WAIT")
+            self.suspended.last = self.last_time
+
+        handoff = event == "start_grounded"
+        if handoff:
+            if not self.allow_policy:
+                raise CommandRejected("Policy handoff requires the verified 0.5 kg payload")
+            if self.state != "HOLD" or not self.suspended.settled(q, dq) or tilt >= 12:
+                raise CommandRejected("Start requires settled suspended HOLD and grounded feet confirmation")
+        suspended_event = event.replace("_", " ") if event and not handoff else None
+        event_count = len(self.suspended.events)
+        packet = self.suspended.tick(now, q, dq, gravity, suspended_event)
+        self.suspended_active = True
+        self.last_time = now
+        for entry in self.suspended.events[event_count:]:
+            self.transition(entry["state"], entry["time_s"])
+        self.reason = self.suspended.reason
+        self.target = np.asarray(packet["q"])
+        self.ready = self.state == "HOLD" and self.suspended.settled(q, dq)
+        if handoff and self.ready:
+            # Keep the previous published HOLD reference for the first BLEND tick.
+            self.blend_start = self.hold_packet
+            self.suspended_active = False
+            self.begin_blend(now)
+            return dict(self.blend_start, state="BLEND")
+        if self.state == "HOLD":
+            self.hold_packet = packet
+        return packet
+
     def validate_command(self, q, dq, tilt, event, requested):
         # Run before advancing time/history. The caller can retry this SAME tick
         # with no event after a typo/early start, retaining balance control.
         if event == "prepare_supported":
+            if self.suspended is not None:
+                raise CommandRejected("Use prepare suspended in suspended mode")
             if self.state != "WAIT":
                 raise CommandRejected("Prepare requires WAIT; restart after release/fault")
             if tilt > 20 or max(abs(dq)) > .5 or max(abs(q-self.default)) > .6:
@@ -126,6 +174,8 @@ class Lifecycle:
         if not np.isfinite(now):
             raise ValueError("Invalid clock")
         tilt = float(np.rad2deg(np.arccos(np.clip(-gravity[2], -1, 1))))
+        if self.suspended_active or event == "prepare_suspended":
+            return self.tick_suspended(now, q, dq, gravity, tilt, event, requested)
         self.validate_command(q, dq, tilt, event, requested)
         if not .99 <= np.linalg.norm(gravity) <= 1.01:
             self.fault("invalid gravity vector", now)
@@ -144,12 +194,7 @@ class Lifecycle:
             self.prepare_duration = max(6., 1.875 * float(max(abs(q-self.default))) / .35)
             self.transition("PREPARE", now)
         if event == "start_grounded":
-            self.history.reset()
-            self.previous.fill(0)
-            self.step = 0
-            self.command.fill(0)
-            self.requested.fill(0)
-            self.transition("BLEND", now)
+            self.begin_blend(now)
         if requested is not None:
             request = vec(requested, 3)
             self.requested = request.astype(np.float32)
@@ -199,6 +244,10 @@ class Lifecycle:
             alpha = smooth((now-self.since)/.3) if self.state == "BLEND" else 1.
             applied = alpha*self.raw
             target = self.default + .25*applied
+            if self.state == "BLEND" and self.blend_start is not None:
+                target += (1-alpha)*(np.asarray(self.blend_start["q"])-self.default)
+                kp = alpha*kp + (1-alpha)*np.asarray(self.blend_start["kp"])
+                kd = alpha*kd + (1-alpha)*np.asarray(self.blend_start["kd"])
             # Same torque feasibility projection as official deployment, using OUR gains.
             target = np.clip(target, q+(kd*dq-self.effort)/kp, q+(kd*dq+self.effort)/kp)
             # Training stores the action BEFORE actuator effort saturation. Keep
