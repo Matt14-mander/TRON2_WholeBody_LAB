@@ -16,6 +16,22 @@ def configuration(bundle):
     return json.loads((bundle/'deployment.json').read_text())
 
 
+def tilt_degrees(gravity):
+    return float(np.degrees(np.arccos(np.clip(-gravity[2], -1, 1))))
+
+
+def start_rejection(q, dq, gravity, tilt):
+    if not .99 <= np.linalg.norm(gravity) <= 1.01:
+        return 'Invalid gravity vector'
+    if max(abs(q-RECORDED)) > .08:
+        return 'Outside tested suspended start: recorded pose +/-0.08rad'
+    if max(abs(dq)) > .1:
+        return 'Suspended start is not still: joint speed exceeds 0.1rad/s'
+    if tilt >= 12:
+        return 'Suspended start tilt must be below 12deg'
+    return None
+
+
 class SupportedPrepare:
     def __init__(self, cfg):
         self.default = vec(cfg['defaults'][:10], 10)
@@ -39,14 +55,41 @@ class SupportedPrepare:
             self.reason = str(reason)
             self.transition('FAULT', now)
 
+    def move_duration(self, origin):
+        # Quintic path: max slope 1.875, max curvature <5.774.
+        delta = max(abs(self.default-origin))
+        return max(16., 1.875*delta/.1, np.sqrt(5.774*delta/.1))
+
+    def move_target(self, origin, fraction):
+        return origin + smooth(fraction)*(self.default-origin)
+
+    def preview(self, q, dq, gravity):
+        tilt = tilt_degrees(gravity)
+        error = q-RECORDED
+        rejection = start_rejection(q, dq, gravity, tilt)
+        report = dict(measured_start_rad=q.tolist(), start_error_rad=error.tolist(),
+                      start_within_envelope=bool(max(abs(error)) <= .08),
+                      max_joint_speed_rad_s=float(max(abs(dq))), tilt_deg=tilt,
+                      start_gate_passed=rejection is None, start_rejection=rejection,
+                      prepare_target=self.default.tolist(), policy_calls=0, motor_output=False)
+        if rejection is None:
+            duration = self.move_duration(q)
+            report['move_duration_s'] = duration
+            report['move_waypoints'] = [
+                dict(move_time_s=fraction*duration, q_rad=self.move_target(q, fraction).tolist())
+                for fraction in (0., .25, .5, .75, 1.)
+            ]
+        return report
+
     def tick(self, now, q, dq, gravity, event=None):
         q, dq, gravity = vec(q, 10), vec(dq, 10), vec(gravity, 3)
-        tilt = float(np.degrees(np.arccos(np.clip(-gravity[2], -1, 1))))
+        tilt = tilt_degrees(gravity)
         if event == 'prepare suspended':
             if self.state != 'WAIT':
                 raise CommandRejected('Prepare only from WAIT')
-            if max(abs(q-RECORDED)) > .08 or max(abs(dq)) > .1 or tilt >= 12:
-                raise CommandRejected('Outside tested suspended start: recorded pose +/-0.08rad, speed<0.1, tilt<12deg')
+            rejection = start_rejection(q, dq, gravity, tilt)
+            if rejection is not None:
+                raise CommandRejected(rejection)
         elif event == 'release supported' and self.state not in ('HOLD', 'PAUSED'):
             raise CommandRejected('Release only from settled HOLD or PAUSED')
         elif event not in (None, 'prepare suspended', 'release supported', 'stop', 'abort'):
@@ -60,9 +103,7 @@ class SupportedPrepare:
         if event == 'prepare suspended':
             self.origin = q.copy()
             self.target = q.copy()
-            # Quintic path: max slope 1.875, max curvature <5.774.
-            delta = max(abs(self.default-q))
-            self.duration = max(16., 1.875*delta/.1, np.sqrt(5.774*delta/.1))
+            self.duration = self.move_duration(self.origin)
             self.transition('CAPTURE', now)
         if event == 'stop' and self.state in ('CAPTURE', 'MOVE', 'SETTLE'):
             # Freeze the current reference, never jump to default or switch policy.
@@ -79,7 +120,7 @@ class SupportedPrepare:
             if elapsed >= 1.:
                 self.transition('MOVE', now)
         elif self.state == 'MOVE':
-            self.target = self.origin + smooth(elapsed/self.duration)*(self.default-self.origin)
+            self.target = self.move_target(self.origin, elapsed/self.duration)
             if elapsed >= self.duration:
                 self.transition('SETTLE', now)
         elif self.state == 'RELEASE':

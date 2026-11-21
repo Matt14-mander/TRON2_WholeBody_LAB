@@ -110,9 +110,7 @@ def run(args):
                     gravity=gravity.tolist(), packet=packet, motor_output=args.execute), allow_nan=False)+'\n')
                 frames += 1
                 if not args.execute and now-start >= 10:
-                    preview = dict(start_error_rad=(q-RECORDED).tolist(),
-                        start_within_envelope=bool(max(abs(q-RECORDED)) <= .08),
-                        prepare_target=ctl.default.tolist(), policy_calls=0, motor_output=False)
+                    preview = ctl.preview(q, dq, gravity)
                     print('[PREVIEW]', json.dumps(preview), flush=True)
                     (args.output_dir/'preview.json').write_text(json.dumps(preview, indent=2))
                     break

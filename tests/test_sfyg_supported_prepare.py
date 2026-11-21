@@ -28,7 +28,9 @@ class PrepareTests(unittest.TestCase):
         with self.assertRaises(CommandRejected):
             old.validate_command(RECORDED, np.zeros(10), 0, 'prepare_supported', None)
         c = SupportedPrepare(cfg)
-        q = RECORDED.copy()
+        q = RECORDED + .03
+        preview = c.preview(q, np.zeros(10), np.array([0, 0, -1]))
+        self.assertTrue(preview['start_gate_passed'])
         targets = []
         for i in range(1201):
             p = c.tick(i*.02, q, np.zeros(10), [0,0,-1], 'prepare suspended' if i == 0 else None)
@@ -36,14 +38,27 @@ class PrepareTests(unittest.TestCase):
             targets.append(q.copy())
         self.assertEqual(c.state, 'HOLD')
         np.testing.assert_allclose(q, cfg['defaults'])
+        for waypoint in preview['move_waypoints']:
+            frame = round((1. + waypoint['move_time_s'])/.02)
+            np.testing.assert_allclose(targets[frame], waypoint['q_rad'], atol=1e-14)
         self.assertLess(np.max(np.abs(np.diff(targets, axis=0)))/.02, .1)
         self.assertLess(np.max(np.abs(np.diff(targets, n=2, axis=0)))/.02**2, .1)
         with self.assertRaises(CommandRejected): c.tick(24.02, q, np.zeros(10), [0,0,-1], 'start grounded')
 
     def test_reject_deep_pose_and_initial_velocity(self):
-        for q, dq in ((RECORDED+.081, np.zeros(10)), (RECORDED, np.ones(10)*.11)):
+        for q, dq, gravity in (
+            (RECORDED+.081, np.zeros(10), [0, 0, -1]),
+            (RECORDED, np.ones(10)*.11, [0, 0, -1]),
+            (RECORDED, np.zeros(10), [0, .5, -np.sqrt(.75)]),
+            (RECORDED, np.zeros(10), [0, 0, -.5]),
+        ):
             c = SupportedPrepare(config())
-            with self.assertRaises(CommandRejected): c.tick(0,q,dq,[0,0,-1],'prepare suspended')
+            preview = c.preview(q, dq, np.array(gravity))
+            self.assertFalse(preview['start_gate_passed'])
+            self.assertNotIn('move_waypoints', preview)
+            with self.assertRaises(CommandRejected) as refusal:
+                c.tick(0, q, dq, gravity, 'prepare suspended')
+            self.assertEqual(preview['start_rejection'], str(refusal.exception))
             self.assertEqual(c.state, 'WAIT')
 
     def test_faults_and_stop_release(self):
@@ -105,3 +120,7 @@ class PrepareTests(unittest.TestCase):
             self.assertFalse(report['motor_output'])
             self.assertEqual(report['policy_calls'],0)
             self.assertEqual(report['state'],'WAIT')
+            preview = json.loads((a.output_dir/'preview.json').read_text())
+            self.assertTrue(preview['start_gate_passed'])
+            self.assertEqual(preview['move_waypoints'][0]['q_rad'], RECORDED.tolist())
+            np.testing.assert_allclose(preview['move_waypoints'][-1]['q_rad'], config()['defaults'])
